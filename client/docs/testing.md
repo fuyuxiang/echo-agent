@@ -4,12 +4,11 @@
 
 ## 环境准备
 
-按 [README](../README.md#从源码运行) 安装工具链并运行 `pnpm install --frozen-lockfile`。完整桌面开发或打包会准备检索模型、Theia 和 Office Worker；手动运行相关独立测试前，先执行其准备步骤。
+按 [README](../README.md#从源码运行) 安装工具链并运行 `pnpm install --frozen-lockfile`。完整桌面开发或打包会准备检索模型、语音资源、Office Worker 和随包 Node.js；手动运行相关独立测试前，先执行其准备步骤。
 
 - Office 文件生成：`pnpm office:build`。
-- IDE 与插件：`pnpm ide:prepare`；仅构建源码时用 `pnpm ide:build`，再用 `pnpm ide:stage` 暂存。
 - 离线检索：`pnpm retrieval:prepare`，资源完整性检查为 `pnpm retrieval:check`。
-- 浏览器验证复用已安装的 Playwright，或通过 `PLAYWRIGHT_MODULE` 指向独立工具目录的 `playwright/index.mjs`；`CHROME_BIN` 可指定浏览器。
+- 浏览器验证默认使用根开发依赖中的 Playwright（运行 `pnpm exec playwright install chromium` 准备浏览器），也可通过 `PLAYWRIGHT_MODULE` 指向独立工具目录的 `playwright/index.mjs`；`CHROME_BIN` 可指定浏览器。
 
 ## 回归层级
 
@@ -26,7 +25,6 @@
 | UI 与主题 | `pnpm test:ui`；专题入口见 [体验约定](product-experience.md)、[主题设计](theme-design.md) | 生产组件的浏览器渲染和受控 IPC，不替代 OS 或真实服务 |
 | 生产首帧 | `pnpm build`、`pnpm test:production-startup` | 实际 dist 的分块加载与挂载；静态 HTTP 中预期的原生 IPC 诊断另记 |
 | Office 与文档编辑 | `pnpm office:test`、`pnpm test:document-workspace` | 实际文件、持久化、格式解析及导出 |
-| IDE 与插件 | `pnpm test:ide`、`pnpm test:ide:unit` | 先准备对应插件和编译产物，再验桥接、SCM、RPC 及权限契约 |
 | 依赖与发行 | `pnpm test:security`、`pnpm test:windows-packaging` | 安全补丁和打包流程回归；完整流程见 [依赖维护](dependency-security.md) 与 [发行说明](desktop-release.md) |
 
 Rust 检查与格式门禁分别为 `cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib -- -D warnings` 和 `cargo fmt --manifest-path src-tauri/Cargo.toml --check`。新增独立 harness 时同步维护锁文件、安全审计覆盖及 CI。
@@ -45,7 +43,6 @@ Rust 缓存在失败后仍保存已完成的依赖编译，供后续修复复用
 
 UI 检查在固定的 Ubuntu 24.04、Node 22.23.4 和 Playwright 1.55.0 下，分别运行设计、主题、主题生命周期、对比度及栅格采样五套检查。`UI behavior, themes and rendered contrast` 汇总状态要求全部通过。失败时先查看对应 `UI / ...` 作业及 `ui-contract-evidence-*` artifact；主题检查的 `failure.json` 包含窗口、字号、主题、当前场景和浏览器错误，`failure.png` 保留失败画面。macOS 本地通过不代表 Linux 字体和浏览器采样也通过。
 
-主题检查额外用 Linux 浏览器标识运行真实 Monaco，覆盖其专有的 `renderFinalNewline=dimmed` 默认值。末尾空行的行号必须参与对比度检查，并在切换主题后继续使用可读颜色。
 
 Rust 宿主及 Runtime 测试通过 `NATIVE_TEST_OUTPUT` 保存每次子进程的完整 `stdout.log`、`stderr.log`，并上传 `native-test-results-*`。测试失败详情通常位于 stdout，编译警告通常位于 stderr，排查时应同时查看。公开错误注释分别截取两条输出的末尾，避免警告覆盖断言，或超长注释在真正的错误前被平台截断。
 
@@ -55,13 +52,20 @@ Rust 宿主及 Runtime 测试通过 `NATIVE_TEST_OUTPUT` 保存每次子进程�
 
 各原生平台通过同一个本地 Action 安装固定的 protoc。归档缓存按平台、架构及安装脚本区分，使用前重新校验 SHA-256；下载完成后立即保存缓存，后续测试失败不会丢弃已验证的工具。损坏响应只作有上限的重试，不会放宽哈希校验。
 
+修改模型默认提示词后，先重新生成加密模板，再执行核心模板的内容一致性和渲染测试。Runtime 库测试入口也包含这些检查。
+
+```sh
+python3 vendor/echo-agent-build/crates/codegen/echo-agent-core/scripts/encrypt_templates.py
+cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-core --lib prompt::template::tests
+```
+
 ## 原生应用与真实模型
 
 原生驱动需要当前源码构建的内嵌页面程序。先准备资源和前端，再构建；普通开发 URL 二进制不能代替：
 
 ```sh
 pnpm retrieval:prepare
-pnpm ide:prepare
+pnpm meeting:speech:prepare
 pnpm office:build
 pnpm build
 cargo build --locked --manifest-path src-tauri/Cargo.toml --features tauri/custom-protocol --bin echoagent -j 2
@@ -72,8 +76,6 @@ macOS 固定验收驱动接收该可执行文件路径；其平台、窗口、�
 | 场景 | 驱动（位于 `scripts/`） | 独立核验重点 |
 | --- | --- | --- |
 | 会话、取消、队列、审批、接续及重启 | `validate-native-core-review.mjs` | 当前回合事件、取消 ACK、审批调用身份、历史和成果文件 |
-| Theia、Git、Diff 与终端 | `validate-native-ide-git-review.mjs` | 真实编辑器、临时无远端仓库、终端输出与未保存内容 |
-| Ask / Plan / Agent 代码任务 | `validate-native-coding-workspace.mjs` | 缓冲区版本、实际模型请求、文件修改和有效验证 |
 | Browser Use | `validate-native-browser-review.mjs` | 合成站点请求、下载字节、拒绝、暂停、清理及重启 |
 | Computer Use | `validate-native-desktop-controls.mjs` | [桌面控制验收](desktop-control/validation.md) |
 | 专家团与定时任务 | `validate-native-collaboration-review.mjs` | 多成员实际输出、协调汇总、真正到点触发与防重复 |
@@ -85,7 +87,7 @@ macOS 固定验收驱动接收该可执行文件路径；其平台、窗口、�
 
 模型流程要求显式设置 `NATIVE_REVIEW_MODEL_CONFIG`，指向独立私有目录中的普通 JSON 文件，目录权限 0700、文件权限 0600。当前固定契约见 [模型资源校验](../scripts/lib/native-review-model.mjs)：字段为 `baseUrl`、`model`、`protocol`、`apiKey`；模型固定为 `claude-opus-5-5`，协议为 `chat_completions`，端点必须是无内嵌凭据的 HTTPS URL。凭据不写入文档或命令行参数。
 
-项目工作台验收通过 `pnpm test:project:native <当前构建的程序> <明确选定的 organization-profile.json>` 运行。它在独立私有目录中，使用该账号的正常钥匙串与令牌刷新流程，并固定验证组织模型 `organization/MiniMax-M3.1-Flash`。现有私有模型资源仅用于初始化隔离 Runtime；项目任务与调度记录必须证明实际使用组织模型。账号、HTTPS 服务来源、工作目录、构建内嵌脚本和重启身份均有绑定，不能用任意脚本替换。
+用 `mktemp -d /private/tmp/echo-native-review-project-XXXXXXXX` 准备原生项目验收目录。运行当前构建并用 `--data-home <该目录>` 打开，使用获授权的测试账号正常登录，然后退出。用同一程序运行 `pnpm test:project:native <当前构建的程序> <该目录中的 organization-profile.json>`。驱动复用该目录专属的钥匙串与令牌刷新流程，要求目录专用于本次验收。现有私有模型资源用于初始化隔离 Runtime，实际项目任务与调度记录固定核对组织模型 `organization/MiniMax-M3.1-Flash`。账号、HTTPS 服务来源、工作目录、构建内嵌脚本和重启身份继续绑定。
 
 macOS 在程序重新编译后可能要求再次授权钥匙串访问；此时需在本机完成系统弹窗中的授权，桌面窗口可能尚未出现。驱动不会读取或填写系统密码，也不会绕过钥匙串授权。
 
@@ -93,7 +95,7 @@ macOS 在程序重新编译后可能要求再次授权钥匙串访问；此时�
 
 驱动创建隔离的 `ECHO_AGENT_HOME` 和合成工作区，不复用日常会话或用户模型配置。需要系统选择器的流程应核对自有 PID、完整路径和实际目录授权；后台自动记忆会排除系统临时工作区，应遵守其固定驱动的工作区安排。
 
-Windows 安装包、文件切换、IME、通知和窗口行为按 [Windows 桌面验收](windows-desktop-feedback-acceptance.md) 与 [发行说明](desktop-release.md) 在原生环境执行。外部 OAuth、微信、组织服务、麦克风和云端 ASR 使用专用测试账户及合成数据另行验证。
+按 [桌面发行验收](desktop-release.md#构建与验收) 检查 Windows 安装包，并在原生环境验证文件切换、IME、通知和窗口行为。外部 OAuth、微信、组织服务、麦克风和云端 ASR 使用专用测试账户及合成数据另行验证。
 
 ## 结果与证据
 

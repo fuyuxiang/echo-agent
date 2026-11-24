@@ -2,18 +2,19 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, expect, it, vi } from "vitest";
 import { ProjectDetailView } from "../ProjectDetailView";
 import { ProjectMaterials } from "../ProjectMaterials";
-import { projectAssetsUse } from "@/lib/agent-client";
+import { agentCancel, agentListPendingInteractions, projectAssetsUse } from "@/lib/agent-client";
 import { ProjectTasks } from "../ProjectTasks";
 import { ProjectSettingsDialog } from "../ProjectSettingsDialog";
 import { useProjectsStore, type ProjectMeta } from "@/stores/projects-store";
 import { useSessionsStore } from "@/stores/sessions-store";
+import { useSessionStore } from "@/stores/session-store";
 import { useOrgSessionStore } from "@/stores/org-session-store";
 import { usePermissionModeStore } from "@/stores/permission-mode-store";
 import type { TeamProjectSnapshot } from "@/lib/team-project-client";
 import type { ProjectWorkspace } from "@/lib/use-project-workspace";
 const api=vi.hoisted(()=>({request:vi.fn(),caps:vi.fn(),upload:vi.fn()}));
 vi.mock("@/lib/team-project-client",async original=>({...await original<object>(),teamProjectRequest:api.request,projectCollaborationCapabilities:api.caps,teamProjectUpload:api.upload}));
-vi.mock("@/lib/agent-client",()=>({projectsSave:vi.fn().mockResolvedValue(undefined),projectAssetsUse:vi.fn().mockResolvedValue(["/private/result.md"]),filesystemPickFiles:vi.fn().mockResolvedValue([]),permissionModeGet:vi.fn().mockResolvedValue({permissionMode:"ask",configuredPermissionMode:"ask",locked:false})}));
+vi.mock("@/lib/agent-client",()=>({agentCancel:vi.fn(),agentListPendingInteractions:vi.fn(),projectsSave:vi.fn().mockResolvedValue(undefined),projectAssetsUse:vi.fn().mockResolvedValue(["/private/result.md"]),filesystemPickFiles:vi.fn().mockResolvedValue([]),permissionModeGet:vi.fn().mockResolvedValue({permissionMode:"ask",configuredPermissionMode:"ask",locked:false})}));
 const project:ProjectMeta={id:"p",name:"统一项目",createdAt:"2026-01-01",instructions:"原指令",defaultModelId:"m",tasks:[],conversations:[],assets:[],plans:[],skills:[{id:"old-skill",name:"保留技能"}],experts:[],connectors:[],members:["原备注"],sharedProjects:{account:"shared"}};
 const snapshot:TeamProjectSnapshot={id:"shared",name:project.name,goal:"共享说明",scopeId:"scope",ownerId:"a",role:"admin",revision:1,updatedAt:100,members:[],tasks:[],assets:[],runs:[],events:[],decisions:[]};
 const picker={options:{skills:[],experts:[],connectors:[]},loading:false,error:null};
@@ -32,6 +33,24 @@ it("keeps old private conversations inside tasks and can restore and continue th
  expect(screen.queryByRole("button",{name:/历史讨论/})).toBeNull();fireEvent.change(screen.getByRole("combobox",{name:"任务范围"}),{target:{value:"all"}});
  fireEvent.click(screen.getByRole("button",{name:/历史讨论/}));fireEvent.click(screen.getByRole("button",{name:"恢复并继续任务"}));
  await waitFor(()=>expect(restore).toHaveBeenCalledWith("old",false));expect(open).toHaveBeenCalledWith("old");expect(p.conversations[0].sessionId).toBe("old");
+});
+
+it("checks pending interactions in the project detail after a pause fails", async () => {
+ const sessionId = "running-project-task";
+ const p = {...project, conversations:[{sessionId,title:"运行中的任务",createdAt:"2026-01-01"}]};
+ useSessionsStore.getState().upsert({sessionId,title:"运行中的任务",cwd:"/workspace",status:"working"});
+ useSessionStore.getState().startStreaming(sessionId, "running-prompt");
+ vi.mocked(agentCancel).mockRejectedValueOnce(new Error("暂停回执丢失"));
+ let respond!: (value: Awaited<ReturnType<typeof agentListPendingInteractions>>) => void;
+ vi.mocked(agentListPendingInteractions).mockImplementationOnce(() => new Promise(resolve => { respond = resolve; }));
+ render(<ProjectTasks project={p} account="account" workspace={workspace()} models={models} />);
+ fireEvent.click(screen.getByRole("button", {name:/运行中的任务/}));
+ const task = within(screen.getByRole("dialog", {name:"任务：运行中的任务"}));
+ fireEvent.click(task.getByRole("button", {name:"暂停任务"}));
+ expect(await task.findByText("正在检查待处理事项…")).toBeInTheDocument();
+ await act(async () => respond({permissions:[],questions:[],planApprovals:[],folderTrustRequests:[]}));
+ expect(task.queryByText("正在检查待处理事项…")).toBeNull();
+ expect(useSessionsStore.getState().independent.find(item => item.sessionId === sessionId)?.status).toBe("working");
 });
 it("does not turn a linked task into an editable private copy when the server is unavailable",()=>{
  const p={...project,tasks:[{id:"t",title:"共享任务",source:"manual",scope:"personal" as const,status:"pending" as const,sharedTasks:{account:{projectId:"shared",taskId:"r"}}}]};

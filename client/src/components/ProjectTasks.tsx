@@ -11,10 +11,11 @@ import { useSessionsStore } from "@/stores/sessions-store";
 import { useOrgSessionStore } from "@/stores/org-session-store";
 import { projectTaskRows, type UnifiedTask } from "@/lib/project-tasks";
 import { projectPublicationLinks } from "@/lib/project-sharing";
-import { captureTeamProjectOperation, projectCollaborationCapabilities, TEAM_TASK_LABELS, type StartTeamWork, type OpenTeamExecution } from "@/lib/team-project-client";
+import { canEditTeamProject, captureTeamProjectOperation, projectCollaborationCapabilities, TEAM_TASK_LABELS, type StartTeamWork, type OpenTeamExecution } from "@/lib/team-project-client";
 import type { ProjectWorkspace } from "@/lib/use-project-workspace";
 import { useModalFocus } from "@/lib/use-modal-focus";
 import { useAppDialog } from "./AppDialog";
+import { SessionInteractionNotice } from "./SessionInteractionNotice";
 import { ModelSelector, type ModelOption } from "./ModelSelector";
 import { Markdown } from "./markdown/Markdown";
 import { displayPath } from "@/lib/display-path";
@@ -47,7 +48,7 @@ export function ProjectTasks(props: Props) {
   const { requestInput, requestConfirmation, dialog } = useAppDialog(`${project.id}:${account}`);
   const summary = (row: UnifiedTask) => summaries.find(s => s.sessionId === row.sessionId);
   const archived = (row: UnifiedTask) => row.private && (summary(row)?.archived ?? row.local?.sessionArchived ?? false);
-  const writable = !sharedId || workspace.snapshot?.role === "admin" || workspace.snapshot?.role === "collaborator";
+  const writable = !sharedId || canEditTeamProject(workspace.snapshot?.role);
   const current = rows.find(row => row.id === selected);
   // Publishing a task does not publish its former private conversation. Keep
   // that source reachable separately from native-bound collaborative runs.
@@ -67,7 +68,7 @@ export function ProjectTasks(props: Props) {
   const publishTask = async (localId: string) => {
     const local = useProjectsStore.getState().projects.find(p => p.id === project.id)?.tasks.find(t => t.id === localId);
     const link = local?.sharedTasks?.[account];
-    if (!local || !sharedId || link?.projectId !== sharedId || !link.requestId) throw new Error("任务关联尚未保存，请重试");
+    if (!writable || !local || !sharedId || link?.projectId !== sharedId || !link.requestId) throw new Error("任务关联尚未保存，请重试");
     const identity = captureTeamProjectOperation();
     const caps = await projectCollaborationCapabilities(identity);
     identity.assertCurrent();
@@ -104,7 +105,7 @@ export function ProjectTasks(props: Props) {
   const start = (row: UnifiedTask) => run(async () => {
     const modelId = modelOverride ?? row.local?.modelId ?? defaultModelId;
     if (!modelId || !models.some(m => m.id === modelId)) throw new Error("请先选择可用模型");
-    if (row.remote && workspace.snapshot && onStartTeamWork) {
+    if (row.remote && workspace.snapshot && onStartTeamWork && canEditTeamProject(workspace.snapshot.role)) {
       const identity = captureTeamProjectOperation();
       const sessionId = await onStartTeamWork(workspace.snapshot, row.remote, modelId);
       identity.assertCurrent();
@@ -136,6 +137,7 @@ export function ProjectTasks(props: Props) {
     {!inline && <div className="project-task-list">{visible.map(row => <button type="button" className="project-task-row" key={row.id} onClick={() => { select(row.id); setModelOverride(undefined); }}><span className="project-task-dot" data-status={state(row)} /><span className="project-task-row__name">{row.title}<small>{row.remote?.assigneeName ?? (sharedId && row.private ? "仅自己" : !row.private && !row.remote ? "等待同步到项目" : "我")} · {PROJECT_TASK_STATES[state(row)].hint}</small></span><span className="project-status" data-state={state(row)}>{archived(row) ? "已归档" : taskStatus(row)}</span><ArrowUpRight size={14} /></button>)}</div>}
     {current && <TaskSurface inline={!!props.inlineDetails} title={current.title} onClose={() => { if (!busy) select(undefined); }}>
       <div className="project-task-detail-meta"><span>{taskStatus(current)}</span><span>{current.remote?.assigneeName ?? (current.private ? "仅自己" : "项目成员可见")}</span></div>
+      {current.sessionId && <SessionInteractionNotice sessionId={current.sessionId} />}
       <p className="project-task-description">{current.remote?.description || current.local?.description || "尚未填写任务说明"}</p>
       {!!props.outputs?.some(o => o.sessionId === current.sessionId) && <section><h4>交付成果</h4><div className="project-output-grid">{props.outputs.filter(o => o.sessionId === current.sessionId).map(o => <button className="project-output-card" key={o.id} onClick={() => props.onPreviewOutput?.(o)}><FileText size={21} /><span><strong>{o.path.replace(/\\/g, "/").split("/").pop()}</strong><small>打开文件预览</small></span></button>)}</div></section>}
       {(current.remote?.acceptance || current.local?.acceptance) && <section><h4>验收要求</h4><p>{current.remote?.acceptance ?? current.local?.acceptance}</p></section>}

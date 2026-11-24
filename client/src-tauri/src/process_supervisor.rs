@@ -1,50 +1,55 @@
 //! Owned process trees. Unix uses process groups; Windows uses Jobs.
-use std::{
-    io,
-    process::ExitStatus,
-    time::{Duration, Instant},
-};
+use std::io;
+#[cfg(all(test, windows))]
+use std::time::Instant;
+#[cfg(test)]
+use std::{process::ExitStatus, time::Duration};
 
+#[cfg(test)]
 pub struct AsyncChild {
     inner: Box<dyn process_wrap::tokio::ChildWrapper>,
 }
+#[cfg(test)]
 impl std::ops::Deref for AsyncChild {
     type Target = dyn process_wrap::tokio::ChildWrapper;
     fn deref(&self) -> &Self::Target {
         &*self.inner
     }
 }
+#[cfg(test)]
 impl std::ops::DerefMut for AsyncChild {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut *self.inner
     }
 }
+#[cfg(all(test, windows))]
 impl AsyncChild {
-    #[cfg(windows)]
     fn kill_tree(&mut self) {
         let _ = self.inner.start_kill();
     }
 }
 
+#[cfg(test)]
 pub struct SyncChild {
     inner: Box<dyn process_wrap::std::ChildWrapper>,
     _protection: Option<echo_agent_tools::util::process_safety::ProcessLease>,
-    #[cfg(unix)]
-    _node_owner: Option<std::os::unix::net::UnixStream>,
     #[cfg(windows)]
     job: windows_job::Job,
 }
+#[cfg(test)]
 impl std::ops::Deref for SyncChild {
     type Target = dyn process_wrap::std::ChildWrapper;
     fn deref(&self) -> &Self::Target {
         &*self.inner
     }
 }
+#[cfg(test)]
 impl std::ops::DerefMut for SyncChild {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut *self.inner
     }
 }
+#[cfg(test)]
 impl SyncChild {
     fn kill_tree(&mut self) {
         #[cfg(windows)]
@@ -55,41 +60,38 @@ impl SyncChild {
         let _ = self.inner.start_kill();
     }
 }
+#[cfg(test)]
 impl Drop for SyncChild {
     fn drop(&mut self) {
         self.kill_tree();
         let _ = self.inner.try_wait();
     }
 }
+#[cfg(test)]
 const GRACE: Duration = Duration::from_millis(500);
+#[cfg(test)]
 const REAP: Duration = Duration::from_secs(2);
 #[cfg(windows)]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(windows)]
 const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 const DETACHED_PROCESS: u32 = 0x0000_0008;
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 const CREATE_SUSPENDED: u32 = 0x0000_0004;
-#[cfg(windows)]
-pub(crate) const WINDOWLESS_NODE_FLAGS: u32 = CREATE_NO_WINDOW | DETACHED_PROCESS;
 
 /// Run a non-interactive CLI tool without opening a console from the desktop app.
-/// Interactive shells use a PTY and must not use this helper.
+#[cfg(all(test, windows))]
 pub(crate) fn background_sync_command(
     executable: impl AsRef<std::ffi::OsStr>,
 ) -> std::process::Command {
-    let command = std::process::Command::new(executable);
-    #[cfg(windows)]
-    let command = {
-        use std::os::windows::process::CommandExt;
-        let mut command = command;
-        command.creation_flags(CREATE_NO_WINDOW);
-        command
-    };
+    use std::os::windows::process::CommandExt;
+    let mut command = std::process::Command::new(executable);
+    command.creation_flags(CREATE_NO_WINDOW);
     command
 }
 
+/// Run a non-interactive CLI tool without opening a console from the desktop app.
 pub(crate) fn background_async_command(
     executable: impl AsRef<std::ffi::OsStr>,
 ) -> tokio::process::Command {
@@ -110,21 +112,28 @@ mod windows_job {
         sync::{Mutex, MutexGuard, OnceLock},
     };
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
+        Foundation::{CloseHandle, HANDLE},
+        System::{
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
+            },
+            Threading::GetCurrentProcess,
+        },
+    };
+
+    #[cfg(test)]
+    use windows_sys::Win32::{
+        Foundation::INVALID_HANDLE_VALUE,
         System::{
             Diagnostics::ToolHelp::{
                 CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD,
                 THREADENTRY32,
             },
-            JobObjects::{
-                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-                SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-                JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
-            },
-            Threading::{
-                GetCurrentProcess, GetProcessId, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
-            },
+            JobObjects::TerminateJobObject,
+            Threading::{GetProcessId, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME},
         },
     };
 
@@ -144,6 +153,7 @@ mod windows_job {
             Ok(job)
         }
 
+        #[cfg(test)]
         pub(super) fn new_child() -> io::Result<Self> {
             let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
             if handle.is_null() {
@@ -198,6 +208,7 @@ mod windows_job {
             Ok(())
         }
 
+        #[cfg(test)]
         pub(super) fn terminate(&self) -> io::Result<()> {
             if unsafe { TerminateJobObject(self.0, 1) } == 0 {
                 return Err(io::Error::last_os_error());
@@ -208,6 +219,7 @@ mod windows_job {
 
     /// The std::process API exposes the process handle but not its primary
     /// thread handle. A suspended child has not run any application code yet.
+    #[cfg(test)]
     pub(super) fn resume_child(process: HANDLE) -> io::Result<()> {
         let pid = unsafe { GetProcessId(process) };
         if pid == 0 {
@@ -398,6 +410,7 @@ pub fn with_external_installer_launch<T>(install: impl FnOnce() -> T) -> io::Res
     Ok(install())
 }
 
+#[cfg(test)]
 pub fn spawn_async(command: tokio::process::Command) -> io::Result<AsyncChild> {
     use process_wrap::tokio::*;
     let mut wrapped = CommandWrap::from(command);
@@ -414,6 +427,7 @@ pub fn spawn_async(command: tokio::process::Command) -> io::Result<AsyncChild> {
     Ok(AsyncChild { inner })
 }
 
+#[cfg(test)]
 pub fn spawn_sync(command: std::process::Command) -> io::Result<SyncChild> {
     #[cfg(windows)]
     {
@@ -421,10 +435,8 @@ pub fn spawn_sync(command: std::process::Command) -> io::Result<SyncChild> {
         windows_job::install_host();
         let mut command = command;
         // Suspend before assignment so an early IPC fork cannot escape the job.
-        // CREATE_NO_WINDOW is ignored with DETACHED_PROCESS, which gives Node
-        // no inherited console at all.
-        command
-            .creation_flags(WINDOWLESS_NODE_FLAGS | CREATE_BREAKAWAY_FROM_JOB | CREATE_SUSPENDED);
+        // DETACHED_PROCESS gives the child no inherited console.
+        command.creation_flags(DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB | CREATE_SUSPENDED);
         let mut child = command.spawn()?;
         let handle = child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
         let job = match windows_job::Job::new_child().and_then(|job| {
@@ -467,58 +479,11 @@ pub fn spawn_sync(command: std::process::Command) -> io::Result<SyncChild> {
         Ok(SyncChild {
             inner,
             _protection: protection,
-            _node_owner: None,
         })
     }
 }
 
-/// Node backends can observe owner death through an inherited private socket.
-/// Windows already provides this lifetime guarantee through its kernel Job.
-pub fn spawn_owned_node(
-    command: std::process::Command,
-    guard_script: &std::path::Path,
-) -> io::Result<SyncChild> {
-    #[cfg(unix)]
-    {
-        use std::os::{fd::AsRawFd, unix::process::CommandExt};
-        let mut command = command;
-        let (reader, owner) = std::os::unix::net::UnixStream::pair()?;
-        let fd = reader.as_raw_fd();
-        let script = guard_script.to_str().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Node owner guard path is not UTF-8",
-            )
-        })?;
-        let mut options = std::env::var("NODE_OPTIONS").unwrap_or_default();
-        options.push_str(" --require ");
-        options.push_str(&serde_json::to_string(script).map_err(io::Error::other)?);
-        command
-            .env("NODE_OPTIONS", options)
-            .env("ECHO_THEIA_PARENT_FD", fd.to_string());
-        // Only async-signal-safe fcntl runs between fork and exec. Both socket
-        // ends remain CLOEXEC in the owner and every unrelated spawned child.
-        unsafe {
-            command.pre_exec(move || {
-                let flags = libc::fcntl(fd, libc::F_GETFD);
-                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let mut child = spawn_sync(command)?;
-        drop(reader);
-        child._node_owner = Some(owner);
-        Ok(child)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = guard_script;
-        spawn_sync(command)
-    }
-}
-
+#[cfg(test)]
 pub async fn stop_async(child: &mut AsyncChild) -> Option<ExitStatus> {
     #[cfg(unix)]
     let _ = child.signal(libc::SIGTERM);
@@ -535,28 +500,6 @@ pub async fn stop_async(child: &mut AsyncChild) -> Option<ExitStatus> {
         .ok()
         .and_then(Result::ok)
         .or(status)
-}
-
-/// Call after requesting application-level shutdown; force cleanup is bounded.
-pub fn stop_sync(child: &mut SyncChild) {
-    #[cfg(unix)]
-    let _ = child.signal(libc::SIGTERM);
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline {
-        if child.try_wait().ok().flatten().is_some() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    child.kill_tree();
-    let deadline = Instant::now() + REAP;
-    while Instant::now() < deadline {
-        if child.try_wait().ok().flatten().is_some() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    tracing::warn!("process tree did not finish within shutdown deadline");
 }
 
 #[cfg(all(test, unix))]

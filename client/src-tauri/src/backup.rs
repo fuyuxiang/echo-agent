@@ -17,6 +17,11 @@ use tauri_plugin_dialog::DialogExt;
 use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
 const MAX_TOTAL: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_UI_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_UI_ARCHIVE_BYTES: u64 = 32 * 1024 * 1024;
+const LEGACY_UI_DIR: &str = "legacy-workspace-archive";
+const RECOVERY_UI_DIR: &str = "ui-recovery";
+const RESTORED_UI: &str = "restore-ui.json";
 const FILES: &[&str] = &[
     "echoagent-projects.json",
     "echoagent-state.json",
@@ -25,6 +30,8 @@ const FILES: &[&str] = &[
     "echoagent-notifications.json",
     "echoagent-teams.json",
     "collaboration.sqlite",
+    crate::legacy_workspace::LEASE_FILE,
+    "coding-external-tool-leases.recoveries.jsonl",
     "desktop/desktop-preferences.json",
 ];
 const DIRS: &[&str] = &[
@@ -39,6 +46,8 @@ const DIRS: &[&str] = &[
     "meetings",
     "coding",
     "clipboard-images",
+    LEGACY_UI_DIR,
+    RECOVERY_UI_DIR,
 ];
 pub const UI_KEYS: &[&str] = &[
     "echoagent.projects",
@@ -185,13 +194,53 @@ fn allowed(name: &str) -> bool {
     {
         return false;
     }
-    if let Some(document) = name.strip_prefix("document-workspaces/") {
-        return document
+    if let Some(record) = name.split_once('/').and_then(|(directory, record)| {
+        ["document-workspaces", LEGACY_UI_DIR, RECOVERY_UI_DIR]
+            .contains(&directory)
+            .then_some(record)
+    }) {
+        return record
             .strip_suffix(".json")
             .is_some_and(|id| id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
     FILES.contains(&name) || (parts.len() > 1 && DIRS.iter().any(|dir| path.starts_with(dir)))
 }
+
+fn is_legacy_ui_key(key: &str) -> bool {
+    matches!(
+        key,
+        "echo-coding-workspaces" | "echo-coding-active-cwd" | "echo-coding-archive-v1"
+    ) || [
+        "echo-coding-intent-v1:",
+        "echo-coding-hot-exit-v1:task-draft:",
+        "echo-coding-hot-exit-v1:task-context:",
+        "echo-coding-followup-v1:",
+        "echo-coding-plan-v1:",
+    ]
+    .iter()
+    .any(|prefix| key.starts_with(prefix))
+}
+
+fn validate_ui_snapshot(
+    records: &BTreeMap<String, String>,
+    legacy_only: bool,
+    limit: u64,
+) -> Result<Vec<u8>, String> {
+    let allowed = |key: &str| {
+        is_legacy_ui_key(key)
+            || if legacy_only {
+                key == "echoagent.outbox.v1"
+            } else {
+                UI_KEYS.contains(&key)
+            }
+    };
+    let bytes = serde_json::to_vec(records).map_err(|error| error.to_string())?;
+    if records.keys().any(|key| !allowed(key)) || bytes.len() as u64 > limit {
+        return Err("界面备份范围或大小无效".into());
+    }
+    Ok(bytes)
+}
+
 fn validate(manifest: &Manifest) -> Result<(), String> {
     if manifest.version != 1 || manifest.files.len() > 100_000 {
         return Err("不支持的备份版本或文件过多".into());
@@ -207,17 +256,7 @@ fn validate(manifest: &Manifest) -> Result<(), String> {
             return Err("备份超过 8GB 恢复上限".into());
         }
     }
-    if manifest
-        .ui_state
-        .keys()
-        .any(|key| !UI_KEYS.contains(&key.as_str()))
-        || serde_json::to_vec(&manifest.ui_state)
-            .map_err(|e| e.to_string())?
-            .len()
-            > 8 * 1024 * 1024
-    {
-        return Err("界面备份范围或大小无效".into());
-    }
+    validate_ui_snapshot(&manifest.ui_state, false, MAX_UI_BYTES)?;
     Ok(())
 }
 fn copy_hash(
@@ -244,6 +283,27 @@ fn copy_hash(
     }
     Ok((size, format!("{:x}", hash.finalize())))
 }
+fn backup_sources(home: &Path, app_data: &Path) -> Result<Vec<(&'static str, PathBuf)>, String> {
+    let mut sources = Vec::new();
+    let mut linked = Vec::new();
+    for &name in FILES.iter().chain(DIRS.iter()) {
+        let path = source_path(home, app_data, name);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if crate::paths::is_link_or_reparse_point(&metadata) => linked.push(name),
+            Ok(_) => sources.push((name, path)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("无法读取备份数据 {name}：{error}")),
+        }
+    }
+    if !linked.is_empty() {
+        return Err(format!(
+            "无法备份链接中的应用数据（{}）。请将数据移回应用数据目录后重试。",
+            linked.join("、")
+        ));
+    }
+    Ok(sources)
+}
+
 fn export(
     home: &Path,
     app_data: &Path,
@@ -259,22 +319,43 @@ fn export(
         app_data: app_data.to_string_lossy().into_owned(),
     };
     validate(&manifest)?;
+    let sources = backup_sources(home, app_data)?;
     let mut temporary =
         tempfile::NamedTempFile::new_in(destination.parent().ok_or("保存位置无效")?)
             .map_err(|e| e.to_string())?;
+    let previous_archive = match fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.is_file() => {
+            Some(destination.canonicalize().map_err(|e| e.to_string())?)
+        }
+        _ => None,
+    };
+    let outputs = [
+        Some(temporary.path().canonicalize().map_err(|e| e.to_string())?),
+        previous_archive,
+    ];
     let mut zip = ZipWriter::new(temporary.as_file_mut());
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o600);
     let mut total = 0;
-    for root in FILES.iter().chain(DIRS.iter()) {
-        let source = source_path(home, app_data, root);
-        if !source.exists() {
-            continue;
-        }
-        for file in walkdir::WalkDir::new(&source).follow_links(false) {
+    for (root, source) in sources {
+        for file in walkdir::WalkDir::new(&source)
+            .follow_links(false)
+            .follow_root_links(false)
+        {
             let file = file.map_err(|e| e.to_string())?;
+            if file.depth() == 0 && file.file_type().is_symlink() {
+                return Err(format!("备份期间应用数据位置发生变化：{root}。请重试。"));
+            }
             if !file.file_type().is_file() {
+                continue;
+            }
+            // A save dialog can select a folder included in the backup.
+            // Skip both the live writer and the archive being replaced.
+            if outputs.iter().flatten().any(|output| {
+                file.path().file_name() == output.file_name()
+                    && file.path().canonicalize().is_ok_and(|path| path == *output)
+            }) {
                 continue;
             }
             let relative = file
@@ -290,9 +371,8 @@ fn export(
                     .replace('\\', "/")
             };
             if !allowed(&name) {
-                if *root == "document-workspaces" {
-                    // Editors stage atomic writes in this directory. Only
-                    // committed identity-named records belong in the archive.
+                if ["document-workspaces", LEGACY_UI_DIR, RECOVERY_UI_DIR].contains(&root) {
+                    // Only committed identity-named records belong in the backup.
                     continue;
                 }
                 return Err("备份路径超出数据范围".into());
@@ -469,7 +549,7 @@ fn rollback(home: &Path, app_data: &Path) -> Result<(), String> {
                 fs::remove_file(path).map_err(|e| e.to_string())?;
             }
         }
-        let ui_path = home.join("restore-ui.json");
+        let ui_path = home.join(RESTORED_UI);
         if let Some(bytes) = journal.old_ui {
             crate::paths::write_private_file(&ui_path, &bytes)?;
         } else if ui_path.exists() {
@@ -680,7 +760,10 @@ fn rebase_document_workspaces(
         {
             let path = staging.join(&entry.name);
             atomic_copy(&snapshot.path().join(&entry.name), &path)?;
-            let bytes = crate::shell_fs::read_regular_file_bounded(&path, 12 * 1024 * 1024)?;
+            let bytes = crate::shell_fs::read_regular_file_bounded(
+                &path,
+                crate::document_store::MAX_DOCUMENT_RECORD_BYTES,
+            )?;
             entry.bytes = bytes.len() as u64;
             entry.sha256 = format!("{:x}", Sha256::digest(&bytes));
         }
@@ -754,43 +837,34 @@ fn prepare_file(
         crate::paths::replace_file_atomically(output.path(), path)?;
         return Ok(());
     }
+    if let Some((directory, file)) = name.split_once('/') {
+        let kind = match directory {
+            LEGACY_UI_DIR => Some(UiArchiveKind::LegacyWorkspace),
+            RECOVERY_UI_DIR => Some(UiArchiveKind::DeferredRestore),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            read_ui_archive(path, file, kind)?;
+            return Ok(());
+        }
+    }
     if !name.ends_with(".json")
         || name.starts_with("clipboard-images/")
         || name.starts_with("projects/")
         || name.starts_with("document-workspaces/")
+        || name.starts_with("coding/")
     {
         return Ok(());
     }
     let bytes = crate::shell_fs::read_regular_file_bounded(path, 64 * 1024 * 1024)?;
     let mut value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
         Ok(value) => value,
-        Err(error) if FILES.contains(&name) || name.starts_with("coding/") => {
+        Err(error) if FILES.contains(&name) => {
             return Err(format!("备份中的应用记录无法解析 {name}：{error}"))
         }
         Err(_) => return Ok(()),
     };
     rebase_value(&mut value, manifest, home, app_data);
-    if name.starts_with("coding/")
-        && (name.ends_with("/task.json") || name.ends_with("/tasks.json"))
-    {
-        fn pause(value: &mut serde_json::Value) {
-            if matches!(
-                value["phase"].as_str(),
-                Some("discovering" | "implementing" | "verifying" | "diagnosing" | "repairing")
-            ) {
-                value["phase"] = serde_json::json!("paused");
-                if value.get("nextAction").is_some() {
-                    value["nextAction"] = serde_json::Value::Null;
-                }
-            }
-        }
-        pause(&mut value);
-        if let Some(items) = value.get_mut("tasks").and_then(|v| v.as_array_mut()) {
-            for item in items {
-                pause(item);
-            }
-        }
-    }
     if name == "echoagent-automations.json" {
         if let Some(items) = value.get_mut("automations").and_then(|v| v.as_array_mut()) {
             for item in items {
@@ -962,7 +1036,7 @@ fn apply_pending_at(home: &Path, app_data: &Path) -> Result<(), String> {
     }
     let previous_name = format!("restore-previous-{}", uuid::Uuid::now_v7());
     let previous = home.join(&previous_name);
-    let ui_path = home.join("restore-ui.json");
+    let ui_path = home.join(RESTORED_UI);
     let mut journal = Journal {
         files: vec![],
         previous: previous_name,
@@ -986,6 +1060,12 @@ fn apply_pending_at(home: &Path, app_data: &Path) -> Result<(), String> {
             home,
             app_data,
         )?;
+        if entry.name == crate::legacy_workspace::LEASE_FILE && existed {
+            crate::legacy_workspace::merge_restored_operations(
+                &staging.path().join(&entry.name),
+                &target,
+            )?;
+        }
         journal.files.push((entry.name.clone(), existed));
     }
     crate::automations::prepare_restored_terminals(staging.path())?;
@@ -1057,7 +1137,7 @@ fn apply_pending_at(home: &Path, app_data: &Path) -> Result<(), String> {
         }
         crate::paths::write_private_file(
             &ui_path,
-            &serde_json::to_vec(&ui_state).map_err(|e| e.to_string())?,
+            &validate_ui_snapshot(&ui_state, false, MAX_UI_BYTES)?,
         )?;
         for cwd in &managed_task_directories {
             restore_managed_task_directory(home, cwd)?;
@@ -1100,6 +1180,14 @@ pub async fn backup_export(
     app: AppHandle,
     ui_state: BTreeMap<String, String>,
 ) -> Result<Option<String>, String> {
+    let home = crate::paths::echo_agent_home_dir();
+    let app_data = crate::paths::desktop_data_dir(&app)?;
+    let (home, app_data) = tauri::async_runtime::spawn_blocking(move || {
+        backup_sources(&home, &app_data)?;
+        Ok::<_, String>((home, app_data))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -1113,14 +1201,8 @@ pub async fn backup_export(
         return Ok(None);
     };
     let path = path.into_path().map_err(|e| e.to_string())?;
-    let app_data = crate::paths::desktop_data_dir(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        export(
-            &crate::paths::echo_agent_home_dir(),
-            &app_data,
-            &path,
-            ui_state,
-        )?;
+        export(&home, &app_data, &path, ui_state)?;
         Ok(Some(path.to_string_lossy().into_owned()))
     })
     .await
@@ -1244,18 +1326,22 @@ pub async fn backup_restore(
 }
 #[tauri::command]
 pub fn backup_restored_ui() -> Result<Option<BTreeMap<String, String>>, String> {
-    let path = crate::paths::echo_agent_home_dir().join("restore-ui.json");
-    if !path.exists() {
-        return Ok(None);
+    read_restored_ui(&crate::paths::echo_agent_home_dir())
+}
+
+fn read_restored_ui(home: &Path) -> Result<Option<BTreeMap<String, String>>, String> {
+    match crate::shell_fs::read_regular_file_bounded_io(&home.join(RESTORED_UI), MAX_UI_BYTES) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| e.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
     }
-    serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
-        .map(Some)
-        .map_err(|e| e.to_string())
 }
 #[tauri::command]
 pub fn backup_acknowledge_ui() -> Result<(), String> {
     let home = crate::paths::echo_agent_home_dir();
-    let path = home.join("restore-ui.json");
+    let path = home.join(RESTORED_UI);
     if path.exists() {
         let error = home.join("restore-error.txt");
         if error.exists() {
@@ -1266,9 +1352,297 @@ pub fn backup_acknowledge_ui() -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum UiArchiveKind {
+    LegacyWorkspace,
+    DeferredRestore,
+}
+
+impl UiArchiveKind {
+    fn directory(self) -> &'static str {
+        match self {
+            Self::LegacyWorkspace => LEGACY_UI_DIR,
+            Self::DeferredRestore => RECOVERY_UI_DIR,
+        }
+    }
+
+    fn filename(self) -> &'static str {
+        match self {
+            Self::LegacyWorkspace => "旧版工作台档案.json",
+            Self::DeferredRestore => "待恢复的界面数据.json",
+        }
+    }
+}
+
+fn archive_ui_snapshot(
+    home: &Path,
+    kind: UiArchiveKind,
+    records: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let bytes = validate_ui_snapshot(
+        records,
+        matches!(kind, UiArchiveKind::LegacyWorkspace),
+        MAX_UI_ARCHIVE_BYTES,
+    )?;
+    if !records.is_empty() {
+        let root = home.join(kind.directory());
+        if let Ok(metadata) = fs::symlink_metadata(&root) {
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err("界面档案目录无效".into());
+            }
+        }
+        let name = format!("{:x}.json", Sha256::digest(&bytes));
+        crate::paths::write_private_file(&root.join(name), &bytes)?;
+    }
+    Ok(())
+}
+
+fn read_ui_archive(path: &Path, name: &str, kind: UiArchiveKind) -> Result<Vec<u8>, String> {
+    let bytes = crate::shell_fs::read_regular_file_bounded(path, MAX_UI_ARCHIVE_BYTES)?;
+    if name != format!("{:x}.json", Sha256::digest(&bytes)) {
+        return Err("界面档案内容与标识不一致".into());
+    }
+    let records = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    validate_ui_snapshot(
+        &records,
+        matches!(kind, UiArchiveKind::LegacyWorkspace),
+        MAX_UI_ARCHIVE_BYTES,
+    )?;
+    Ok(bytes)
+}
+
+#[tauri::command]
+pub(crate) fn backup_archive_legacy_ui(records: BTreeMap<String, String>) -> Result<(), String> {
+    archive_ui_snapshot(
+        &crate::paths::echo_agent_home_dir(),
+        UiArchiveKind::LegacyWorkspace,
+        &records,
+    )
+}
+
+#[tauri::command]
+pub(crate) fn backup_defer_restored_ui() -> Result<(), String> {
+    defer_restored_ui(&crate::paths::echo_agent_home_dir())
+}
+
+fn defer_restored_ui(home: &Path) -> Result<(), String> {
+    if let Some(records) = read_restored_ui(home)? {
+        archive_ui_snapshot(home, UiArchiveKind::DeferredRestore, &records)?;
+        fs::remove_file(home.join(RESTORED_UI)).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn archived_ui_paths(home: &Path, kind: UiArchiveKind) -> Result<Vec<PathBuf>, String> {
+    let root = home.join(kind.directory());
+    let metadata = match fs::symlink_metadata(&root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("界面档案目录无效".into());
+    }
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(&root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_file()
+            && allowed(&format!(
+                "{}/{}",
+                kind.directory(),
+                entry.file_name().to_string_lossy()
+            ))
+        {
+            paths.push(entry.path());
+        }
+    }
+    paths.sort_unstable();
+    Ok(paths)
+}
+
+#[tauri::command]
+pub(crate) fn backup_has_deferred_ui() -> Result<bool, String> {
+    Ok(!archived_ui_paths(
+        &crate::paths::echo_agent_home_dir(),
+        UiArchiveKind::DeferredRestore,
+    )?
+    .is_empty())
+}
+
+#[tauri::command]
+pub(crate) async fn backup_export_ui_archive(
+    app: AppHandle,
+    kind: UiArchiveKind,
+    records: BTreeMap<String, String>,
+) -> Result<Option<String>, String> {
+    let home = crate::paths::echo_agent_home_dir();
+    let archives = archived_ui_paths(&home, kind)?;
+    if archives.is_empty() && records.is_empty() {
+        return Err(match kind {
+            UiArchiveKind::LegacyWorkspace => "没有可导出的旧版工作台草稿或队列",
+            UiArchiveKind::DeferredRestore => "没有待恢复的界面数据",
+        }
+        .into());
+    }
+    let local_bytes = validate_ui_snapshot(&records, true, MAX_UI_ARCHIVE_BYTES)?;
+    let Some(path) =
+        crate::meeting_minutes::choose_save_path(&app, "导出界面档案", kind.filename(), "json")
+            .await?
+    else {
+        return Ok(None);
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::legacy_workspace::ensure_workspace_available(&path)?;
+        let parent = path.parent().ok_or("无效的档案保存目录")?;
+        let mut output =
+            tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
+        crate::paths::harden_private_file(output.path())?;
+        let write = |err: std::io::Error| format!("导出档案失败：{err}");
+        output
+            .write_all(b"{\"version\":1,\"snapshots\":[\n")
+            .map_err(write)?;
+        let mut separator: &[u8] = b"";
+        for archive in archives {
+            let name = archive
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or("界面档案名称无效")?;
+            let bytes = read_ui_archive(&archive, name, kind)?;
+            output.write_all(separator).map_err(write)?;
+            output.write_all(&bytes).map_err(write)?;
+            separator = b",\n";
+        }
+        if !records.is_empty() {
+            output.write_all(separator).map_err(write)?;
+            output.write_all(&local_bytes).map_err(write)?;
+        }
+        output.write_all(b"\n]}\n").map_err(write)?;
+        output.as_file().sync_all().map_err(write)?;
+        crate::paths::replace_file_atomically(output.path(), &path)?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_inside_backed_up_directory_excludes_its_own_output() {
+        let home = tempfile::tempdir().unwrap();
+        let projects = home.path().join("projects");
+        fs::create_dir(&projects).unwrap();
+        fs::write(projects.join("季度总结.txt"), "retained project data").unwrap();
+        // The same save location can use a different spelling (for example a
+        // macOS system alias or a path selected through a linked directory).
+        let archive = projects.canonicalize().unwrap().join("备份.zip");
+
+        for _ in 0..2 {
+            export(home.path(), home.path(), &archive, BTreeMap::new()).unwrap();
+
+            let staging = tempfile::tempdir().unwrap();
+            let manifest = unpack(&archive, staging.path()).unwrap();
+            let names: Vec<_> = manifest.files.into_iter().map(|file| file.name).collect();
+            assert_eq!(names, ["projects/季度总结.txt"]);
+            assert_eq!(
+                fs::read_to_string(staging.path().join("projects/季度总结.txt")).unwrap(),
+                "retained project data"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_refuses_linked_data_roots_and_preserves_the_previous_backup() {
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let archive = home.path().join("backup.zip");
+        fs::write(&archive, b"previous backup").unwrap();
+        std::os::unix::fs::symlink(outside.path(), home.path().join("projects")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("missing"), home.path().join("sessions"))
+            .unwrap();
+
+        let error = export(home.path(), home.path(), &archive, BTreeMap::new()).unwrap_err();
+
+        assert!(error.contains("projects") && error.contains("sessions"));
+        assert_eq!(fs::read(&archive).unwrap(), b"previous backup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_excludes_nested_links_without_copying_external_files() {
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(
+            outside.path().join("outside.txt"),
+            "outside the backup scope",
+        )
+        .unwrap();
+        fs::create_dir(home.path().join("sessions")).unwrap();
+        fs::write(home.path().join("sessions/ordinary.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(outside.path(), home.path().join("sessions/nested")).unwrap();
+        let archive = home.path().join("backup.zip");
+
+        export(home.path(), home.path(), &archive, BTreeMap::new()).unwrap();
+
+        let staging = tempfile::tempdir().unwrap();
+        let manifest = unpack(&archive, staging.path()).unwrap();
+        let names: Vec<_> = manifest.files.into_iter().map(|file| file.name).collect();
+        assert_eq!(names, ["sessions/ordinary.json"]);
+    }
+
+    #[test]
+    fn archived_draft_versions_and_deferred_ui_survive_full_backup_restore() {
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let draft = "echo-coding-plan-v1:repo:task";
+        let legacy = UiArchiveKind::LegacyWorkspace;
+        for text in ["用户编辑的计划", "备份里的计划"] {
+            let records = BTreeMap::from([(draft.to_owned(), text.to_owned())]);
+            archive_ui_snapshot(source.path(), legacy, &records).unwrap();
+            archive_ui_snapshot(source.path(), legacy, &records).unwrap();
+        }
+        let deferred = BTreeMap::from([("echoagent.drafts.v1".into(), "待恢复的消息草稿".into())]);
+        crate::paths::write_private_file(
+            &source.path().join(RESTORED_UI),
+            &validate_ui_snapshot(&deferred, false, MAX_UI_BYTES).unwrap(),
+        )
+        .unwrap();
+        defer_restored_ui(source.path()).unwrap();
+        assert!(read_restored_ui(source.path()).unwrap().is_none());
+
+        export(
+            source.path(),
+            source.path(),
+            &target.path().join("restore-pending.zip"),
+            BTreeMap::new(),
+        )
+        .unwrap();
+        apply_pending_at(target.path(), target.path()).unwrap();
+        let read_archives = |kind: UiArchiveKind| {
+            archived_ui_paths(target.path(), kind)
+                .unwrap()
+                .iter()
+                .map(|path| {
+                    serde_json::from_slice::<BTreeMap<String, String>>(&fs::read(path).unwrap())
+                        .unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut plans = read_archives(legacy)
+            .into_iter()
+            .map(|snapshot| snapshot[draft].clone())
+            .collect::<Vec<_>>();
+        plans.sort();
+        assert_eq!(plans, ["备份里的计划", "用户编辑的计划"]);
+        assert_eq!(read_archives(UiArchiveKind::DeferredRestore), [deferred]);
+    }
 
     #[test]
     fn backup_restores_document_revisions_under_rebased_identity() {

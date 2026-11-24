@@ -52,7 +52,7 @@ pub(crate) fn subagent_template() -> Zeroizing<String> {
 }
 
 /// The compact system prompt used after conversation compaction.
-pub const COMPACT_SYSTEM_PROMPT: &str = "You are Echo, an AI coding assistant developed by 付玉祥. When asked in Chinese who you are, reply exactly: \"我是 Echo，由付玉祥开发的 AI 助手，主要帮助你完成软件工程相关的任务，比如写代码、调试、重构、阅读代码、规划方案等。有什么需要我帮忙的吗？\" For other questions about your identity or developer, identify yourself as Echo, developed by 付玉祥; do not reference any other assistant, company, or upstream project. You operate in a workspace with a provided codebase.\n\n\
+pub const COMPACT_SYSTEM_PROMPT: &str = "You are Echo, an AI assistant developed by 付玉祥. When asked in Chinese who you are, reply exactly: \"我是 Echo，由付玉祥开发的 AI 助手，可以帮助你整理资料、处理办公文档、规划和执行任务。有什么需要我帮忙的吗？\" For other questions about your identity or developer, identify yourself as Echo, developed by 付玉祥; do not reference any other assistant, company, or upstream project.\n\n\
      Your main goal is to complete the user's request, denoted within the <user_query> tag.";
 
 #[cfg(test)]
@@ -334,7 +334,7 @@ mod tests {
     fn test_compact_prompt_matches_expected() {
         assert_eq!(
             COMPACT_SYSTEM_PROMPT,
-            "You are Echo, an AI coding assistant developed by 付玉祥. When asked in Chinese who you are, reply exactly: \"我是 Echo，由付玉祥开发的 AI 助手，主要帮助你完成软件工程相关的任务，比如写代码、调试、重构、阅读代码、规划方案等。有什么需要我帮忙的吗？\" For other questions about your identity or developer, identify yourself as Echo, developed by 付玉祥; do not reference any other assistant, company, or upstream project. You operate in a workspace with a provided codebase.\n\n\
+            "You are Echo, an AI assistant developed by 付玉祥. When asked in Chinese who you are, reply exactly: \"我是 Echo，由付玉祥开发的 AI 助手，可以帮助你整理资料、处理办公文档、规划和执行任务。有什么需要我帮忙的吗？\" For other questions about your identity or developer, identify yourself as Echo, developed by 付玉祥; do not reference any other assistant, company, or upstream project.\n\n\
              Your main goal is to complete the user's request, denoted within the <user_query> tag.",
         );
     }
@@ -498,7 +498,8 @@ mod tests {
     #[test]
     fn test_apply_patch_template_renders() {
         let prompt = render_apply_patch(&default_renderer(), &default_placeholders());
-        assert!(prompt.contains("coding agent"));
+        assert!(prompt.starts_with("You are Echo, an AI assistant developed by 付玉祥."));
+        assert!(!prompt.contains("软件工程相关"));
         assert!(prompt.contains("我是 Echo，由付玉祥开发的 AI 助手"));
     }
 
@@ -754,7 +755,7 @@ mod tests {
             "interactive prompt must keep the <user_guide> block"
         );
         assert!(
-            prompt.contains("interactive CLI tool"),
+            prompt.contains("interactive assistant"),
             "interactive prompt must declare interactive mode in the header"
         );
         assert!(
@@ -781,8 +782,8 @@ mod tests {
             "non-interactive prompt must declare autonomous mode in the header"
         );
         assert!(
-            !prompt.contains("interactive CLI tool"),
-            "non-interactive prompt must NOT claim to be the interactive CLI"
+            !prompt.contains("interactive assistant"),
+            "non-interactive prompt must NOT claim to be an interactive assistant"
         );
         // Sanity: rest of the template still renders.
         assert!(prompt.contains(crate::prompt::context::DEFAULT_SYSTEM_PROMPT_LABEL));

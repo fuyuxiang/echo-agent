@@ -1,3 +1,4 @@
+import type { SessionHistoryControls } from "@/lib/types";
 import { useState, useCallback, useRef, useEffect, useMemo, useContext, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import { SlidersHorizontal } from "lucide-react";
@@ -534,6 +535,7 @@ export function Sidebar({
   onSessionArchived,
   onSessionDeleted,
   onRetrySessions,
+  sessionHistory,
   activeNav,
 }: {
   onNewSession: () => void;
@@ -560,6 +562,7 @@ export function Sidebar({
   onSessionDeleted?: (sessionId: string) => void;
   /** Retry the recoverable session/working-directory catalog load. */
   onRetrySessions?: () => void;
+  sessionHistory?: SessionHistoryControls;
   activeNav: string;
 }) {
   const sidebarLayout = useContext(SidebarLayoutContext);
@@ -734,7 +737,7 @@ export function Sidebar({
       if (onRenameSession) await onRenameSession(sessionId, newTitle, cwd);
       else {
         await agentRenameSession(sessionId, newTitle, cwd);
-        if (session) upsertSession({ ...session, title: newTitle });
+        if (session) upsertSession({ sessionId, title: newTitle });
         for (const project of useProjectsStore.getState().projects) {
           useProjectsStore.getState().updateConversationTitle(project.id, sessionId, newTitle);
         }
@@ -762,15 +765,13 @@ export function Sidebar({
 
   // Pin/unpin — EchoAgent-only state (~/.echo-agent/echoagent-state.json).
   const handlePin = useCallback(async (sessionId: string, pinned: boolean) => {
-    const session = allSessions.find(s => s.sessionId === sessionId);
-    if (!session) return;
     try {
-      await agentSetSessionPinned(sessionId, pinned);
-      upsertSession({ ...session, pinned });
+      const confirmed = await agentSetSessionPinned(sessionId, pinned);
+      upsertSession({ sessionId, pinned: confirmed });
     } catch (e) {
       onToast?.(`置顶失败：${String(e).replace(/^Error:\s*/, "")}`);
     }
-  }, [allSessions, upsertSession, onToast]);
+  }, [upsertSession, onToast]);
 
   // Archive — EchoAgent-only state. The complete catalog retains the row for
   // Settings management, while the sidebar deliberately hides it immediately.
@@ -781,7 +782,7 @@ export function Sidebar({
       if (onArchiveSession) await onArchiveSession(sessionId, archived, cwd);
       else {
         const next = await agentSetSessionArchived(sessionId, archived);
-        if (session) upsertSession({ ...session, archived: next });
+        if (session) upsertSession({ sessionId, archived: next });
         useProjectsStore.getState().setSessionArchived(sessionId, next);
         onSessionArchived?.(sessionId, next);
         if (next) onToast?.("已归档，可在设置中恢复");
@@ -1159,7 +1160,9 @@ export function Sidebar({
               setTasksOpen(!tasksOpen);
             }}
           >
-            <span>任务 ({hasFilter ? `${filteredIndependent.length}/${scopedIndependentCount}` : scopedIndependentCount})</span>
+            <span title={sessionHistory?.hasMore ? "已加载的任务数量" : undefined}>
+              任务 ({hasFilter ? `${filteredIndependent.length}/${scopedIndependentCount}` : scopedIndependentCount})
+            </span>
             <ChevronDownIcon
               size="sm"
               className={"sidebar__chevron" + (tasksOpen ? "" : " sidebar__chevron--collapsed")}
@@ -1171,15 +1174,32 @@ export function Sidebar({
         {(tasksOpen || (!registerWindowNavigation && showEmptyTaskState)) && (
           <SidebarCatalogList section="tasks" catalog={catalog} label="任务列表">
             {filteredIndependent.length === 0 && scopedIndependentCount > 0 && (
-              <div className="sidebar__empty sidebar__empty--filter">无匹配筛选条件的任务</div>
+              <div className="sidebar__empty sidebar__empty--filter">{sessionHistory?.hasMore ? "已加载历史中没有匹配的任务" : "无匹配筛选条件的任务"}</div>
             )}
             {filteredIndependent.length === 0 && scopedIndependentCount === 0 && !sessionsLoading && (
               <div className={showEmptyTaskState ? "sidebar__empty-state" : "sidebar__empty"}>
-                {showEmptyTaskState ? <><strong>暂无任务</strong></> : "暂无任务"}
+                {sessionHistory?.hasMore ? "已加载历史中暂无任务" : showEmptyTaskState ? <strong>暂无任务</strong> : "暂无任务"}
               </div>
             )}
             {sortPinnedFirst(filteredIndependent).map((session) => renderConv(session))}
           </SidebarCatalogList>
+        )}
+        {tasksOpen && sessionHistory?.hasMore && (
+          <button type="button" className="sidebar__catalog-more sidebar__history-load"
+            disabled={sessionHistory.loading || sessionsLoading}
+            onClick={() => {
+              setCatalogSection("tasks");
+              sessionHistory.loadMore();
+            }}>
+            {sessionHistory.loading ? "正在加载历史…" : "加载更多历史"}
+          </button>
+        )}
+        {tasksOpen && sessionHistory?.incomplete && (
+          <div className="sidebar__empty sidebar__history-status">
+            <span role="status">部分历史暂未列出，可用搜索查找。</span>
+            <button type="button" className="btn btn--ghost" disabled={sessionsLoading}
+              onClick={sessionHistory.refresh}>刷新历史</button>
+          </div>
         )}
         </div>
 

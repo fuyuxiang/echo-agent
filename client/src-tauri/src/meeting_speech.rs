@@ -2,9 +2,9 @@ use super::{MeetingRecord, TranscriptSegment};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::Manager;
 
 #[path = "../meeting-speech/src/protocol.rs"]
@@ -21,8 +21,13 @@ static WORKER: Mutex<Option<Worker>> = Mutex::new(None);
 
 struct Worker {
     process: Child,
-    input: ChildStdin,
+    input: mpsc::Sender<WriteRequest>,
     output: mpsc::Receiver<Vec<u8>>,
+}
+
+struct WriteRequest {
+    bytes: Vec<u8>,
+    written: mpsc::Sender<std::io::Result<()>>,
 }
 
 impl Worker {
@@ -51,8 +56,12 @@ impl Worker {
             }
         }
         let mut command = Command::new(executable);
+        command.current_dir(models);
+        Self::spawn(command)
+    }
+
+    fn spawn(mut command: Command) -> Result<Self, String> {
         command
-            .current_dir(models)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
@@ -64,8 +73,20 @@ impl Worker {
         let mut process = command
             .spawn()
             .map_err(|error| format!("无法启动本地转写程序：{error}"))?;
-        let input = process.stdin.take().expect("piped stdin");
+        let mut stdin = process.stdin.take().expect("piped stdin");
         let stdout = process.stdout.take().expect("piped stdout");
+        let (input, requests) = mpsc::channel::<WriteRequest>();
+        std::thread::spawn(move || {
+            for request in requests {
+                if request
+                    .written
+                    .send(stdin.write_all(&request.bytes))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         let (sender, output) = mpsc::sync_channel(1);
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
@@ -95,26 +116,39 @@ impl Worker {
     }
 
     fn receive(&self, timeout: Duration) -> Result<Vec<u8>, String> {
-        self.output
-            .recv_timeout(timeout)
-            .map_err(|error| match error {
-                mpsc::RecvTimeoutError::Timeout => "本地转写运行超时，可重试".into(),
-                mpsc::RecvTimeoutError::Disconnected => "本地转写程序意外退出，可重试".into(),
-            })
+        self.output.recv_timeout(timeout).map_err(response_error)
     }
 
-    fn infer(&mut self, pcm: &[i16], context: usize) -> Result<Window, String> {
+    fn infer(&self, pcm: &[i16], context: usize, timeout: Duration) -> Result<Window, String> {
         let mut request = Vec::with_capacity(8 + pcm.len() * 2);
         request.extend_from_slice(&(context as u32).to_le_bytes());
         request.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
         for sample in pcm {
             request.extend_from_slice(&sample.to_le_bytes());
         }
+        // A stalled child can fill the pipe before we receive a reply. Time
+        // both phases so the caller can drop the worker and break the write.
+        let started = Instant::now();
+        let (written, write_result) = mpsc::channel();
         self.input
-            .write_all(&request)
+            .send(WriteRequest {
+                bytes: request,
+                written,
+            })
+            .map_err(|_| response_error(mpsc::RecvTimeoutError::Disconnected))?;
+        write_result
+            .recv_timeout(timeout.saturating_sub(started.elapsed()))
+            .map_err(response_error)?
             .map_err(|error| format!("提交本地转写失败：{error}"))?;
-        let line = self.receive(TIMEOUT)?;
+        let line = self.receive(timeout.saturating_sub(started.elapsed()))?;
         serde_json::from_slice::<Result<Window, String>>(&line).map_err(|_| "本地转写响应无效")?
+    }
+}
+
+fn response_error(error: mpsc::RecvTimeoutError) -> String {
+    match error {
+        mpsc::RecvTimeoutError::Timeout => "本地转写运行超时，可重试".into(),
+        mpsc::RecvTimeoutError::Disconnected => "本地转写程序意外退出，可重试".into(),
     }
 }
 
@@ -158,7 +192,7 @@ pub(super) async fn infer(
         if worker.is_none() {
             *worker = Some(Worker::start(&models)?);
         }
-        let result = worker.as_mut().unwrap().infer(&pcm, context);
+        let result = worker.as_ref().unwrap().infer(&pcm, context, TIMEOUT);
         if result.is_err() {
             *worker = None;
         }
@@ -460,6 +494,39 @@ pub(super) fn append_window(record: &mut MeetingRecord, start: u64, end: u64, wi
 mod tests {
     use super::*;
     use protocol::{Piece, Turn, Voice};
+
+    #[cfg(unix)]
+    #[test]
+    fn inference_times_out_when_the_worker_does_not_read_input() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf 'ready\\n'; exec /bin/sleep 8"]);
+        let mut worker = Worker::spawn(command).unwrap();
+
+        let failure = worker
+            .infer(&vec![1; MAX_WINDOW], 0, Duration::from_millis(250))
+            .unwrap_err();
+
+        assert!(failure.contains("超时"), "unexpected failure: {failure}");
+        assert!(worker.process.try_wait().unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inference_reads_a_reply_after_the_request_is_written() {
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "printf 'ready\\n'; /bin/dd bs=1 count=10 of=/dev/null 2>/dev/null && \
+             printf '%s\\n' '{\"Ok\":{\"pieces\":[],\"turns\":[],\"voices\":[]}}'",
+        ]);
+        let worker = Worker::spawn(command).unwrap();
+
+        let window = worker.infer(&[1], 0, Duration::from_secs(5)).unwrap();
+
+        assert!(window.pieces.is_empty());
+        assert!(window.turns.is_empty());
+        assert!(window.voices.is_empty());
+    }
 
     fn window(local: i32, vector: Vec<f32>, time: f32, text: &str) -> Window {
         Window {

@@ -9,13 +9,13 @@ import { startRendererHealth } from "./lib/renderer-recovery";
 import "./styles/index.css";
 
 async function bootstrap() {
-  await restoreUiBeforeBootstrap();
+  const restored = await restoreUiBeforeBootstrap();
   initializeTheme();
   applyFontSize(readFontSize());
   const { default: App } = await import("./App");
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <AppErrorBoundary>
-      <App />
+      <App uiRestoreDeferred={restored === "deferred"} />
       <GlobalTooltip />
     </AppErrorBoundary>
   );

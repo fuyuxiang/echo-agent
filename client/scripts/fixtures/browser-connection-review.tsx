@@ -10,6 +10,7 @@ const calls: {command:string;args:any}[] = [];
 const status = (sessionId = "browser-a") => ({
   sessionId,mode:"computer_use",paused:true,allowPrivateNetwork:false,browserRunning:false,browserHasData:true,revision:++revision,
   extensionConnected:connected,browser:{available:true},computer:{available:true,platform:"macos",screenCapture:true,inputControl:true},
+  browserPanel:{web:true,artifacts:true},isolatedBrowserAvailable:true,
   task:{phase:"paused",authorized:false,generation:1,scope:"查询浏览器中的资料",reason:"user_paused"},
   execution:{nativeIsolation:"process",backgroundInput:true,inputMode:"application_targeted_with_foreground_fallback",platform:"macos",fileDialog:true,windowClick:true,browserSource:source},
 });
@@ -24,7 +25,7 @@ transport.invoke = async (command:string,args:any={}) => {
     return {endpoint:`ws://127.0.0.1:12345/${"a".repeat(64)}`,extensionPath:`/Applications/${"浏览器扩展目录/".repeat(12)}browser-extension`,expiresInSeconds};
   }
   if(command==="automation_disconnect_browser"){connected=false;emit();return;}
-  if(command==="automation_use_isolated_browser"){source="isolated";connected=false;emit();return status(args.sessionId);}
+  if(command==="automation_use_isolated_browser"){source=args.source??"isolated";connected=false;emit();return status(args.sessionId);}
   if(command==="plugin:event|listen"&&args.event==="automation://status"){listeners.add(args.handler);return args.handler;}
   return original(command,args);
 };

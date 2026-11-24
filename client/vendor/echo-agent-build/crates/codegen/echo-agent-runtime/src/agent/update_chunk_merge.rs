@@ -396,6 +396,14 @@ fn merge_acp_chunks(
     acp::SessionNotification,
     Option<acp::SessionNotification>,
 ) {
+    let private = |notification: &acp::SessionNotification| {
+        notification.meta.as_ref()
+            .and_then(|meta| meta.get(crate::session::PRIVATE_MEMORY_LOOKUP_META))
+            .and_then(serde_json::Value::as_bool) == Some(true)
+    };
+    if private(&prev) != private(&new) {
+        return (true, prev, Some(new));
+    }
     let (new_session_id, new_update, new_meta) = (new.session_id, new.update, new.meta);
     let (prev_session_id, prev_update, prev_meta) = (prev.session_id, prev.update, prev.meta);
     match (prev_update, new_update) {

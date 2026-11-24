@@ -9,7 +9,6 @@ import { createServer } from 'node:http';
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
   realpathSync, statSync, unlinkSync, writeFileSync, createReadStream } from 'node:fs';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export const REQUIRED_LOCAL_CHECKS = Object.freeze({
@@ -42,7 +41,7 @@ export function localMeetingFixture(home, nonce, timestamp = Date.now()) {
     // metadata makes the production player available for the missing-file path.
     durationSeconds: 0.02, recordedSamples: 320, audioPath: join(home, 'meetings', id, '原生缺文件恢复.wav'),
     captureSource: 'imported', originalFileName: '显式隔离验收 fixture.wav', transcript: [], chunks: [],
-    live: { processedSamples: 0 }, minutesStale: false,
+    live: { processedSamples: 0 }, localSpeakers: { pending: [], recent: [], tracks: [] }, minutesStale: true,
     minutes: `# 显式隔离测试记录\n这是验收 fixture，未录音、未转写。${nonce}` };
 }
 export function verifyNativeLocalReport({ report, phase, home, nonce, pid, startedAt, previousExpected }) {
@@ -257,7 +256,7 @@ export async function runNativeLocalReview({ executable, resourceOnly = false } 
       result.binarySha256 = binaryHash.digest('hex');
       const launchEnv = { ...cleanNativeReviewEnvironment(process.env) };
       for (const name of Object.keys(launchEnv)) if (name.startsWith('ECHO_DESKTOP_REVIEW') || name.startsWith('ECHO_LOCAL_REVIEW')
-        || name.startsWith('ECHO_WEBDAV_REVIEW') || ['ECHO_AGENT_HOME', 'ECHO_DESKTOP_VALIDATION', 'ECHO_THEIA_NODE', 'NATIVE_REVIEW_SEED_CONFIG', 'NATIVE_REVIEW_AUDIO'].includes(name)) delete launchEnv[name];
+        || name.startsWith('ECHO_WEBDAV_REVIEW') || ['ECHO_AGENT_HOME', 'ECHO_DESKTOP_VALIDATION', 'NATIVE_REVIEW_SEED_CONFIG', 'NATIVE_REVIEW_AUDIO'].includes(name)) delete launchEnv[name];
       Object.assign(launchEnv, { GROK_HOME: legacy, ECHO_DESKTOP_REVIEW: '1', ECHO_DESKTOP_REVIEW_LOCAL: '1',
         ECHO_DESKTOP_REVIEW_MEDIA: '0', ECHO_DESKTOP_REVIEW_EXTENDED: '0', ECHO_LOCAL_REVIEW_MANIFEST: manifest,
         NO_PROXY: '127.0.0.1,localhost,::1', no_proxy: '127.0.0.1,localhost,::1' });
@@ -307,7 +306,7 @@ export async function runNativeLocalReview({ executable, resourceOnly = false } 
     phases: result.phases.length, errors: result.errors, serverStopped: result.serverStopped, output, home }));
   return result;
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   const args = process.argv.slice(2), resourceOnly = args.length === 1 && args[0] === '--resource-only';
   assert(resourceOnly || args.length === 1 && !args[0].startsWith('--'), 'Usage: node scripts/validate-native-local-review.mjs <built-executable> | --resource-only');
   const result = await runNativeLocalReview({ executable: resourceOnly ? undefined : args[0], resourceOnly });

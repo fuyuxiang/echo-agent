@@ -4,10 +4,14 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
+pub(crate) const MAX_DOCUMENT_FILE_BYTES: u64 = 50 * 1024 * 1024;
+pub(crate) const MAX_EDITABLE_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_DOCUMENT_RECORD_BYTES: u64 = 13 * 1024 * 1024;
+
 static DELETED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 fn owner_key(home: &Path, session: &str) -> String {
     format!("{}\0{session}", home.display())
@@ -74,7 +78,7 @@ pub fn read(home: &Path, id: &str) -> Result<Option<EditableDocument>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    let bytes = crate::shell_fs::read_regular_file_bounded(&path, 12 * 1024 * 1024)?;
+    let bytes = crate::shell_fs::read_regular_file_bounded(&path, MAX_DOCUMENT_RECORD_BYTES)?;
     let value: EditableDocument =
         serde_json::from_slice(&bytes).map_err(|e| format!("编辑稿记录损坏，原文件已保留：{e}"))?;
     if value.id != id {
@@ -93,7 +97,7 @@ pub fn write(home: &Path, value: &EditableDocument) -> Result<(), String> {
     }
     let path = store_path(home, &value.id)?;
     let bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
-    if bytes.len() > 12 * 1024 * 1024 {
+    if bytes.len() as u64 > MAX_DOCUMENT_RECORD_BYTES {
         return Err("文档历史记录超出保存范围".into());
     }
     let mut stage =
@@ -112,9 +116,9 @@ pub fn validate(document: &Value) -> Result<(), String> {
     if serde_json::to_vec(document)
         .map_err(|e| e.to_string())?
         .len()
-        > 2 * 1024 * 1024
+        > MAX_EDITABLE_DOCUMENT_BYTES
     {
-        return Err("文档内容超过 2 MiB".into());
+        return Err("可编辑文档内容超过 4 MiB，请拆分后重试".into());
     }
     fn node(
         value: &Value,
@@ -355,13 +359,42 @@ pub fn forget_session(home: &Path, session: &str) -> Result<(), String> {
         if path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
         }
-        let bytes = crate::shell_fs::read_regular_file_bounded(&path, 12 * 1024 * 1024)?;
+        let bytes = crate::shell_fs::read_regular_file_bounded(&path, MAX_DOCUMENT_RECORD_BYTES)?;
         let record: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         if record.get("sessionId").and_then(Value::as_str) == Some(session) {
             std::fs::remove_file(&path).map_err(|error| error.to_string())?;
         }
     }
     Ok(())
+}
+
+pub(crate) fn hash_document(mut reader: impl Read) -> Result<(String, u64), String> {
+    let mut reader = reader.by_ref().take(MAX_DOCUMENT_FILE_BYTES + 1);
+    let mut buffer = [0u8; 64 * 1024];
+    let mut hasher = Sha256::new();
+    let mut byte_size = 0;
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .map_err(|error| format!("计算文件摘要失败：{error}"))?;
+        if count == 0 {
+            break;
+        }
+        byte_size += count as u64;
+        if byte_size > MAX_DOCUMENT_FILE_BYTES {
+            return Err(format!("文件超过 {MAX_DOCUMENT_FILE_BYTES} 字节安全上限"));
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok((format!("{:x}", hasher.finalize()), byte_size))
+}
+
+pub(crate) fn file_hash(path: &Path) -> Result<(String, u64), String> {
+    let file = crate::shell_fs::open_regular_file_no_follow(path)?;
+    if file.metadata().map_err(|e| format!("读取失败：{e}"))?.len() > MAX_DOCUMENT_FILE_BYTES {
+        return Err(format!("文件超过 {MAX_DOCUMENT_FILE_BYTES} 字节安全上限"));
+    }
+    hash_document(file)
 }
 
 /// Publish without overwriting a file another application has just replaced.
@@ -372,16 +405,7 @@ pub fn install_revision(
     destination: &Path,
     expected_hash: &str,
 ) -> Result<(), String> {
-    let hash = |path: &Path| -> Result<String, String> {
-        Ok(format!(
-            "{:x}",
-            Sha256::digest(crate::shell_fs::read_regular_file_bounded(
-                path,
-                50 * 1024 * 1024
-            )?)
-        ))
-    };
-    if hash(destination)? != expected_hash {
+    if file_hash(destination)?.0 != expected_hash {
         return Err("DOCUMENT_EXTERNAL_CHANGE:原文件已修改，未覆盖".into());
     }
     let parent = destination.parent().ok_or("文档目录无效")?;
@@ -403,8 +427,8 @@ pub fn install_revision(
         })?;
         std::fs::remove_file(&backup).map_err(|error| error.to_string())
     };
-    let protected_hash = match hash(&backup) {
-        Ok(hash) => hash,
+    let protected_hash = match file_hash(&backup) {
+        Ok((hash, _)) => hash,
         Err(error) => {
             let rollback = restore();
             return Err(format!(
@@ -507,6 +531,34 @@ mod tests {
         assert_eq!(value.revision, revision + 1);
         assert_eq!(value.document, previous);
     }
+    #[test]
+    fn document_digest_covers_multiple_buffers_and_counts_actual_bytes() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("夹具.docx");
+        let bytes = "正文\n".repeat(20_000);
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            file_hash(&path).unwrap(),
+            (
+                format!("{:x}", Sha256::digest(bytes.as_bytes())),
+                bytes.len() as u64
+            )
+        );
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(MAX_DOCUMENT_FILE_BYTES + 1)
+            .unwrap();
+        assert!(file_hash(&path).unwrap_err().contains("超过"));
+    }
+
+    #[test]
+    fn document_digest_rejects_streams_growing_past_the_file_limit() {
+        let stream = std::io::repeat(0).take(MAX_DOCUMENT_FILE_BYTES + 1);
+        assert!(hash_document(stream).unwrap_err().contains("超过"));
+    }
+
     #[test]
     fn publishes_only_over_the_expected_file_and_preserves_external_edits() {
         let directory = tempfile::tempdir().unwrap();

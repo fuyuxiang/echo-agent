@@ -12,8 +12,8 @@ const evidence = [];
 const maxFont = 16 * 18 / 13;
 let browser;
 
-async function inspect(page, name, coding = false) {
-  const geometry = await page.locator(".question-inline").evaluate((card, coding) => {
+async function inspect(page, name) {
+  const geometry = await page.locator(".question-inline").evaluate(card => {
     const rect = element => {
       const { x, y, right, bottom, width, height } = element.getBoundingClientRect();
       return { x, y, right, bottom, width, height };
@@ -22,27 +22,20 @@ async function inspect(page, name, coding = false) {
     return {
       card: rect(card), body: rect(body), header: rect(card.querySelector(".question-inline__head")),
       footer: rect(card.querySelector(".question-inline__footer")),
-      composer: rect(document.querySelector(coding ? ".echo-theia-agent__composer" : ".echo-composer")),
-      sessionHeader: rect(document.querySelector(coding ? ".coding-workbench__topbar" : ".session-header")),
-      interaction: coding ? rect(card.closest(".coding-agent__interaction")) : null,
+      composer: rect(document.querySelector(".echo-composer")),
+      sessionHeader: rect(document.querySelector(".session-header")),
       overflow: document.documentElement.scrollWidth > innerWidth + 1 || card.scrollWidth > card.clientWidth + 1 || body.scrollWidth > body.clientWidth + 1,
       options: [...card.querySelectorAll(".question-inline__option")].map(rect),
       actions: [...card.querySelectorAll(".question-inline__actions button")].map(rect),
       headerActions: [...card.querySelectorAll(".question-inline__head button")].map(element => ({ label: element.getAttribute("aria-label"), ...rect(element) })),
       progress: [...card.querySelectorAll(".question-inline__timeout, .question-inline__navigation")].map(rect),
     };
-  }, coding);
+  });
   const { card, body, header, footer, composer, sessionHeader, options, actions } = geometry;
   const context = `${name}: ${JSON.stringify(geometry)}`;
   assert.ok(!geometry.overflow, `horizontal overflow: ${context}`);
-  if (coding) {
-    const { interaction } = geometry;
-    assert.ok(card.y >= interaction.y && card.bottom <= interaction.bottom + 1, `card clipped by the coding interaction: ${context}`);
-    assert.ok(body.height >= 120, `coding question must leave readable body space: ${context}`);
-  } else {
-    assert.ok(Math.abs(card.x - composer.x) < 1 && Math.abs(card.right - composer.right) < 1, `card must align with composer: ${context}`);
-    assert.ok(composer.y - card.bottom >= 8 && composer.y - card.bottom <= 16, `inconsistent card/composer gap: ${context}`);
-  }
+  assert.ok(Math.abs(card.x - composer.x) < 1 && Math.abs(card.right - composer.right) < 1, `card must align with composer: ${context}`);
+  assert.ok(composer.y - card.bottom >= 8 && composer.y - card.bottom <= 16, `inconsistent card/composer gap: ${context}`);
   assert.ok(card.y >= sessionHeader.bottom - 1 && card.bottom < composer.y, `card clips the session header or composer: ${context}`);
   assert.ok(header.bottom <= body.y + 1 && body.bottom <= footer.y + 1, `body overlaps fixed header/footer: ${context}`);
   assert.ok(actions.every(action => action.x >= card.x && action.right <= card.right && action.bottom <= card.bottom && action.height >= 32), `actions clipped or too small: ${context}`);
@@ -131,39 +124,6 @@ try {
   assert.equal(await card.getByRole("button", { name: "提交", exact: true }).isEnabled(), true);
   await inspect(page, "question-submit-error");
 
-  // The shared card must also work inside the real resizable coding pane,
-  // including the wider countdown text in its final minute and plan actions.
-  const codingBase = base.replace("surface=workbench", "surface=coding-question");
-  const heldDraft = "确认后继续使用的开发草稿\n".repeat(12);
-  await page.evaluate(text => localStorage.setItem(`echo-coding-followup-v1:${encodeURIComponent("/review/EchoAgent")}:question-review`, text), heldDraft);
-  await page.setViewportSize({ width: 1024, height: 680 });
-  for (const width of [300, 350, 410]) for (const theme of ["light", "dark"]) for (const font of [16, maxFont]) {
-    await page.goto(`${codingBase}&panelWidth=${width}&theme=${theme}&questionVariant=ending&questionMode=plan`);
-    const card = page.locator(".question-inline");
-    await card.waitFor();
-    await page.evaluate(font => { document.documentElement.style.fontSize = `${font}px`; }, font);
-    await inspect(page, `coding-question-${width}-${theme}-${font.toFixed(2)}`, true);
-    const composerInput = page.getByRole("textbox", { name: "补充开发要求", exact: true });
-    assert.equal(await composerInput.isDisabled(), true);
-    assert.equal(await composerInput.inputValue(), heldDraft, "a pending question must retain the existing coding draft");
-    await card.locator(".question-inline__option").first().click();
-    await card.getByRole("button", { name: "下一步", exact: true }).click();
-    await card.getByRole("button", { name: "上一题", exact: true }).click();
-    assert.equal(await card.locator(".question-inline__option").first().getAttribute("aria-pressed"), "true");
-    const cancel = card.getByRole("button", { name: "取消", exact: true });
-    assert.equal(await cancel.evaluate(element => {
-      const box = element.getBoundingClientRect();
-      return element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
-    }), true, "cancel must be directly clickable without scrolling the card horizontally");
-    await cancel.click();
-    await card.waitFor({ state: "hidden" });
-    const calls = await page.evaluate(() => window.workbenchCalls.filter(call => call.command === "agent_resolve_question"));
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].args.outcome, "cancelled");
-    assert.equal(await composerInput.isEnabled(), true);
-    assert.equal(await composerInput.inputValue(), heldDraft, "resolving the question must restore the held draft");
-    assert.ok(await composerInput.evaluate(element => element.getBoundingClientRect().height >= 88), "the draft must regain its normal reading height after resolution");
-  }
   assert.deepEqual(errors, [], "question surfaces must not have page errors");
   writeFileSync(join(output, "report.json"), JSON.stringify({ passed: true, evidence }, null, 2));
   console.log(`Question UI passed: ${evidence.length} layouts, navigation, answer retention, submission, expiry and retry.`);

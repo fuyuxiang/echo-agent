@@ -307,7 +307,9 @@ window.__echoNativeBrowserReview = async ({ home, nonce } = {}) => {
         const result = await turn(null, `BROWSER-SUBMITTED-${nonce}`);
         assert(report.approvals.filter(item => item.approved && item.action === 'browser_type').length === 1
           && report.approvals.filter(item => item.approved && item.action === 'browser_click').length === 2, 'Exactly the input/submit/download approvals required');
-        await call('write_text_file', { path: 'browser-download-ready.json', content: JSON.stringify({ nonce, sessionId }), workspaceRoot: scope.cwd });
+        const browserSource = (await call('automation_status', { sessionId })).execution?.browserSource;
+        assert(browserSource === 'panel' || browserSource === 'isolated', 'Actual task browser backend is missing');
+        await call('write_text_file', { path: 'browser-download-ready.json', content: JSON.stringify({ nonce, sessionId, browserSource }), workspaceRoot: scope.cwd });
         const proof = await wait(async () => { try { const data = JSON.parse(await call('read_text_file', { path: `${scope.cwd}/browser-download-proof.json`, cwd: scope.cwd, maxBytes: 8192 }));
           assert(data.nonce === nonce && data.sessionId === sessionId && data.passed, 'Physical download rejected'); return data;
         } catch (error) { if (/Physical download rejected/.test(String(error))) throw error; return null; } }, 'independent parent physical download proof');

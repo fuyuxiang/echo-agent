@@ -9,16 +9,6 @@ import path from "node:path";
 const HOST = "127.0.0.1";
 const PORT = 1420;
 
-// `process.env.VITEST` is set by vitest before vite evaluates the config
-// file, so we can scope the monaco-editor alias to tests only and leave the
-// production `dev` / `build` modes resolving the package through vite's
-// normal `module`-field lookup.
-const isVitest = String(process.env.VITEST) === "true";
-const monacoEditorEntry = path.resolve(
-  __dirname,
-  "node_modules/monaco-editor/esm/vs/editor/editor.main.js",
-);
-
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
@@ -29,22 +19,6 @@ export default defineConfig({
       { find: /^@apollo-design\/docx-preview$/, replacement: path.resolve(__dirname, "node_modules/@apollo-design/docx-preview/dist/docx-preview.mjs") },
       // Mirror EchoAgent's `@` alias so ported components resolve unchanged.
       { find: "@", replacement: path.resolve(__dirname, "src") },
-      // Only needed in vitest: monaco-editor 0.52 ships no `exports`
-      // field, so vite's bare-specifier resolver fails to find the entry.
-      // Production builds resolve through the package's `module` field
-      // (esm/vs/editor/editor.main.js), which also pulls in the five
-      // built-in language contributions (basic-languages / css / html /
-      // json / typescript). Tests pin the same file so behavior matches.
-      // `monaco-editor/esm/...` deep paths are left untouched so vite's
-      // `?worker` plugin can still process them.
-      ...(isVitest
-        ? [
-            {
-              find: /^monaco-editor$/,
-              replacement: monacoEditorEntry,
-            },
-          ]
-        : []),
     ],
   },
   // Tauri webview can't reach a host-relative absolute URL during dev
@@ -63,7 +37,7 @@ export default defineConfig({
     strictPort: true,
     // Tauri waits for this string before launching the webview.
     watch: {
-      ignored: ["**/src-tauri/**", "**/vendor/theia-platform/**"],
+      ignored: ["**/src-tauri/**"],
     },
   },
   // Produce asset URLs that work from the tauri:// or file:// origin
@@ -89,7 +63,6 @@ export default defineConfig({
             "rehype-katex",
           ],
           mermaid: ["mermaid"],
-          monaco: ["monaco-editor", "@monaco-editor/react"],
         },
       },
     },

@@ -1202,11 +1202,12 @@ pub(crate) async fn read_mcp_resource(
         )
     };
 
+    client.check_dispatch().map_err(|error| error.to_string())?;
     let mcp_service = client
         .ensure_initialized()
         .await
         .map_err(|e| format!("MCP init failed: {}", e))?;
-    check_tool_dispatch(server_name).map_err(|error| error.to_string())?;
+    client.check_dispatch().map_err(|error| error.to_string())?;
 
     let result = mcp_service
         .read_resource(rmcp::model::ReadResourceRequestParams::new(uri))
@@ -1302,7 +1303,7 @@ impl echo_agent_tools::types::resources::McpResourceProvider for McpStateResourc
 
         let mut resources = Vec::new();
         for (server_name, client) in clients {
-            if let Err(error) = check_tool_dispatch(&server_name) {
+            if let Err(error) = client.check_dispatch() {
                 if server.is_some() {
                     return Err(error.to_string());
                 }
@@ -1319,7 +1320,7 @@ impl echo_agent_tools::types::resources::McpResourceProvider for McpStateResourc
                     continue;
                 }
             };
-            if let Err(error) = check_tool_dispatch(&server_name) {
+            if let Err(error) = client.check_dispatch() {
                 if server.is_some() {
                     return Err(error.to_string());
                 }
@@ -1370,11 +1371,12 @@ impl echo_agent_tools::types::resources::McpResourceProvider for McpStateResourc
             )
         };
 
+        client.check_dispatch().map_err(|error| error.to_string())?;
         let mcp_service = client
             .ensure_initialized()
             .await
             .map_err(|e| format!("MCP init failed: {e}"))?;
-        check_tool_dispatch(&server).map_err(|error| error.to_string())?;
+        client.check_dispatch().map_err(|error| error.to_string())?;
 
         let result = mcp_service
             .read_resource(rmcp::model::ReadResourceRequestParams::new(uri.clone()))
@@ -1728,6 +1730,8 @@ struct McpToggleRequest {
     enabled: bool,
     #[serde(default)]
     all_sessions: bool,
+    #[serde(default)]
+    revoked_user_instances_only: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -1787,7 +1791,11 @@ async fn toggle_all_local_sessions(agent: &MvpAgent, req: McpToggleRequest) -> E
         HashMap::new()
     };
     let mut configs = state.configs.clone();
-    configs.retain(|server| mcp_server_name(server) != req.server_name);
+    configs.retain(|server| {
+        mcp_server_name(server) != req.server_name
+            || (req.revoked_user_instances_only
+                && !echo_agent_mcp::servers::is_revoked_user_mcp_server(server))
+    });
     configs.extend(resolved.get(agent.launch_cwd()).cloned());
     configs.sort_by(|a, b| mcp_server_name(a).cmp(mcp_server_name(b)));
     state.update_configs_diff(configs);
@@ -1804,6 +1812,9 @@ async fn toggle_all_local_sessions(agent: &MvpAgent, req: McpToggleRequest) -> E
             // must not inherit a config resolved in another workspace.
             if req.enabled && config.is_none() {
                 return Ok(());
+            }
+            if req.revoked_user_instances_only {
+                return handle.remove_revoked_user_mcp_server(name).await;
             }
             handle
                 .toggle_mcp_server_session_scoped(name, req.enabled, config)
@@ -1823,6 +1834,9 @@ async fn toggle_all_local_sessions(agent: &MvpAgent, req: McpToggleRequest) -> E
 
 async fn handle_toggle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let req = parse_params::<McpToggleRequest>(args)?;
+    if req.revoked_user_instances_only && (req.enabled || !req.all_sessions) {
+        return Err(acp::Error::invalid_params().data("revoked_user_instances_only requires global removal"));
+    }
     if req.all_sessions {
         return toggle_all_local_sessions(agent, req).await;
     }

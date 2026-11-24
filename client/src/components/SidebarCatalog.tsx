@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 
 export type CatalogSection = "tasks" | "projects" | "groups";
 
@@ -39,7 +40,12 @@ export function useSidebarCatalog() {
     const schedule = () => {
       if (timer === undefined) timer = window.setTimeout(measure, 0);
     };
-    const resize = new ResizeObserver(schedule);
+    const resize = new ResizeObserver(() => {
+      // Width changes can rewrap rows above another section. Update the
+      // preview heights before paint so the lower section doesn't jump a frame later.
+      window.clearTimeout(timer);
+      flushSync(measure);
+    });
     const mutations = new MutationObserver(schedule);
 
     const measure = () => {
@@ -63,6 +69,10 @@ export function useSidebarCatalog() {
         if (heading) {
           targets.add(heading);
           space -= outerHeight(heading);
+        }
+        for (const footer of section.querySelectorAll(":scope > .sidebar__history-load, :scope > .sidebar__history-status")) {
+          targets.add(footer);
+          space -= outerHeight(footer);
         }
         targets.add(rows);
         const id = list.dataset.catalogList as CatalogSection;

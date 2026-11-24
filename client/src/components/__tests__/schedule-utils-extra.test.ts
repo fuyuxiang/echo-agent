@@ -132,7 +132,7 @@ describe("draftFromAutomation / automationFromDraft round-trip", () => {
       id: "a1",
       name: "测试任务",
       prompt: "做点事",
-      cwds: "/home",
+      cwds: ["/home"],
       status: "ACTIVE",
       modelId: "gpt-4",
       modelIsThinking: true,
@@ -168,7 +168,7 @@ describe("draftFromAutomation / automationFromDraft round-trip", () => {
 
   it("automationFromDraft 无 existing 时 createdAt 为空", () => {
     const draft = buildDraft(undefined, "/workspace/project");
-    expect(draft.cwds).toBe("/workspace/project");
+    expect(draft.cwds).toEqual(["/workspace/project"]);
     draft.name = "新任务";
     const result = automationFromDraft(draft);
     expect(result.createdAt).toBe("");

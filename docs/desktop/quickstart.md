@@ -53,4 +53,4 @@ flowchart TD
 
 ## 下一步
 
-阅读[任务与权限](tasks-permissions.md)，再按需进入[代码工作台](coding.md)、[办公文档](knowledge-memory.md)或[电脑操作](automation.md)。
+阅读[任务与权限](tasks-permissions.md)，再按需了解[代码任务与文件变更](coding.md)、[办公文档](knowledge-memory.md)或[电脑操作](automation.md)。

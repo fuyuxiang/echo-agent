@@ -2,14 +2,32 @@ import { cleanNativeReviewEnvironment } from "./lib/native-review-isolation.mjs"
 import { nativeReviewOutput } from './lib/native-review-output.mjs';
 // Real packaged application lifecycle review; no default profile or OS item.
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { join, resolve, dirname } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
+// Session creation requires a configured route. This lifecycle fixture never
+// sends a prompt, so a closed loopback endpoint is sufficient.
+const offlineRuntimeConfig = `
+[models]
+default = "exit-review/offline"
+[model_providers.exit-review]
+provider_kind = "custom"
+base_url = "https://127.0.0.1:9/v1"
+api_key = "synthetic-exit-review-only"
+api_backend = "chat_completions"
+auth_scheme = "bearer"
+[model."exit-review/offline"]
+model = "offline"
+model_provider = "exit-review"
+[marketplace]
+official_marketplace_auto_installed = true
+[features]
+remote_fetch = false
+`;
 const required = {
   'init-failure': ['native-exit-isolation', 'native-init-failure-visible', 'native-no-recording', 'native-init-failure-graceful-request'],
   'flush-failure': ['native-exit-isolation', 'native-dirty-plan-update', 'native-save-failure-retained', 'native-runtime-recovered', 'native-final-graceful-request'],
@@ -32,7 +50,9 @@ export function verifyNativeExitReport({ report, scope, pid, startedAt, exitCode
   const evidence = (id) => report.checks.find((check) => check.id === id).evidence;
   if (scope.phase === 'init-failure') {
     const failure = evidence('native-init-failure-visible');
-    assert.match(failure.error, /初始化失败/);
+    assert.match(failure.error, /^初始化未完成：/);
+    assert.match(failure.error, /synthetic-invalid-runtime-memory-type/);
+    assert.match(failure.error, /重试初始化/);
     assert.equal(failure.context.hasRuntimeSender, false); assert.equal(failure.context.hasInitOutcome, false);
     assert.equal(evidence('native-no-recording').count, 0);
     assert.equal(typeof evidence('native-no-recording').listenerReadyObserved, 'boolean');
@@ -103,9 +123,16 @@ export async function runNativeExitReview(executableArgument) {
   const executable = realpathSync(resolve(executableArgument)); assert(lstatSync(executable).isFile());
   const output = nativeReviewOutput('native-exit', 'NATIVE_EXIT_REVIEW_OUTPUT');
   const result = { kind: 'real packaged native exit recovery review', executable, executableSha256: hash(readFileSync(executable)), output, phases: [], errors: [], nativeVerified: false, passed: false };
-  let active, faultDirectory, faultMode;
+  let active, planFault;
+  const repairPlan = () => {
+    if (!planFault) return;
+    const { path, backup } = planFault;
+    rmdirSync(path);
+    if (backup) renameSync(backup, path);
+    planFault = undefined;
+  };
   const clean = async () => {
-    if (faultDirectory) { chmodSync(faultDirectory, faultMode); faultDirectory = undefined; }
+    repairPlan();
     if (active && !active.child.exitReviewSpawnError && active.child.exitCode === null && active.child.signalCode === null) {
       active.child.kill('SIGTERM'); await Promise.race([active.exited, delay(5000, undefined, { ref: false })]);
       if (active.child.exitCode === null) { active.child.kill('SIGKILL'); await active.exited; }
@@ -127,11 +154,11 @@ export async function runNativeExitReview(executableArgument) {
       // A syntax-corrupt file is quarantined by the real desktop reader.
       // Keep valid TOML with an invalid Runtime field type so init must fail.
       if (phase === 'init-failure') writeFileSync(join(home, 'config.toml'), "memory = 'synthetic-invalid-runtime-memory-type'\n", { mode: 0o600 });
-      if (phase === 'flush-failure') writeFileSync(join(home, 'config.toml'), '', { mode: 0o600 });
+      if (phase === 'flush-failure') writeFileSync(join(home, 'config.toml'), offlineRuntimeConfig, { mode: 0o600 });
       const reportPath = join(home, 'native-review.json');
       const beforeHash = existsSync(reportPath) ? hash(readFileSync(reportPath)) : null;
       const env = { ...cleanNativeReviewEnvironment(process.env) };
-      for (const key of Object.keys(env)) if (key.startsWith('ECHO_DESKTOP_REVIEW') || key.startsWith('ECHO_EXIT_REVIEW') || ['ECHO_AGENT_HOME', 'ECHO_DESKTOP_VALIDATION', 'ECHO_THEIA_NODE', 'GROK_AUTH', 'GROK_AUTH_PATH'].includes(key)) delete env[key];
+      for (const key of Object.keys(env)) if (key.startsWith('ECHO_DESKTOP_REVIEW') || key.startsWith('ECHO_EXIT_REVIEW') || ['ECHO_AGENT_HOME', 'ECHO_DESKTOP_VALIDATION', 'GROK_AUTH', 'GROK_AUTH_PATH'].includes(key)) delete env[key];
       Object.assign(env, { GROK_HOME: legacy, ECHO_DESKTOP_REVIEW: '1', ECHO_DESKTOP_REVIEW_EXIT: '1', ECHO_EXIT_REVIEW_PHASE: phase, ECHO_EXIT_REVIEW_MANIFEST: manifest });
       const startedAt = Date.now();
       const child = spawn(executable, ['--data-home', home], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -147,19 +174,36 @@ export async function runNativeExitReview(executableArgument) {
           const ready = await wait(() => existsSync(readyPath) && readJson(readyPath, home), 'real new session', child);
           assert.equal(ready.nonce, scope.nonce); assert.equal(ready.cwd, cwd);
           scope.createdSessionId = ready.sessionId;
-          faultDirectory = sessionDirectory(home, ready.sessionId); faultMode = lstatSync(faultDirectory).mode & 0o777;
-          const planBefore = join(faultDirectory, 'plan_mode.json');
-          physicalBefore = { directory: faultDirectory, mode: faultMode, state: existsSync(planBefore) ? readJson(planBefore, home).state : null };
+          const directory = sessionDirectory(home, ready.sessionId);
+          const planBefore = join(directory, 'plan_mode.json');
+          const existing = existsSync(planBefore);
+          physicalBefore = { directory, state: existing ? readJson(planBefore, home).state : null, fault: 'plan path occupied by a directory' };
           assert.notEqual(physicalBefore.state, 'Pending', 'Session was already dirty before the production action');
-          chmodSync(faultDirectory, 0o000);
-          assert.throws(() => readFileSync(join(faultDirectory, 'summary.json')), /EACCES|permission denied/i, 'Real directory restriction must prevent persistence access');
+          // The Runtime can reapply owner-only permissions during persistence.
+          // A directory occupying the plan file path forces its atomic rename
+          // to fail until this driver repairs that exact path.
+          const backup = existing ? join(directory, `plan-before-${scope.nonce}.json`) : undefined;
+          if (backup) renameSync(planBefore, backup);
+          try { mkdirSync(planBefore, { mode: 0o700 }); }
+          catch (error) {
+            if (backup) renameSync(backup, planBefore);
+            throw error;
+          }
+          planFault = { path: planBefore, backup };
+          const probe = join(directory, `plan-probe-${scope.nonce}.tmp`);
+          writeFileSync(probe, 'synthetic write probe', { flag: 'wx', mode: 0o600 });
+          try {
+            assert.throws(() => renameSync(probe, planBefore), { code: 'EISDIR' });
+          } finally { unlinkSync(probe); }
           writeJson(join(cwd, 'exit-control.json'), { nonce: scope.nonce, stage: 'fault-applied', sessionId: ready.sessionId });
           const failedPath = join(cwd, 'exit-failed-ready.json');
-          const failed = await wait(() => existsSync(failedPath) && readJson(failedPath, home), 'actual failed graceful exit', child);
+          // The native exit and its automatic recovery can each use the
+          // Runtime's full 60-second save window while the fault is held.
+          const failed = await wait(() => existsSync(failedPath) && readJson(failedPath, home), 'actual failed graceful exit', child, 155000);
           assert.equal(failed.nonce, scope.nonce); assert.equal(failed.sessionId, ready.sessionId);
           assert.equal(child.exitCode, null); assert.equal(failed.context.hasRuntimeHandle, true); assert.equal(failed.context.lifecycle.exitReady, false);
           assert(existsSync(join(cwd, 'exit-dirty-ready.json')), 'Faulted session was never dirtied');
-          chmodSync(faultDirectory, faultMode); faultDirectory = undefined;
+          repairPlan();
           writeJson(join(cwd, 'exit-control.json'), { nonce: scope.nonce, stage: 'permissions-restored', sessionId: ready.sessionId });
           homes['flush-failure'] = { home, nonce: scope.nonce, sessionId: ready.sessionId };
           delete scope.createdSessionId;
@@ -188,7 +232,7 @@ export async function runNativeExitReview(executableArgument) {
   return result;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   assert.equal(process.argv.length, 3, 'Usage: node scripts/validate-native-exit-recovery-review.mjs <packaged-executable>');
   const result = await runNativeExitReview(process.argv[2]); if (!result.passed) process.exitCode = 1;
 }

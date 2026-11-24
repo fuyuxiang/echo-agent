@@ -352,6 +352,20 @@ impl RelocationStorage {
         Ok(())
     }
 
+    pub(crate) fn recover_if_pending(&self, session_id: &str) -> Result<()> {
+        match self.read_journal(session_id) {
+            Err(RelocationError::JournalMissing(_)) => return Ok(()),
+            result => { result?; }
+        }
+        let lease = self.acquire(session_id)?;
+        // Another process can finish recovery between the first read and the lease.
+        match self.recover(&lease) {
+            Ok((_, terminal)) => self.finalize_terminal(&lease, &terminal),
+            Err(RelocationError::JournalMissing(_)) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     pub(crate) fn authority(&self, session_id: &str) -> Result<RelocationAuthority> {
         let journal = self.read_journal(session_id)?;
         let cwd = if has_target_authority(journal.phase) {

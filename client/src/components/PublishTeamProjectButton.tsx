@@ -135,6 +135,12 @@ export function PublishTeamProjectButton({ project, onPublished, onLinked, colla
       }
       identity.assertCurrent();
       const targetId = value.projectId;
+      try {
+        await useProjectsStore.getState().linkSharedProject(project.id, account, targetId);
+      } catch (error) {
+        throw new Error(`共享项目已建立，本机关联尚未保存。请重试以继续共享。${String(error)}`);
+      }
+      identity.assertCurrent();
       if (mounted.current && currentKey.current === key) await callbacks.current.onLinked?.(targetId);
       try {
         // Re-read durable links after every await. Sharing from another surface

@@ -1,39 +1,17 @@
-# Coding workspace
+# Code tasks and file changes
 
-**Scope: Desktop Echo Code.** The workspace combines Agent conversations with an embedded Theia IDE offering a file tree, editor, search, terminal, Git, previews, and change review.
+An EchoAgent conversation can read and change files in an authorized working folder. Code tasks use the same model selection, tool activity, and approvals as other conversations.
 
-## Start a coding task
+## Start a code task
 
-1. Select and authorize the actual project directory.
-2. Open the coding workspace and inspect files and Git status.
-3. Describe the issue, allowed scope, and verification commands.
-4. Inspect the plan, execution, Diff, and verification results.
+1. Choose the folder containing your code, a model, and a permission mode on the home screen.
+2. Describe the change, the behavior to preserve, and how to verify it.
+3. Follow tool activity. When prompted for approval, check the operation and target folder.
 
-Example:
+For example, ask the agent to fix a known issue, add the relevant tests, and report the changed files and test results. Prepare project interpreters, compilers, and dependencies on the machine that hosts the working folder.
 
-> Fix duplicate form submission while preserving current interaction behavior. Inspect tests and uncommitted changes first. Modify only relevant logic, run appropriate checks, and describe what was verified.
+## Review changes and results
 
-Inspect pre-existing changes before starting. Review the actual Diff to establish the scope of generated changes.
+Open the file-changes panel in the conversation to review diffs, or inspect current files in the workspace file tree. Check the actual test output and any failures. If the work needs another pass, follow up in the same conversation.
 
-## Understand the stages
-
-The workspace organizes analysis, planning, implementation, verification, and delivery. Change sets summarize affected files, verification records show checks that ran, and delivery reports explain outcomes and remaining issues. Use stage information together with check results.
-
-The IDE provides interactive editing. The embedded engine performs reasoning and tool execution. The host coordinates their workspace, changes, and state. IDE terminals run as the current OS user. Prepare project compilers, interpreters, dependencies, and services separately.
-
-## Verify and deliver
-
-| Check | Evidence |
-| --- | --- |
-| Scope matches the request | Actual Diff and affected files |
-| Existing work is preserved | Initial Git status and uncommitted changes |
-| The issue is fixed | Relevant tests, builds, or reproducible behavior |
-| Delivery is ready | Consistent artifacts, verification, and open issues |
-
-Checkpoints and change review help recovery and comparison; keep project version control and data backups as well.
-
-## Connection recovery
-
-The application attempts to verify and reconnect the local IDE backend. If edits are unsaved or their state is uncertain, preserve the page and copy important content before reconnecting manually. Changing projects restarts the relevant backend.
-
-See [Troubleshooting](operations.md) and [Desktop architecture](../concepts/desktop-architecture.md).
+[Tasks, sessions, and permissions](tasks-permissions.md) · [Data management and recovery](operations.md)

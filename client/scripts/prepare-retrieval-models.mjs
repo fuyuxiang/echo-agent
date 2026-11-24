@@ -108,7 +108,7 @@ export async function prepareModels({ directory = defaultDirectory, source, chec
   } finally { await rm(lock, { recursive: true, force: true }); }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   try {
     const args = process.argv.slice(2);
     const value = flag => { const i = args.indexOf(flag); if (i < 0) return undefined; if (!args[i + 1] || args[i + 1].startsWith("--")) throw new Error(`${flag} 需要路径`); return resolve(args[i + 1]); };

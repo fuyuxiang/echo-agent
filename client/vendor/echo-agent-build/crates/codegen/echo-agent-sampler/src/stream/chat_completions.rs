@@ -10,8 +10,8 @@ use futures_util::StreamExt;
 use futures_util::stream::{BoxStream, Stream};
 
 use echo_agent_sampling_types::{
-    AssistantItem, ChatCompletionChunk, ConversationItem, ConversationResponse,
-    ResponseModelMetadata, SamplingError, StopReason, TokenUsage, ToolCall,
+    AssistantItem, ChatChunkChoice, ChatCompletionChunk, ConversationItem, ConversationResponse,
+    FinishReason, ResponseModelMetadata, SamplingError, StopReason, TokenUsage, ToolCall,
 };
 
 use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
@@ -21,6 +21,47 @@ use crate::types::RequestId;
 /// Stable prefix used by the request actor to recognize the one class of
 /// stream failure that can be recovered safely by disabling parallel tools.
 pub(crate) const AMBIGUOUS_PARALLEL_TOOL_STREAM: &str = "模型服务返回的并行工具调用缺少稳定标识";
+
+/// Select the first wire choice and keep its terminal reason immutable.
+#[derive(Default)]
+pub(crate) struct ChatChoiceState {
+    selected_index: Option<u32>,
+    pub(crate) finish_reason: Option<FinishReason>,
+    pub(crate) saw_finish_reason: bool,
+}
+
+impl ChatChoiceState {
+    pub(crate) fn observe(&mut self, choice: &ChatChunkChoice) -> Result<bool, SamplingError> {
+        self.saw_finish_reason |= choice.finish_reason.is_some();
+        if choice.index != *self.selected_index.get_or_insert(choice.index) {
+            return Ok(false);
+        }
+        if let Some(previous) = self.finish_reason {
+            let delta = &choice.delta;
+            let has_output = delta.content.as_ref().is_some_and(|text| !text.is_empty())
+                || delta
+                    .reasoning_content
+                    .as_ref()
+                    .is_some_and(|text| !text.is_empty())
+                || !delta.tool_calls.is_empty();
+            if has_output
+                || choice
+                    .finish_reason
+                    .is_some_and(|reason| reason != previous)
+            {
+                return Err(SamplingError::ChatStreamInterrupted {
+                    detail:
+                        "Chat Completions sent conflicting data after the selected choice finished"
+                            .into(),
+                    retryable: false,
+                });
+            }
+        } else {
+            self.finish_reason = choice.finish_reason;
+        }
+        Ok(true)
+    }
+}
 
 fn next_tool_slot(preferred: Option<u32>, calls: &BTreeMap<u32, (String, String, String)>) -> u32 {
     if let Some(preferred) = preferred
@@ -159,13 +200,12 @@ pub fn stream_chat_completions<'a>(
         // Per-response accumulators
         let mut first_chunk_seen = false;
         let mut first_choice_seen = false;
-        let mut selected_choice_index: Option<u32> = None;
+        let mut choices = ChatChoiceState::default();
         let mut first_token_emitted = false;
         let mut model: String = String::new();
         let mut model_fingerprint: Option<String> = None;
         let mut usage: Option<TokenUsage> = None;
         let mut cost_usd_ticks: Option<i64> = None;
-        let mut finish_reason: Option<StopReason> = None;
 
         let mut content_acc = String::new();
         let mut reasoning_acc = String::new();
@@ -211,6 +251,7 @@ pub fn stream_chat_completions<'a>(
             let next = match tokio::time::timeout(idle_timeout, stream.next()).await {
                 Ok(Some(next)) => next,
                 Ok(None) => break, // stream ended normally
+                Err(_) if choices.finish_reason.is_some() => break, // the optional trailer stalled
                 Err(_elapsed) => {
                     let err = SamplingError::IdleTimeout {
                         elapsed_secs: idle_timeout.as_secs(),
@@ -258,21 +299,19 @@ pub fn stream_chat_completions<'a>(
             let mut chunk_has_content = false;
 
             for choice in chunk.choices.into_iter() {
-                if let Some(selected) = selected_choice_index {
-                    if choice.index != selected {
-                        tracing::debug!(
-                            selected_choice_index = selected,
-                            ignored_choice_index = choice.index,
-                            "ignoring an alternate chat-completion choice"
-                        );
-                        continue;
+                match choices.observe(&choice) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        yield SamplingEvent::Failed {
+                            request_id: request_id.clone(),
+                            error: SamplingErrorInfo::from(&error),
+                        };
+                        return;
                     }
-                } else {
-                    selected_choice_index = Some(choice.index);
                 }
                 first_choice_seen = true;
-                if let Some(fr) = choice.finish_reason {
-                    finish_reason = Some(fr.into());
+                if choice.finish_reason.is_some() {
                     chunk_has_content = true;
                 }
 
@@ -406,6 +445,9 @@ pub fn stream_chat_completions<'a>(
             if chunk_has_content {
                 last_content_chunk_at = Instant::now();
             } else if last_content_chunk_at.elapsed() > idle_timeout {
+                if choices.finish_reason.is_some() {
+                    break;
+                }
                 let err = SamplingError::IdleTimeout {
                     elapsed_secs: idle_timeout.as_secs(),
                 };
@@ -415,6 +457,21 @@ pub fn stream_chat_completions<'a>(
                 };
                 return;
             }
+        }
+
+        let mut finish_reason = choices.finish_reason.map(StopReason::from);
+        // Explicit truncation and filtering take precedence over the
+        // presence of tool fragments, even if their JSON happens to parse.
+        if finish_reason == Some(StopReason::Length) {
+            yield SamplingEvent::Failed {
+                request_id: request_id.clone(),
+                error: SamplingErrorInfo::from(&SamplingError::MaxTokensTruncation),
+            };
+            return;
+        }
+        if finish_reason == Some(StopReason::ContentFilter) {
+            buffered_tool_deltas.clear();
+            tool_call_acc.clear();
         }
 
         // The stream completed without an ambiguous association. Only now is

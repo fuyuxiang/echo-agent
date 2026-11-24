@@ -53,7 +53,6 @@ The server is an independent project under `echo-agent-runtime/`. Downloading th
 | `client/src/` | React UI and application state |
 | `client/src-tauri/src/` | Desktop host, ACP bridge, workspaces, automation, persistence |
 | `client/vendor/echo-agent-build/` | Pinned Rust execution-engine source |
-| `client/vendor/theia-platform/` | Embedded IDE and integration |
 | `client/scripts/` | Build, packaging, and validation |
 
 The Python engine under `echo-agent-runtime/` is distinct from the Rust engine embedded by Desktop. See [Architecture](../concepts/architecture.md) for product boundaries.

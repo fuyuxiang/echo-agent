@@ -56,7 +56,12 @@ for (const [name, make] of [
   ["duplicate entry", () => family([entry("ic10"), entry("ic10")])],
 ]) test(`rejects ICNS with ${name}`, () => assert.throws(() => canonicalizeIcns(make()), /ICNS/));
 
-test("real icon pipeline works across text checkouts and regenerates identical assets", { timeout: 180_000 }, async t => {
+const generationBudget = 180_000;
+const validationBudget = 15_000;
+
+test("real icon pipeline works across text checkouts and regenerates identical assets", {
+  timeout: 2 * generationBudget + 8 * validationBudget,
+}, async t => {
   const directory = mkdtempSync(join(tmpdir(), "echo-icon-regression-"));
   const manifest = JSON.parse(readFileSync(join(root, "src-tauri/icons/source.json"), "utf8"));
   const files = ["scripts/build-app-icons.mjs", "scripts/build-tray-icons.mjs", "scripts/lib/icon-formats.mjs",
@@ -64,10 +69,15 @@ test("real icon pipeline works across text checkouts and regenerates identical a
   const bytes = path => readFileSync(join(directory, path));
   const write = (path, data) => writeFileSync(join(directory, path), data);
   const run = (...args) => {
+    const checking = args.includes("--check");
+    const timeout = checking ? validationBudget : generationBudget;
     const result = spawnSync(process.execPath, [join(directory, "scripts/build-app-icons.mjs"), ...args], {
-      cwd: directory, encoding: "utf8", timeout: 60_000, maxBuffer: 2 * 1024 * 1024,
+      cwd: directory, encoding: "utf8", timeout, maxBuffer: 2 * 1024 * 1024,
     });
-    if (result.error) throw result.error;
+    if (result.error) throw new Error(
+      `Icon ${checking ? "validation" : "generation"} did not complete within its ${timeout / 1000}s budget: ${result.stderr || result.error.message}`,
+      { cause: result.error },
+    );
     return result;
   };
   const success = result => assert.equal(result.status, 0, result.stderr || result.stdout);

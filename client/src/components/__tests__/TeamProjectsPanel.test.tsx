@@ -24,8 +24,9 @@ beforeEach(() => {
 describe("team project collaboration", () => {
  it("invites organization members with an explicit role and preserves shared history", async () => {
   render(<TeamProjectsPanel selectedId="p" onSelect={vi.fn()} />);
-  fireEvent.click(await screen.findByRole("button", { name: /^参与者/ }));
-  const dialog = await screen.findByRole("dialog", { name: "项目参与者" });
+  const participants = await screen.findByRole("button", { name: /^参与者/ });
+  await act(async () => { fireEvent.click(participants); });
+  const dialog = screen.getByRole("dialog", { name: "项目参与者" });
   fireEvent.change(await within(dialog).findByRole("searchbox", { name: "搜索组织成员" }), { target: { value: "new-member" } });
   fireEvent.change(within(dialog).getByRole("combobox", { name: "邀请成员权限" }), { target: { value: "viewer" } });
   fireEvent.click(within(dialog).getByRole("button", { name: "邀请加入项目" }));
@@ -76,6 +77,18 @@ describe("team project collaboration", () => {
   act(() => useOrgSessionStore.setState({ session: null, boundaryRevision: 2 }));
   expect(screen.queryByLabelText("项目问答结果")).toBeNull();
   expect(screen.getByRole("button", { name: "登录组织" })).toBeInTheDocument();
+ });
+ it("keeps project questions available while an unrecognized role cannot start work", async () => {
+  const onStartWork = vi.fn();
+  api.teamProjectRequest.mockImplementation(async action => action === "ask" ? answer : { ...snapshot, role: null });
+  render(<TeamProjectsPanel selectedId="p" onSelect={vi.fn()} onStartWork={onStartWork} />);
+  expect(await screen.findByText(/未返回可识别的项目角色/)).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "新成员快速了解项目" }));
+  expect(await screen.findByLabelText("项目问答结果")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "工作项" }));
+  expect(screen.queryByRole("button", { name: "接手并执行" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "新增工作项" })).toBeNull();
+  expect(onStartWork).not.toHaveBeenCalled();
  });
  it("a question completing after logout cannot restore the previous organization's content", async () => {
   let complete!: (a: ProjectAnswer) => void;

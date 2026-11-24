@@ -43,7 +43,7 @@ Write this object (fixed schema) with your file-write tool:
 
 - `findings` (array — the PRIMARY output the implementer acts on): one terse item per gap. `kind` = `bug` (defect in shipped behavior) | `gap` (unmet criterion / missing test or evidence) | `todo` (TODO/`#[ignore]`/stub left in). `location` = `path:line` when code-related, else where. `detail` = one concrete line, no prose.
 - `refuted` (bool): `false` only if every prior gap is confirmed fixed and no regression or other criterion fails.
-- `evidence` (string): a one-line summary citation; for `code-change`, FINAL_RESPONSE prose is NOT evidence.
+- `evidence` (string): a one-line summary citation; for `deliverable`, FINAL_RESPONSE prose is NOT evidence.
 - `confidence` (string): `"high"` | `"medium"` | `"low"`.
 - `blocking` (string, default `"none"`): `"none"` | `"contradiction"` | `"unverifiable"`.
 - `details_md` (string, optional): Markdown writeup; if omitted, the aggregator falls back to the `{DETAILS_FILE}` contents.

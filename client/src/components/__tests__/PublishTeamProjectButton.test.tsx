@@ -4,14 +4,15 @@ import { PublishTeamProjectButton } from "../PublishTeamProjectButton";
 import { useOrgSessionStore } from "@/stores/org-session-store";
 import { useProjectsStore, type ProjectMeta } from "@/stores/projects-store";
 import { projectSharingAccount, publicationKey } from "@/lib/project-sharing";
-const api = vi.hoisted(() => ({ teamProjectRequest: vi.fn(), projectCollaborationCapabilities: vi.fn(), teamProjectUpload: vi.fn(), projectAssetsUse: vi.fn() }));
+const api = vi.hoisted(() => ({ teamProjectRequest: vi.fn(), projectCollaborationCapabilities: vi.fn(), teamProjectUpload: vi.fn(), projectAssetsUse: vi.fn(), projectsSave: vi.fn() }));
 vi.mock("@/lib/team-project-client", async original => ({ ...await original<object>(), ...api }));
-vi.mock("@/lib/agent-client", () => ({ projectAssetsUse: api.projectAssetsUse, projectsSave: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("@/lib/agent-client", () => ({ projectAssetsUse: api.projectAssetsUse, projectsSave: api.projectsSave }));
 vi.mock("@/lib/org-client", () => ({ orgSession: vi.fn() }));
 const project: ProjectMeta = { id: "local", name: "接口项目", instructions: "完成联调", createdAt: "2026-11-16", members: ["私人备注"], conversations: [{ sessionId: "private", title: "私人探索", createdAt: "2026-11-16" }], plans: [], tasks: [{ id: "t", title: "设计工作", status: "pending", scope: "personal", source: "manual" }], assets: [{ id: "file", name: "规范.md", path: "/local/规范.md", kind: "file" }], experts: [], skills: [], connectors: [] };
 beforeEach(() => {
  vi.resetAllMocks(); localStorage.clear();
- useProjectsStore.setState({projects:[]});
+ useProjectsStore.setState({projects:[project]});
+ api.projectsSave.mockResolvedValue(undefined);
  api.projectCollaborationCapabilities.mockResolvedValue({ version: 2, idempotentCreate: true, memberSearch: true, memberRoles: true });
  useOrgSessionStore.setState({ session: { loggedIn: true, serverUrl: "https://org.example", user: { id: "a", username: "a", displayName: "A", role: "member", clearance: 0 } }, boundaryRevision: 1 });
  api.teamProjectRequest.mockResolvedValue({ id: "shared" }); api.projectAssetsUse.mockResolvedValue(["/authorized/规范.md"]);
@@ -117,7 +118,9 @@ describe("personal project publication", () => {
    return { id: action === "createTask" ? "remote-task" : "shared" };
   });
   const published = vi.fn();
-  render(<PublishTeamProjectButton project={{ ...project, tasks: [{ ...project.tasks[0], status: "completed" }] }} onPublished={published} />);
+  const completed = { ...project, tasks: [{ ...project.tasks[0], status: "completed" as const }] };
+  useProjectsStore.setState({ projects: [completed] });
+  render(<PublishTeamProjectButton project={completed} onPublished={published} />);
   fireEvent.click(screen.getByRole("button", { name: "发布为团队项目" }));
   fireEvent.click(screen.getByRole("checkbox", { name: "任务：设计工作" }));
   fireEvent.click(screen.getByRole("button", { name: "发布并管理成员" }));
@@ -201,4 +204,40 @@ it("retries a lost first-sharing response with the same server idempotency key a
  const creates = api.teamProjectRequest.mock.calls.filter(([name]) => name === "create");
  expect(creates).toHaveLength(2); expect(creates[0][2].clientRequestId).toBeTruthy(); expect(creates[1][2].clientRequestId).toBe(creates[0][2].clientRequestId);
  expect(linked).toHaveBeenCalledWith("same-shared-project");
+});
+
+it("persists the association before completing when the dialog closes during remote creation", async () => {
+ const account = projectSharingAccount(useOrgSessionStore.getState().session);
+ let resolveCreate!: (value: { id: string }) => void;
+ let confirmWrite!: () => void;
+ api.teamProjectRequest.mockImplementation(() => new Promise(resolve => { resolveCreate = resolve; }));
+ api.projectsSave.mockImplementationOnce(() => new Promise<void>(resolve => { confirmWrite = resolve; }));
+ const published = vi.fn();
+ const view = render(<PublishTeamProjectButton project={project} collaborationMode onPublished={published} />);
+ fireEvent.click(screen.getByRole("button", { name: "开启协作并选择共享内容" }));
+ fireEvent.click(screen.getByRole("button", { name: "确认共享" }));
+ await waitFor(() => expect(resolveCreate).toBeTypeOf("function"));
+ view.unmount();
+ await act(async () => resolveCreate({ id: "shared" }));
+ await waitFor(() => expect(confirmWrite).toBeTypeOf("function"));
+ const publication = () => JSON.parse(localStorage.getItem(publicationKey(project.id, account)) ?? "{}");
+ expect(publication()).toMatchObject({ projectId: "shared", complete: false });
+ await act(async () => confirmWrite());
+ await waitFor(() => expect(publication()).toMatchObject({ projectId: "shared", complete: true }));
+ expect(useProjectsStore.getState().projects[0].sharedProjects?.[account]).toBe("shared");
+ expect(published).not.toHaveBeenCalled();
+});
+
+it("retries the local receipt before publishing content without recreating the remote project", async () => {
+ api.projectsSave.mockRejectedValueOnce(new Error("磁盘已满"));
+ const published = vi.fn();
+ render(<PublishTeamProjectButton project={project} collaborationMode onPublished={published} />);
+ fireEvent.click(screen.getByRole("button", { name: "开启协作并选择共享内容" }));
+ fireEvent.click(screen.getByRole("button", { name: "确认共享" }));
+ expect(await screen.findByRole("alert")).toHaveTextContent("本机关联尚未保存");
+ expect(published).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole("button", { name: "确认共享" }));
+ await waitFor(() => expect(published).toHaveBeenCalledWith("shared"));
+ expect(api.projectsSave).toHaveBeenCalledTimes(2);
+ expect(api.teamProjectRequest.mock.calls.filter(([action]) => action === "create")).toHaveLength(1);
 });

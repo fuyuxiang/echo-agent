@@ -187,7 +187,6 @@ impl SessionActor {
     pub(super) fn emit_memory_session_summary(
         &self,
         telem: &super::memory_state::MemoryTelemetry,
-        total_chunks_at_end: usize,
         session_end_result: &str,
     ) {
         echo_agent_telemetry::session_ctx::log_event(
@@ -201,7 +200,6 @@ impl SessionActor {
                 tool_search_count: telem.tool_search_count,
                 injection_count: telem.injection_count,
                 recovery_search_count: telem.compaction_recovery_count,
-                total_chunks_at_end,
                 chunks_added_this_session: telem.chunks_added as usize,
                 session_end_result: session_end_result.to_owned(),
                 dream_count: telem.dream_count,
@@ -253,11 +251,9 @@ impl SessionActor {
             }
         };
         tracing::info!(target: echo_agent_telemetry::memory_log::TARGET, outcome, "MEMORY_SESSION_END: {log_suffix}; network work deferred");
-        self.emit_memory_session_summary(
-            &self.memory.telemetry_snapshot(),
-            storage.total_chunk_count(),
-            outcome,
-        );
+        // Teardown only reports counters already collected in memory. Reading
+        // the index here would put optional telemetry on the durability path.
+        self.emit_memory_session_summary(&self.memory.telemetry_snapshot(), outcome);
         Ok(())
     }
 

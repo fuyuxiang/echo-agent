@@ -809,11 +809,13 @@ pub async fn group_send(
     let g = db()?.get(&group_id)?;
     if !is_stop_request(&input) {
         if let Some(binding) = &g.project_binding {
+            crate::org::require_shared_project_prompt(&input.text)?;
             crate::org::authorize_project_binding(&app, binding).await?;
         }
         let root = app
             .state::<crate::shell_fs::FilesystemAccess>()
             .require_workspace(&g.cwd)?;
+        crate::legacy_workspace::ensure_workspace_available(&root)?;
         input.attachments = app
             .state::<crate::shell_fs::FilesystemAccess>()
             .validate_session_attachments(&root, &input.attachments)?;

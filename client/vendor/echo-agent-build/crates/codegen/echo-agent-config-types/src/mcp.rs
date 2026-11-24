@@ -91,6 +91,7 @@ pub struct McpServerConfigProblem {
 /// flattened untagged transport enum bypasses `serde_ignored`. Kept in sync by
 /// `known_mcp_server_fields_cover_serialized_keys`.
 pub const KNOWN_MCP_SERVER_FIELDS: &[&str] = &[
+    "desktop_instance_id",
     "args",
     "bearer_token_env_var",
     "command",
@@ -213,6 +214,10 @@ pub enum McpSetupResolution {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
+    /// Identity of a desktop-managed user definition. Ephemeral and project
+    /// definitions normally have no desktop identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_instance_id: Option<String>,
     #[serde(flatten)]
     pub transport: McpServerTransportConfig,
     #[serde(default = "default_true")]
@@ -405,7 +410,7 @@ impl McpServerConfig {
             return None;
         }
         let name = name.into();
-        match &self.transport {
+        let mut server = match &self.transport {
             McpServerTransportConfig::Stdio {
                 command,
                 args,
@@ -480,7 +485,11 @@ impl McpServerConfig {
                     )
                 })
             }
+        }?;
+        if let Some(id) = &self.desktop_instance_id {
+            echo_agent_mcp::servers::set_user_mcp_instance_id(&mut server, id);
         }
+        Some(server)
     }
 
     /// Extract OAuth configuration for this server, if any OAuth fields are set.
@@ -615,6 +624,7 @@ mod tests {
     #[test]
     fn known_mcp_server_fields_cover_serialized_keys() {
         let stdio = McpServerConfig {
+            desktop_instance_id: None,
             transport: McpServerTransportConfig::Stdio {
                 command: "npx".into(),
                 args: vec!["-y".into()],
@@ -630,6 +640,7 @@ mod tests {
             expose_image_base64: Some(true),
         };
         let http = McpServerConfig {
+            desktop_instance_id: None,
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://x/mcp".into(),
                 transport_type: Some("http".into()),
@@ -737,6 +748,7 @@ mod tests {
             variables: HashMap::new(),
         };
         let config = McpServerConfig {
+            desktop_instance_id: None,
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "{{url}}".into(),
                 transport_type: None,
@@ -795,6 +807,7 @@ mod tests {
             variables: HashMap::new(),
         };
         let config = McpServerConfig {
+            desktop_instance_id: None,
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com".into(),
                 transport_type: None,

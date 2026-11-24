@@ -218,11 +218,11 @@ window.__echoNativeCollaborationReview = async scope => {
         const task = await wait(async () => (await call('automations_snapshot')).automations.find(a => a.name === e.taskName), 'Native active once task saved by UI');
         e.taskId = task.id; e.scheduledFor = task.nextRunAt;
         assert(task.status === 'ACTIVE' && task.scheduleType === 'once' && task.modelId === scope.modelId
-          && task.cwds === scope.cwd && task.permissionMode !== 'fullAccess' && !task.pushToWeChat
+          && task.cwds[0] === scope.cwd && task.permissionMode !== 'fullAccess' && !task.pushToWeChat
           && Date.parse(task.nextRunAt) === e.dueEpoch && e.dueEpoch > Date.now(), 'Actual schedule input mismatch');
         const s = await call('automations_snapshot'); assert(s.records.length === 0, 'Task ran before its due time');
         return { taskId: task.id, status: task.status, scheduledFor: task.nextRunAt, modelId: task.modelId,
-          cwd: task.cwds, manualRunInvoked: false, externalPush: false };
+          cwd: task.cwds[0], manualRunInvoked: false, externalPush: false };
       });
       await stage('scheduler-actual-due-model', async () => {
         const s = await wait(async () => { const s = await call('automations_snapshot'); const records = s.records.filter(r => r.automationId === e.taskId);

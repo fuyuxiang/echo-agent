@@ -9,8 +9,11 @@ import { pipeline } from "node:stream/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { cleanNativeReviewEnvironment } from "./lib/native-review-isolation.mjs";
 
-const fixture = process.argv[3] === "--fixture";
-assert.equal(process.argv.length, fixture ? 4 : 3, "Pass the compiled echoagent_lib test executable and optionally --fixture");
+const mode = process.argv[3];
+const fixtureStreamEof = mode === "--fixture-stream-eof";
+const fixture = mode === "--fixture" || fixtureStreamEof;
+assert.equal(process.argv.length, fixture ? 4 : 3,
+  "Pass the compiled echoagent_lib test executable and optionally --fixture or --fixture-stream-eof");
 const executable = await realpath(resolve(process.argv[2]));
 const configPath = process.env.NATIVE_REVIEW_MODEL_CONFIG;
 let config, upstream;
@@ -28,7 +31,7 @@ if (!fixture) {
   assert.equal(typeof config.model, "string");
 }
 
-function fixtureCompletion(response, input, primaryTurn, resumedTurn) {
+function fixtureCompletion(response, input, primaryTurn, resumedTurn, closeBeforeFinish) {
   const shell = primaryTurn && input.tools?.find(tool => tool.function?.parameters?.properties?.command);
   if (primaryTurn) assert.ok(shell, "The initial run must advertise the shell tool");
   const message = shell ? {
@@ -50,12 +53,13 @@ function fixtureCompletion(response, input, primaryTurn, resumedTurn) {
   if (input.stream) {
     const delta = shell ? { ...message, tool_calls: [{ index: 0, ...message.tool_calls[0] }] } : message;
     response.writeHead(200, { "content-type": "text/event-stream" });
-    for (const [value, reason] of [[delta, null], [{}, finishReason]]) {
+    const frames = closeBeforeFinish ? [[delta, null]] : [[delta, null], [{}, finishReason]];
+    for (const [value, reason] of frames) {
       response.write(`data: ${JSON.stringify({
         ...base, object: "chat.completion.chunk", choices: [{ index: 0, delta: value, finish_reason: reason }],
       })}\n\n`);
     }
-    response.end("data: [DONE]\n\n");
+    response.end(closeBeforeFinish ? undefined : "data: [DONE]\n\n");
   } else {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({
@@ -77,8 +81,12 @@ await mkdir(join(root, "legacy"));
 const testName = "agent_runtime::tests::automation_runtime_recovery_real_model";
 let current = null;
 let gated = false;
+let providerRequests = 0;
 let primaryFailures = 0;
+const startedAt = Date.now();
 let initialInference = 0;
+let streamEofInjected = false;
+let retriedBeforeEffect = false;
 let recoveredInference = 0;
 let fixtureFailure;
 let phase = "first";
@@ -88,6 +96,7 @@ const server = createServer(async (request, response) => {
       response.writeHead(404).end();
       return;
     }
+    providerRequests += 1;
     if (request.url.startsWith("/unavailable/")) {
       primaryFailures += 1;
       request.resume();
@@ -119,9 +128,20 @@ const server = createServer(async (request, response) => {
       assert.ok(!input.tools?.length, "Recovered request must be non-executing");
     }
     if (fixture) {
-      fixtureCompletion(response, input, phase === "first" && primaryTurn, phase === "resume" && resumedTurn);
-      if (phase === "first" && primaryTurn) initialInference += 1;
+      const initialTurn = phase === "first" && primaryTurn;
+      const closeBeforeFinish = fixtureStreamEof && initialTurn && input.stream && !streamEofInjected;
+      if (closeBeforeFinish) streamEofInjected = true;
+      if (initialTurn) {
+        initialInference += 1;
+        if (fixtureStreamEof && initialInference === 2) {
+          retriedBeforeEffect = await readFile(join(cwd, "recovery-proof.txt")).then(() => false, error => {
+            if (error.code !== "ENOENT") throw error;
+            return true;
+          });
+        }
+      }
       if (phase === "resume" && resumedTurn) recoveredInference += 1;
+      fixtureCompletion(response, input, initialTurn, phase === "resume" && resumedTurn, closeBeforeFinish);
       return;
     }
     input.model = config.model;
@@ -254,8 +274,23 @@ remote_fetch = false
   assert.ok(recoveredInference > 0);
   assert.match(await readFile(join(root, "resume.log"), "utf8"), /1 passed; 0 failed/);
   assert.equal(await readFile(join(cwd, "recovery-proof.txt"), "utf8"), "ECHO_RECOVERY_EXTERNAL\n");
+  if (fixtureStreamEof) {
+    assert(streamEofInjected && retriedBeforeEffect && initialInference === 2,
+      "An incomplete stream must be retried before the first tool effect");
+    console.log(JSON.stringify({ streamEofInjected, initialInference, retriedBeforeEffect,
+      recoveredInference, providerRequests, failedRouteProbes: primaryFailures,
+      toolEffects: 1, restoredAfterKill: true, elapsedMs: Date.now() - startedAt }));
+  }
   console.log(`Passed failed primary probe, ${fixture ? "local fixture" : "real model"} fallback, one shell execution, process SIGKILL, and summary from the restored ACP session.`);
   await rm(root, { recursive: true, force: true });
+} catch (error) {
+  if (fixture) {
+    for (const name of ["first", "resume"]) {
+      const log = await readFile(join(root, `${name}.log`), "utf8").catch(() => "");
+      if (log) console.error(`Runtime fixture ${name} log (tail)\n${log.slice(-6000)}`);
+    }
+  }
+  throw error;
 } finally {
   current?.child.kill();
   server.closeAllConnections();

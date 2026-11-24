@@ -15,7 +15,7 @@ use std::sync::Arc;
 use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 
@@ -1163,15 +1163,6 @@ async fn handle_client_message(
                     .and_then(|m| serde_json::to_value(m).ok())
                     .as_ref(),
             );
-            crate::coding_review_runtime::observe(
-                &sid,
-                &update,
-                b.request
-                    .meta
-                    .as_ref()
-                    .and_then(|meta| serde_json::to_value(meta).ok())
-                    .as_ref(),
-            );
             crate::groups::observe(
                 &sid,
                 &update,
@@ -1181,40 +1172,6 @@ async fn handle_client_message(
                     .and_then(|m| serde_json::to_value(m).ok())
                     .as_ref(),
             );
-            // RED evidence comes from the native Runtime channel, not rendered
-            // tool-card text or a client-supplied exit code. Resolve the session
-            // through its native workspace capability before touching task data.
-            if matches!(
-                update.get("sessionUpdate").and_then(Value::as_str),
-                Some("tool_call" | "tool_call_update")
-            ) {
-                let root = app
-                    .try_state::<crate::commands::AppState>()
-                    .and_then(|state| state.session_workspace(&sid).ok())
-                    .and_then(|root| {
-                        app.try_state::<crate::shell_fs::FilesystemAccess>()
-                            .and_then(|access| {
-                                access.require_workspace(&root.to_string_lossy()).ok()
-                            })
-                    });
-                if let Some(root) = root {
-                    let meta = b
-                        .request
-                        .meta
-                        .as_ref()
-                        .and_then(|meta| serde_json::to_value(meta).ok());
-                    if let Err(error) = crate::coding::tdd::observe_runtime_update(
-                        &root,
-                        &sid,
-                        &update,
-                        meta.as_ref(),
-                    )
-                    .await
-                    {
-                        tracing::warn!(%error, session_id = %sid, "native Runtime RED capture rejected");
-                    }
-                }
-            }
             tracing::debug!(session_id = %sid, update = %update, "agent://update");
             let _ = app.emit(
                 "agent://update",
@@ -1570,11 +1527,6 @@ async fn handle_client_message(
                     }
                 }
                 let _ = app.emit("agent://task-update", &params);
-            } else if method == "echo.agent/git_head_changed"
-                || method == "echo.agent/gitHeadChanged"
-            {
-                // git HEAD moved — useful for status bar / worktree UI.
-                let _ = app.emit("agent://git-head", &params);
             }
             let _ = b.response_tx.send(Ok(()));
         }
@@ -1589,21 +1541,6 @@ async fn handle_client_message(
             let method = b.request.method.as_ref().to_string();
             let raw_str = b.request.params.get();
             match method.as_str() {
-                "echo.agent/desktop_document_tool" => {
-                    let params = serde_json::from_str::<Value>(raw_str);
-                    let handle = app.clone();
-                    tokio::spawn(async move {
-                        let result = match params {
-                            Ok(request) => {
-                                crate::coding_document_bridge::dispatch(handle, request).await
-                            }
-                            Err(_) => {
-                                serde_json::json!({"handled":true,"error":"Malformed document request"})
-                            }
-                        };
-                        send_ext_json(b.response_tx, result);
-                    });
-                }
                 "echo.agent/ask_user_question" => {
                     if raw_str.len() > MAX_EXT_METHOD_PARAMS_BYTES {
                         tracing::warn!(
@@ -2003,10 +1940,6 @@ pub(crate) async fn handle_prompt_complete(app: &AppHandle, mut complete: Comple
     let disposition = completion_disposition(&complete);
     if disposition == CompletionDisposition::Stopped {
         crate::automations::mark_run_stopping(&session_id, &complete.prompt_id);
-    }
-    crate::coding_document_bridge::complete_run(&session_id, &complete.prompt_id).await;
-    if let Err(error) = crate::coding_review_runtime::complete(app, &complete) {
-        tracing::warn!(%error,"runtime review persistence failed");
     }
     let automation = if disposition != CompletionDisposition::Superseded {
         crate::automations::complete_run_for_session(

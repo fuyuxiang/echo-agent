@@ -26,53 +26,10 @@ and NOTICE material remain intact.
 Additional dependency notices remain available in the embedded runtime source
 tree and its crate-specific license files.
 
-## Eclipse Theia Platform
-
-- Source: https://github.com/eclipse-theia/theia
-- Version: `v1.74.0`
-- Pinned source revision: `172494ea2564ca07690e230805861146007fae79`
-- Integration: source snapshot tracked under `vendor/theia-platform/`
-- License: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
-- Local licenses and notices: `vendor/theia-platform/LICENSE-EPL`,
-  `vendor/theia-platform/LICENSE-GPL-2.0-ONLY-CLASSPATH-EXCEPTION`,
-  `vendor/theia-platform/NOTICE.md`
-
-EchoAgent adds the `@echoagent/theia-bridge` extension and adapts the browser
-example application into the Echo Code IDE. The Theia platform source retains
-upstream copyright and license headers. Coding Agent operations use EchoAgent's
-existing task and Agent runtime; Theia supplies the IDE surface.
-
-The JSON Schema catalog at
-`vendor/theia-platform/packages/core/src/browser/catalog.json` comes from the
-official `@theia/core@1.74.0` npm package, matching the vendored source tag.
-
-### VS Code Git and Git Base built-in extensions
-
-- Upstream code: https://github.com/microsoft/vscode/tree/1.95.3/extensions/git
-  and https://github.com/microsoft/vscode/tree/1.95.3/extensions/git-base
-- Theia's built-in extension packaging: https://github.com/eclipse-theia/vscode-builtin-extensions
-- Registry metadata: https://open-vsx.org/api/vscode/git/1.95.3 and
-  https://open-vsx.org/api/vscode/git-base/1.95.3
-- Pinned VSIX files: `vendor/theia-vsix/vscode.git-1.95.3.vsix` and
-  `vendor/theia-vsix/vscode.git-base-1.95.3.vsix`
-- SHA-256 (also checked against the registry's published `.sha256` files):
-  Git `44909b81d3266860f02733c08475ab5fc66c0c1d7259b3c1b164e783559d9291`;
-  Git Base `956c41e4e8377a6b113a6a64fcd5308deaad44a827288f6bfcd5cf1c83037483`
-- License: MIT, Copyright Microsoft Corporation. Each VSIX contains
-  `extension/LICENSE-vscode.txt`, retained in the staged runtime.
-- Compatibility: Git declares VS Code API `^1.5.0` and requires `vscode.git-base`;
-  Git Base declares API `0.10.0`. The vendored Theia 1.74.0 declares supported
-  VS Code API `1.130.0`; both fixed built-ins use the existing plugin host and
-  SCM integration, without restoring the removed `@theia/git` package.
-
-The downloaded built-ins are unchanged. Their presence and artifact validation
-do not substitute for native application acceptance of the actual Git provider,
-stage/commit actions, or repository isolation.
-
 ## Tauri NSIS installer template
 
-- Source: https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi
-- Version: Tauri CLI 2.11.4 (matching the lockfile)
+- Source: https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi
+- Version: Tauri CLI 2.12.4 (matching the lockfile)
 - Integration: `src-tauri/windows/installer.nsi`
 - License: MIT OR Apache-2.0
 - Copyright: Tauri Programme within The Commons Conservancy
@@ -113,10 +70,10 @@ Public APIs and other platform startup mechanisms remain unchanged.
 ## Node.js runtime
 
 - Source: https://nodejs.org/
-- Integration: the platform Node.js executable is staged with the Theia backend
-  into `src-tauri/resources/theia/node/` during packaging.
+- Integration: the platform Node.js executable is staged for the Office worker
+  into `src-tauri/resources/office/node/` during packaging.
 - License: Node.js license and bundled third-party notices, copied from the
-  selected Node.js distribution into `theia/node/LICENSE` in the app resources.
+  selected Node.js distribution into `office/node/LICENSE` in the app resources.
 - Fallback license copy for the pinned development runtime:
   `vendor/nodejs/LICENSE-22.23.4` or `vendor/nodejs/LICENSE-24.22.1`.
 
@@ -129,21 +86,11 @@ directory records upstream versions, advisories and the local changes.
   `VariantStrIter` out-pointer fix while retaining GTK3 compatibility.
 - `vendor/lru-0.12/` and `vendor/lru-0.16/`: lru 0.12.5 and 0.16.4, MIT,
   including upstream node-detachment and shared-key-reference safety fixes.
-- `vendor/theia-platform/security/braces/`: braces 3.0.3, MIT, with bounded
-  parsing and AST traversal for deeply nested patterns.
-- `vendor/theia-platform/security/sprintf-js/`: sprintf-js 1.0.3, BSD-3-Clause,
-  with bounded numeric precision and padding.
-- `vendor/theia-platform/security/deepmerge/`: deepmerge 4.3.1, MIT, with
-  reserved-key guards for both merge operands to prevent prototype poisoning.
+- `vendor/faster-hex/`: faster-hex 0.10.1, MIT, with the unused heapless 0.8
+  dependency removed from the Gitoxide build. Upstream third-party license
+  notices are included in that directory.
 
-Rust patch entries and npm workspace links select these copies. The original
-license files are included alongside the sources; the JavaScript copies are
-also staged into the packaged IDE runtime.
-
-`scripts/patch-theia-scanoss.mjs` adapts the installed SCANOSS 0.40.2
-(MIT, https://github.com/scanoss/scanoss.js) CommonJS and ESM builds to the
-maintained stream-json 3 Node stream API. SCANOSS retains its upstream license;
-the patch is applied during source installation, builds and runtime staging.
+Rust patch entries select these copies. Their original license files are included alongside the sources.
 
 ## async-openai
 

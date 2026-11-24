@@ -71,8 +71,8 @@ export function FolderTrustDialog({ request, onResolve, onToast }: FolderTrustDi
     setError(null);
     try {
       const acknowledged = await folderTrustRespond(current.requestId, trusted);
-      if (!acknowledged) throw new Error("后端未找到该信任请求，请重试");
       setQueue((pending) => pending.filter((item) => item.requestId !== current.requestId));
+      if (!acknowledged) onToast?.("此文件夹的信任请求已结束，请重新发起需要授权的操作。");
       // Re-read the canonical registry before resolving the parent hint. This
       // keeps the dialog mounted while more requests are queued and closes the
       // subscribe-after-emit window for a request arriving during the ACK.

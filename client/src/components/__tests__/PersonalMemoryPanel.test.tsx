@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 import type { PersonalMemoryRecord } from "@/lib/agent-client";
@@ -40,6 +40,19 @@ async function renderManager(cwd?: string) {
 }
 
 describe("记忆设置与二级管理", () => {
+  it("显示并更名记忆键名，复制可表达换行和括号的查询指令", async () => {
+    const rename = "年度「预算」\n说明";
+    await renderManager("/project-a");
+    expect(screen.getByRole("heading", { name: record.key })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: `编辑 ${record.key}` }));
+    fireEvent.change(screen.getByLabelText("记忆键名（选填）"), { target: { value: rename } });
+    fireEvent.click(screen.getByRole("button", { name: "保存记忆" }));
+    await waitFor(() => expect(api.memoryRecordSave).toHaveBeenCalledWith(expect.objectContaining({
+      id: record.id, key: rename, keyIsCustom: true, expectedRevision: record.revision,
+    }), "/project-a"));
+    fireEvent.click(await screen.findByRole("button", { name: "复制查询指令" }));
+    expect(await screen.findByLabelText("查询指令（可复制）")).toHaveValue(`查记忆 global ${JSON.stringify(rename)}`);
+  });
   it("编辑旧 /remember 的 80 字标题时不会保留过时事实", async () => {
     const original = "周报使用中文并先给结论。".repeat(10);
     const key = original.slice(0, 80);
@@ -91,7 +104,30 @@ describe("记忆设置与二级管理", () => {
     fireEvent.change(screen.getByLabelText("记忆内容"), { target: { value: "报告使用双语" } });
     view.rerender(<PersonalMemoryPanel cwd="/project-b" />);
     fireEvent.click(screen.getByRole("button", { name: "保存记忆" }));
-    await waitFor(() => expect(api.memoryRecordSave).toHaveBeenCalledWith({ id: "r1", scope: "workspace", kind: "task", key: "报告语言", content: "报告使用双语", pinned: false, validUntil: 4102444800, evidence: "请用中文", expectedRevision: 3 }, "/project-a"));
+    await waitFor(() => expect(api.memoryRecordSave).toHaveBeenCalledWith({ id: "r1", scope: "workspace", kind: "task", key: "报告语言", keyIsCustom: true, content: "报告使用双语", pinned: false, validUntil: 4102444800, evidence: "请用中文", expectedRevision: 3 }, "/project-a"));
+  });
+
+  it("跨目录完成保存后保留新目录列表，旧目录的迟到记录不会显示", async () => {
+    const workspace = { ...record, scope: "workspace" as const, kind: "project" as const };
+    const newContent = "EA-QA 新目录事实";
+    const snapshot = (records: PersonalMemoryRecord[]) => ({ records, enabled: true, pendingCount: 0 });
+    let finishSave!: (value: PersonalMemoryRecord) => void;
+    let finishLoad!: (value: ReturnType<typeof snapshot>) => void;
+    api.memoryRecordsGet.mockImplementation((cwd: string) => cwd === "/project-a"
+      ? Promise.resolve(snapshot([workspace]))
+      : new Promise(resolve => { finishLoad = resolve; }));
+    api.memoryRecordSave.mockImplementationOnce(() => new Promise(resolve => { finishSave = resolve; }));
+
+    const view = await renderManager("/project-a");
+    fireEvent.click(screen.getByRole("button", { name: "编辑 报告语言" }));
+    fireEvent.change(screen.getByLabelText("记忆内容"), { target: { value: "EA-QA 修改" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存记忆" }));
+    view.rerender(<PersonalMemoryPanel cwd="/project-b" />);
+    await act(async () => finishSave(workspace));
+    expect(api.memoryRecordsGet).toHaveBeenLastCalledWith("/project-b");
+    await act(async () => finishLoad(snapshot([{ ...workspace, content: newContent }])));
+    expect(screen.getByText(newContent)).toBeInTheDocument();
+    expect(screen.queryByText(workspace.content)).toBeNull();
   });
 
   it("返回时保护修改，取消返回保留草稿，确认后才离开", async () => {
@@ -209,7 +245,7 @@ describe("记忆设置与二级管理", () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error("clipboard unavailable")) } });
     saved.push({ ...record, id: "forgotten", content: "不导出的停用记录", status: "forgotten" });
     await renderManager(); openAction("复制导出");
-    const exported = await screen.findByLabelText("导出内容（可复制保存）");
+    const exported = await screen.findByLabelText("导出内容（可复制）");
     expect(JSON.parse((exported as HTMLTextAreaElement).value)).toEqual([record]);
   });
 

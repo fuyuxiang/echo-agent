@@ -1,9 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   isPreviewableUrl,
-  PREVIEW_SANDBOX,
   normalizePreviewUrl,
-  previewTitle,
   safeRemoteImageUrl,
 } from "../browser-preview";
 
@@ -61,15 +59,6 @@ describe("safeRemoteImageUrl", () => {
   });
 });
 
-describe("PREVIEW_SANDBOX", () => {
-  it("包含 allow-scripts 但不含 allow-top-navigation", () => {
-    expect(PREVIEW_SANDBOX).toContain("allow-scripts");
-    expect(PREVIEW_SANDBOX).not.toContain("allow-top-navigation");
-    expect(PREVIEW_SANDBOX).not.toContain("allow-same-origin");
-    expect(PREVIEW_SANDBOX).not.toContain("allow-popups");
-  });
-});
-
 describe("normalizePreviewUrl", () => {
   it("补全 https 协议", () => {
     expect(normalizePreviewUrl("example.com")).toBe("https://example.com/");
@@ -77,24 +66,20 @@ describe("normalizePreviewUrl", () => {
   it("保留已有协议", () => {
     expect(normalizePreviewUrl("http://example.com")).toBe("http://example.com/");
   });
-  it("去锚点", () => {
-    expect(normalizePreviewUrl("https://example.com/a#x")).toBe("https://example.com/a");
+  it("保留文档锚点", () => {
+    expect(normalizePreviewUrl("https://example.com/a#x")).toBe("https://example.com/a#x");
   });
-  it("拒绝不可预览(返回 null)", () => {
-    expect(normalizePreviewUrl("localhost")).toBeNull();
+  it("补全本地开发地址", () => {
+    expect(normalizePreviewUrl("localhost:5173/settings")).toBe("http://localhost:5173/settings");
+    expect(normalizePreviewUrl("[::1]:5173")).toBe("http://[::1]:5173/");
+  });
+  it("拒绝其他协议或明文凭据", () => {
+    expect(normalizePreviewUrl("https://user:password@example.com")).toBeNull();
+    expect(normalizePreviewUrl("javascript:alert(1)")).toBeNull();
     expect(normalizePreviewUrl("file:///x")).toBeNull();
   });
   it("空串返回 null", () => {
     expect(normalizePreviewUrl("")).toBeNull();
     expect(normalizePreviewUrl("   ")).toBeNull();
-  });
-});
-
-describe("previewTitle", () => {
-  it("用 hostname", () => {
-    expect(previewTitle("https://docs.example.com/x")).toBe("docs.example.com");
-  });
-  it("无效 URL 回退", () => {
-    expect(previewTitle("noturl")).toBe("网页预览");
   });
 });

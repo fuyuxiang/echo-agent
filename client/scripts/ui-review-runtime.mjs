@@ -14,9 +14,9 @@ const reviewDependencies = [
   "zustand", "lucide-react", "@tauri-apps/api/core", "@tauri-apps/api/event", "@tauri-apps/api/window",
   "@tauri-apps/api/webview", "@tauri-apps/plugin-dialog", "qrcode", "react-markdown", "remark-gfm",
   "remark-breaks", "remark-math", "rehype-highlight", "rehype-katex", "rehype-sanitize", "lowlight",
-  "jszip", "exceljs", "docx", "@pdf-lib/fontkit", "pdf-lib", "pptxgenjs", "@xterm/xterm", "@xterm/addon-fit",
+  "jszip", "exceljs", "docx", "@pdf-lib/fontkit", "pdf-lib", "pptxgenjs",
   "@office-kit/pptx", "@office-kit/pptx-preview", "@apollo-design/docx-preview", "pdfjs-dist/legacy/build/pdf.mjs", "ssf",
-  "linkify-it", "marked", "unist-util-visit", "katex", "mermaid", "@monaco-editor/react", "monaco-editor",
+  "linkify-it", "marked", "unist-util-visit", "katex", "mermaid",
   "@tiptap/react", "@tiptap/starter-kit", "@tiptap/extension-table", "@tiptap/extension-text-align",
 ];
 

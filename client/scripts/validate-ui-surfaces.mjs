@@ -1,4 +1,3 @@
-// Run with the same Node/Playwright installation as scripts/smoke-theia.mjs.
 // Screenshots and geometry checks use production components and CSS, with
 // native IPC replaced only in the development fixture.
 import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
@@ -24,7 +23,7 @@ page.setDefaultNavigationTimeout(60000);
   const errors = [];
   let layouts = 0;
   page.on("pageerror", error => errors.push(error.message));
-  const surfaces = ["memory", "personal-memory", "security", "cloud-storage", "notify-channels", "weixin-connected", "weixin-offline", "weixin-unconnected", "capabilities", "coding", "permission-picker", "organization", "conversation", "meeting"];
+  const surfaces = ["memory", "personal-memory", "security", "cloud-storage", "notify-channels", "weixin-connected", "weixin-offline", "weixin-unconnected", "capabilities", "permission-picker", "organization", "conversation", "meeting"];
   for (const surface of ["collapsed-project", "collapsed-capabilities"]) {
     for (const platform of ["mac", "other"]) {
       for (const width of [1440, 768]) {
@@ -207,7 +206,6 @@ page.setDefaultNavigationTimeout(60000);
         continue;
       }
       if (surface === "capabilities") await page.getByRole("heading", { name: "我的专家" }).waitFor();
-      else if (surface === "coding") await page.getByRole("button", { name: "切换项目" }).waitFor();
       else await page.getByRole("dialog", { name: "设置" }).waitFor();
       await page.waitForFunction(() => !document.querySelector("select.form-control:disabled"));
       const controls = await page.locator("select.form-control").evaluateAll(elements => elements.map(element => ({ appearance: getComputedStyle(element).appearance, height: element.getBoundingClientRect().height })));
@@ -239,25 +237,6 @@ page.setDefaultNavigationTimeout(60000);
         const template = await page.getByText("推荐模板", { exact: true }).boundingBox();
         assert.ok(template && template.y < height - 100, "templates pushed below first screen");
         assert.equal(await page.locator(".capability-page").evaluate(element => getComputedStyle(element).overflowY), "auto");
-      }
-      if (surface === "coding") {
-        await page.getByRole("button", { name: "切换开发任务" }).click();
-        const menu = page.getByRole("menu", { name: "开发任务" });
-        const geometry = await menu.evaluate(element => {
-          const box = element.getBoundingClientRect();
-          const pane = document.querySelector(".echo-theia-agent").getBoundingClientRect();
-          const row = element.querySelector(".coding-task-switcher__row").getBoundingClientRect();
-          const hit = document.elementFromPoint(box.right - 12, row.top + row.height / 2);
-          return { left: box.left, right: box.right, top: box.top, bottom: box.bottom,
-            paneLeft: pane.left, portal: element.parentElement === document.body,
-            rowVisible: element.contains(hit) };
-        });
-        assert.ok(geometry.portal && geometry.left >= geometry.paneLeft && geometry.right <= width
-          && geometry.top >= 0 && geometry.bottom <= height && geometry.rowVisible,
-        "coding task menu clips or hides behind the Agent pane");
-        await page.screenshot({ path: join(output, `coding-task-menu-${width}-${theme}.png`) });
-        layouts += 1;
-        await page.keyboard.press("Escape");
       }
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `${surface}: horizontal page overflow`);
       await page.screenshot({ path: join(output, `${surface}-${width}-${theme}.png`) });
@@ -364,13 +343,6 @@ page.setDefaultNavigationTimeout(60000);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "large font causes horizontal overflow");
   await page.screenshot({ path: join(output, "memory-large-font-1024.png") });
 
-  await page.goto("http://127.0.0.1:1439/__ui-review?surface=coding");
-  await page.getByRole("button", { name: "切换项目" }).focus();
-  await page.keyboard.press("ArrowDown");
-  await page.getByRole("menu", { name: "项目列表" }).waitFor();
-  await page.keyboard.press("Escape");
-  assert.equal(await page.getByRole("menu", { name: "项目列表" }).count(), 0);
-  await page.setViewportSize({ width: 1024, height: 768 });
   await page.goto("http://127.0.0.1:1439/__ui-review?surface=workspace-picker&theme=light");
   const workspaceTrigger = page.locator(".workspace-picker__trigger");
   await workspaceTrigger.hover();

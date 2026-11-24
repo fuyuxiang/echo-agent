@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdtemp,readFile,rm,stat} from 'node:fs/promises';
+import {mkdir,mkdtemp,readFile,rm,stat} from 'node:fs/promises';
 import {existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
@@ -8,13 +8,13 @@ import JSZip from 'jszip';
 import {PDFDocument,PDFName,decodePDFRawStream} from 'pdf-lib';
 const directory=await mkdtemp(join(tmpdir(),'echo-editable-office-'));
 const root=resolve(import.meta.dirname,'..'),worker=join(root,'src-tauri/resources/office/worker.mjs'),font=join(root,'src-tauri/resources/office/fonts/NotoSansCJKsc-Regular.otf');
-const staged=join(root,'src-tauri/resources/theia/node',process.platform==='win32'?'node.exe':'bin/node');
+const staged=join(root,'src-tauri/resources/office/node',process.platform==='win32'?'node.exe':'bin/node');
 const p=(text,marks)=>({type:'paragraph',content:text?[{type:'text',text,...(marks?{marks}:{})}]:[]});
 const cell=(text,header=false)=>({type:header?'tableHeader':'tableCell',attrs:{colspan:1,rowspan:1,colwidth:null},content:[p(text)]});
 const document={type:'doc',content:[{type:'heading',attrs:{level:1,textAlign:'center'},content:[{type:'text',text:'当前修订稿'}]},p('人工加粗的内容',[{type:'bold'},{type:'underline'}]),{type:'table',content:[{type:'tableRow',content:[cell('时间',true),cell('儿童安排',true),cell('家长安排',true)]},{type:'tableRow',content:[cell('7:30'),cell('起床、洗漱'),cell('准备早餐')]},{type:'tableRow',content:[cell('8:00'),cell(''),cell('送学')] }]}]};
-async function run(format,model=document,markdown){
-  const output=join(directory,'current.'+format);
-  const child=spawn(existsSync(staged)?staged:process.execPath,[worker,output,font],{stdio:['pipe','ignore','pipe']});let errors='';child.stderr.on('data',chunk=>{errors+=chunk;});
+async function run(format,model=document,markdown,name='current'){
+  const output=join(directory,name+'.'+format);
+  const child=spawn(staged,[worker,output,font],{stdio:['pipe','ignore','pipe']});let errors='';child.stderr.on('data',chunk=>{errors+=chunk;});
   child.stdin.end(JSON.stringify({format,title:'当前修订稿',...(markdown===undefined?{document:model}:{markdown})}));
   const status=await new Promise((resolve,reject)=>{child.on('error',reject);child.on('close',resolve);});
   return {output,status,errors};
@@ -42,6 +42,47 @@ try{
   const saved=JSON.parse(await readFile(word.output+'.document.json','utf8'));assert.equal(saved.content[2].content[1].content[0].content[0].content[0].text,'7:30');
   const pdf=await run('pdf');assert.equal(pdf.status,0,pdf.errors);const text=pdfText(await PDFDocument.load(await readFile(pdf.output)));
   assert(text.includes('7:30')&&text.includes('准备早餐')&&!text.includes('6:30'),'PDF must reflect the current source');
+  const item = (...content) => ({ type: 'listItem', content });
+  const bulletList = (...content) => ({ type: 'bulletList', content });
+  const table = text => ({ type: 'table', content: [{ type: 'tableRow', content: [cell(text, true)] }] });
+  const list = { type: 'doc', content: [
+    p('正文'),
+    bulletList(item(p('父项'), { type: 'orderedList', attrs: { start: 9 }, content: [
+      item(p('子项'), bulletList(item(p('深层项'))), p('子项后续段落'), table('列表内表格')),
+      item(p('同层子项')),
+      item(table('表格起始项')),
+    ] }, p('父项后续段落')), item(p('同层父项'))),
+    bulletList(item(p('分页项' + '\n长行内容'.repeat(68)))),
+  ] };
+  const listPdf = await run('pdf', list);
+  assert.equal(listPdf.status, 0, listPdf.errors);
+  const pagedList = await PDFDocument.load(await readFile(listPdf.output));
+  const listRuns = pdfRuns(pagedList);
+  const labels = ['正文', '父项', '子项', '深层项', '子项后续段落', '列表内表格', '同层子项', '表格起始项', '父项后续段落', '同层父项'];
+  const ordered = listRuns.filter(run => labels.includes(run.text));
+  assert.deepEqual(ordered.map(run => run.text), labels, 'markers appear once and nested blocks stay in order');
+  assert.deepEqual(listRuns.filter(run => /^(?:•|\d+\.)$/.test(run.text)).map(run => run.text), ['•', '9.', '•', '10.', '11.', '•', '•']);
+  const [body, parent, child, deep, childContinuation, childTable, childSibling, tableFirst, parentContinuation, parentSibling] = ordered;
+  assert(body.x < parent.x && parent.x < child.x && child.x < deep.x);
+  assert.equal(childContinuation.x, child.x);
+  assert.equal(childSibling.x, child.x);
+  assert.equal(childTable.x, child.x + 8);
+  assert.equal(tableFirst.x, childTable.x);
+  assert.equal(listRuns.find(run => run.text === '11.').y, tableFirst.y);
+  assert.equal(parentContinuation.x, parent.x);
+  assert.equal(parentSibling.x, parent.x);
+  assert(pagedList.getPageCount() > 1, 'the list fixture must span pages');
+  const firstLine = listRuns.find(run => run.text === '分页项');
+  const continuation = listRuns.filter(run => run.text === '长行内容');
+  assert(firstLine && continuation.length === 68 && continuation.every(run => run.x === firstLine.x));
+  const markdownList = await run('pdf', undefined, '9. Markdown 首段\n\n   Markdown 次段\n\n   | Markdown 表头 |\n   | --- |\n   | 单元格 |\n\n10. Markdown 同层');
+  assert.equal(markdownList.status, 0, markdownList.errors);
+  const markdownRuns = pdfRuns(await PDFDocument.load(await readFile(markdownList.output)));
+  const markdownBody = markdownRuns.find(run => run.text === 'Markdown 首段');
+  assert(markdownBody && markdownRuns.find(run => run.text === '9.')?.x < markdownBody.x);
+  assert.equal(markdownRuns.find(run => run.text === 'Markdown 次段')?.x, markdownBody.x);
+  assert.equal(markdownRuns.find(run => run.text === 'Markdown 同层')?.x, markdownBody.x);
+  assert.equal(markdownRuns.find(run => run.text === 'Markdown 表头')?.x, markdownBody.x + 8);
   const merged={type:'doc',content:[{type:'table',content:[
     {type:'tableRow',content:[cell('项目',true),cell('负责人',true),cell('金额',true)]},
     {type:'tableRow',content:[{...cell('合并说明'),attrs:{colspan:2,rowspan:1,colwidth:null}},cell('100元')]},
@@ -66,6 +107,22 @@ try{
       assert(!JSON.stringify(source).includes('"href":"#'),'anchors must not become executable file hyperlinks');
     }
   }
+  const sidecarBlocked = join(directory, 'sidecar-blocked.docx.document.json');
+  await mkdir(sidecarBlocked);
+  const wordWithoutDraft = await run('docx', undefined, '可交付的正文', 'sidecar-blocked');
+  assert.equal(wordWithoutDraft.status, 0, wordWithoutDraft.errors);
+  const wordWithoutDraftZip = await JSZip.loadAsync(await readFile(wordWithoutDraft.output));
+  assert((await wordWithoutDraftZip.file('word/document.xml').async('string')).includes('可交付的正文'));
+  assert((await stat(sidecarBlocked)).isDirectory(), 'a sidecar write error should leave the completed Word file intact');
+  const target = 'https://example.com/' + 'a'.repeat(1950);
+  const references = Array.from({length: 2100}, (_, index) => `[引用 ${index}][target]`).join('\n\n');
+  const compactMarkdown = references + '\n\n[target]: ' + target;
+  assert(Buffer.byteLength(compactMarkdown) < 2 * 1024 * 1024);
+  const expandedWord = await run('docx', undefined, compactMarkdown, 'expanded-source');
+  assert.equal(expandedWord.status, 0, expandedWord.errors);
+  assert((await stat(expandedWord.output + '.document.json')).size > 4 * 1024 * 1024);
+  const expandedZip = await JSZip.loadAsync(await readFile(expandedWord.output));
+  assert((await expandedZip.file('word/document.xml').async('string')).includes('引用 2099'));
   const invalid=await run('docx',{type:'doc',content:[{type:'script',content:[]}]});assert.notEqual(invalid.status,0,'unsupported document structures must be rejected');
-  console.log('Editable document export passed: current content/formatting, merged-column PDF positions, cell paragraphs, four-format local links, durable source and invalid-input rejection.');
+  console.log('Editable document export passed: current content, nested PDF lists and tables, local links, and Word output with missing or oversized editable sources.');
 }finally{await rm(directory,{recursive:true,force:true});}

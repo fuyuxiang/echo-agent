@@ -213,7 +213,7 @@ fn index_root() -> PathBuf {
 
 fn target_fingerprint() -> String {
     format!(
-        "{}:office-structural-v3:{}:tokenizers={}",
+        "{}:office-structural-v4:{}:tokenizers={}",
         echo_agent_memory::local::fingerprint(),
         echo_agent_memory::chunker::CHUNK_PIPELINE_VERSION,
         echo_agent_memory::local::available(false)
@@ -518,11 +518,10 @@ fn read_source_file(path: &Path) -> Result<String, String> {
                         || (name.starts_with("ppt/slides/") && name.ends_with(".xml"))
                 }
                 "xlsx" => {
-                    name == "xl/_rels/workbook.xml.rels"
-                        || ((name == "xl/sharedStrings.xml"
-                            || name == "xl/workbook.xml"
-                            || name.starts_with("xl/worksheets/sheet"))
-                            && name.ends_with(".xml"))
+                    matches!(
+                        name.as_str(),
+                        "xl/_rels/workbook.xml.rels" | "xl/sharedStrings.xml" | "xl/workbook.xml"
+                    ) || crate::knowledge_documents::is_worksheet_part(&name)
                 }
                 _ => false,
             };
@@ -1786,6 +1785,43 @@ mod tests {
         let extracted = read_source_file(&spreadsheet).unwrap();
         assert!(extracted.contains("AMJ1：1024"));
         assert!(extracted.contains("AMK1：1025"));
+
+        let workbook = r#"<workbook xmlns:r="r"><sheets><sheet name="自定义表" r:id="r1"/><sheet name="明细表" r:id="r2"/></sheets></workbook>"#;
+        let custom_sheet = r#"<worksheet><row r="1"><c r="A1" t="inlineStr"><is><t>自定义路径全文</t></is></c></row></worksheet>"#;
+        let valid = write_package(
+            "自定义路径.xlsx",
+            &[
+                ("xl/workbook.xml", workbook),
+                (
+                    "xl/_rels/workbook.xml.rels",
+                    r#"<Relationships><Relationship Id="r1" Target="worksheets/custom.xml"/><Relationship Id="r2" Target="worksheets/sheet2.xml"/></Relationships>"#,
+                ),
+                ("xl/worksheets/custom.xml", custom_sheet),
+                (
+                    "xl/worksheets/sheet2.xml",
+                    "<worksheet><row><c><v>200</v></c></row></worksheet>",
+                ),
+            ],
+        );
+        let extracted = read_source_file(&valid).unwrap();
+        assert!(extracted.contains("自定义路径全文") && extracted.contains("| 200 |"));
+
+        let invalid = write_package(
+            "关系缺损.xlsx",
+            &[
+                ("xl/workbook.xml", workbook),
+                (
+                    "xl/_rels/workbook.xml.rels",
+                    r#"<Relationships><Relationship Id="r1" Target="worksheets/custom.xml"/></Relationships>"#,
+                ),
+                ("xl/worksheets/custom.xml", custom_sheet),
+                (
+                    "xl/worksheets/sheet2.xml",
+                    "<worksheet><row><c><v>200</v></c></row></worksheet>",
+                ),
+            ],
+        );
+        assert!(read_source_file(&invalid).unwrap_err().contains("明细表"));
     }
 
     fn source_fixture() -> (tempfile::TempDir, Vec<LocalSource>, IndexManifest) {

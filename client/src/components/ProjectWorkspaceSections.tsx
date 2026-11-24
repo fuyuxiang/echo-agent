@@ -9,7 +9,7 @@ import type { ProjectWorkspace } from "@/lib/use-project-workspace";
 import { displayPath } from "@/lib/display-path";
 import { useAppDialog } from "./AppDialog";
 import { TaskDrawer } from "./ProjectTasks";
-import { projectCollaborationCapabilities } from "@/lib/team-project-client";
+import { canEditTeamProject, projectCollaborationCapabilities, projectRoleUnavailable } from "@/lib/team-project-client";
 
 export function ProjectStatus({ status }: { status: ProjectTaskState }) {
   return <span className="project-status" data-state={status}><span aria-hidden="true" />{PROJECT_TASK_STATES[status].label}</span>;
@@ -84,8 +84,8 @@ export function ProjectActivity({ project, sharedId, workspace, onOpenTask, draf
     }
     catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
-  const canComment = !sharedId || !!workspace.snapshot && Array.isArray(workspace.snapshot.comments) && workspace.snapshot.role !== "viewer";
-  return <div className="project-activity"><div className="project-activity-feed">{feed.map(e => <article className="project-activity-entry" key={e.id}><span className="project-actor-avatar">{e.actor.slice(-1)}</span><div><p><strong>{e.actor}</strong> {e.content}</p><small>{new Date(e.time).toLocaleString()}</small>{e.taskId && <button className="pd-btn pd-btn--ghost" onClick={() => onOpenTask(e.taskId!)}>查看任务<ArrowUpRight size={13} /></button>}</div></article>)}</div>{canComment ? <div className="project-activity-composer"><label htmlFor="project-comment">给项目留个言{workspace.snapshot && "（项目成员可见）"}</label><textarea id="project-comment" value={text} maxLength={8000} disabled={busy} onChange={e => updateText(e.target.value)} placeholder="记录进展、补充背景或提出问题…" rows={3} /><button className="pd-btn pd-btn--primary" disabled={busy || !text.trim()} onClick={() => void submit()}>{busy ? "保存中…" : "发布留言"}</button>{error && <p role="alert">{error}</p>}</div> : <p className="project-workspace-hint">{workspace.snapshot?.role === "viewer" ? "当前为仅查看权限。" : "组织服务升级后可发布共享项目留言。"}</p>}</div>;
+  const canComment = !sharedId || !!workspace.snapshot && Array.isArray(workspace.snapshot.comments) && canEditTeamProject(workspace.snapshot.role);
+  return <div className="project-activity"><div className="project-activity-feed">{feed.map(e => <article className="project-activity-entry" key={e.id}><span className="project-actor-avatar">{e.actor.slice(-1)}</span><div><p><strong>{e.actor}</strong> {e.content}</p><small>{new Date(e.time).toLocaleString()}</small>{e.taskId && <button className="pd-btn pd-btn--ghost" onClick={() => onOpenTask(e.taskId!)}>查看任务<ArrowUpRight size={13} /></button>}</div></article>)}</div>{canComment ? <div className="project-activity-composer"><label htmlFor="project-comment">给项目留个言{workspace.snapshot && "（项目成员可见）"}</label><textarea id="project-comment" value={text} maxLength={8000} disabled={busy} onChange={e => updateText(e.target.value)} placeholder="记录进展、补充背景或提出问题…" rows={3} /><button className="pd-btn pd-btn--primary" disabled={busy || !text.trim()} onClick={() => void submit()}>{busy ? "保存中…" : "发布留言"}</button>{error && <p role="alert">{error}</p>}</div> : <p className="project-workspace-hint">{workspace.snapshot?.role === "viewer" ? "当前为仅查看权限。" : workspace.snapshot && !canEditTeamProject(workspace.snapshot.role) ? projectRoleUnavailable : "组织服务升级后可发布共享项目留言。"}</p>}</div>;
 }
 
 export function ProjectDecisionsDialog({ project, sharedId, workspace, onClose }: { project: ProjectMeta; sharedId?: string; workspace: ProjectWorkspace; onClose: () => void }) {

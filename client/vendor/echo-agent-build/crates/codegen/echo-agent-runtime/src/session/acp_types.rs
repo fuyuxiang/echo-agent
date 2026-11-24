@@ -623,7 +623,6 @@ pub struct FeedbackContext {
 #[derive(Debug, Clone)]
 pub struct InheritedTurnAuthority {
     pub prompt_mode: crate::session::plan_mode::PromptMode,
-    pub document_tools: bool,
     pub session_id: String,
     pub run_id: String,
     pub workspace: String,

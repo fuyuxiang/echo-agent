@@ -228,6 +228,7 @@ pub struct SamplingErrorInfo {
 pub enum SamplingErrorKind {
     Auth,
     Http,
+    ChatStreamInterrupted,
     Api,
     Serialization,
     IdleTimeout,
@@ -247,6 +248,7 @@ impl SamplingErrorKind {
         match self {
             SamplingErrorKind::Auth => "auth",
             SamplingErrorKind::Http => "http",
+            SamplingErrorKind::ChatStreamInterrupted => "chat_stream_interrupted",
             SamplingErrorKind::Api => "api",
             SamplingErrorKind::Serialization => "serialization",
             SamplingErrorKind::IdleTimeout => "idle_timeout",
@@ -287,6 +289,9 @@ impl From<&SamplingError> for SamplingErrorInfo {
                 )
             }
             SamplingError::EventStreamError(_) => (SamplingErrorKind::Http, None, None, None),
+            SamplingError::ChatStreamInterrupted { .. } => {
+                (SamplingErrorKind::ChatStreamInterrupted, None, None, None)
+            }
             SamplingError::StreamError { .. } => (SamplingErrorKind::Api, None, None, None),
             SamplingError::IdleTimeout { .. } => (SamplingErrorKind::IdleTimeout, None, None, None),
             SamplingError::EmptyResponse { .. } => {

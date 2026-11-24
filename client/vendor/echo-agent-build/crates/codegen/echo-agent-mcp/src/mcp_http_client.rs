@@ -2,9 +2,9 @@
 //! backoff, working around rmcp's zero-backoff reconnect loop: when an
 //! established SSE stream errors, rmcp re-issues the `GET` immediately with
 //! its retry counter reset to 0, never consulting its `SseRetryPolicy`
-//! (only connect failures and graceful EOF consult it). We ship rmcp 2.1;
-//! still unfixed upstream as of rmcp 2.1.0:
-//! <https://github.com/modelcontextprotocol/rust-sdk/blob/rmcp-v2.1.0/crates/rmcp/src/transport/common/client_side_sse.rs#L250-L261>
+//! (only connect failures and graceful EOF consult it). This behavior
+//! remains in the locked rmcp 3.9.0:
+//! <https://github.com/modelcontextprotocol/rust-sdk/blob/rmcp-v3.9.0/crates/rmcp/src/transport/common/client_side_sse.rs#L458-L488>
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -97,6 +97,7 @@ describe("provider 注册表", () => {
     list: async () => [],
     readText: async () => null,
     writeText: async () => true,
+    createText: async () => true,
     delete: async () => true,
     makeDir: async () => true,
   });
@@ -135,5 +136,16 @@ describe("provider 注册表", () => {
 
     expect(getStorageProvider("removed-dav")).toBeNull();
     expect(listStorageProviders()).toEqual([{ id: "custom-source", label: "custom-source" }]);
+  });
+
+  it("新建文本和保存已打开文件使用不同 IPC", async () => {
+    const dav = createTauriWebDavProvider({
+      id: "dav", label: "WebDAV", kind: "webdav", enabled: true, baseUrl: "https://dav.example.com",
+    });
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await dav.createText("/new.md", "new");
+    expect(invoke).toHaveBeenLastCalledWith("storage_create_text", { id: "dav", path: "/new.md", content: "new" });
+    await dav.writeText("/new.md", "edited");
+    expect(invoke).toHaveBeenLastCalledWith("storage_write_text", { id: "dav", path: "/new.md", content: "edited" });
   });
 });

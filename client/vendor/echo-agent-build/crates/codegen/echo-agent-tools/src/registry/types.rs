@@ -210,6 +210,11 @@ pub struct ToolServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior_preset: Option<String>,
 }
+
+/// Built-in tool id used by Desktop configurations saved before its removal.
+#[cfg(feature = "desktop")]
+pub const RETIRED_LSP_TOOL_ID: &str = "EchoAgentBuild:lsp";
+
 #[derive(Clone)]
 pub struct SubagentSessionResources {
     pub backend: crate::implementations::echo_agent_build::task::backend::SubagentBackendResource,
@@ -706,6 +711,7 @@ impl ToolRegistryBuilder {
         b.register::<echo_agent_build::TaskTool>();
         b.register::<echo_agent_build::WebSearchTool>();
         b.register_with_params::<echo_agent_build::WebFetchTool, echo_agent_build::web_fetch::WebFetchParams>();
+        #[cfg(not(feature = "desktop"))]
         b.register::<echo_agent_build::LspTool>();
         b.register::<echo_agent_build::ImageGenTool>();
         b.register::<echo_agent_build::ImageEditTool>();
@@ -764,6 +770,7 @@ impl ToolRegistryBuilder {
                 echo_agent_build_hashline::HashlineGrepTool,
                 echo_agent_build_hashline::config::HashlineSchemeParams,
             >();
+        #[cfg(not(feature = "desktop"))]
         b.register_reminder(crate::reminders::LspDiagnosticsReminder);
         b.register_reminder(crate::reminders::TaskCompletionReminder);
         b.register_reminder(SkillDiscoveryReminder);
@@ -975,6 +982,12 @@ impl ToolRegistryBuilder {
         truncation_config: crate::types::context::TruncationConfig,
         workspace_viewer_ctx: Option<echo_agent_tool_runtime::WorkspaceViewerContext>,
     ) -> Result<FinalizedToolset, Vec<RequirementError>> {
+        #[cfg(feature = "desktop")]
+        let config = {
+            let mut config = config;
+            config.tools.retain(|tool| tool.id != RETIRED_LSP_TOOL_ID);
+            config
+        };
         let errors = self.validate_config(&config);
         if !errors.is_empty() {
             return Err(errors);

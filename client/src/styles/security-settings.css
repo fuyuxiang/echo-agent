@@ -26,6 +26,7 @@
 .security-settings .rules-list__action { overflow-wrap: anywhere; }
 .security-settings .rules-list__tool { font-family: inherit; font-size: var(--echo-caption-size); overflow-wrap: anywhere; }
 .security-settings .rules-list__pattern { white-space: normal; overflow-wrap: anywhere; }
+.security-settings .rules-list__repair { display: flex; margin-block-start: 4px; }
 .security-settings .permission-rule-builder { grid-template-columns: minmax(100px, .7fr) minmax(160px, 1fr) minmax(160px, 1fr); padding: 20px 0 12px; }
 .security-settings .settings-hint { margin: 10px 0 0; padding: 0; border: 0; background: none; font-size: var(--echo-caption-size); line-height: 1.7; overflow-wrap: anywhere; }
 .security-settings__unsaved { color: var(--echo-text-medium); font-size: var(--echo-caption-size); margin: 12px 0 0; }
@@ -37,6 +38,12 @@
 .security-settings .browser-task-settings .settings-row__label { min-width: 0; }
 .security-settings .browser-task-settings .settings-row__description { overflow-wrap: anywhere; }
 .security-settings .browser-task-settings input[type="checkbox"] { flex-shrink: 0; accent-color: var(--echo-color-text-brand-default); }
+.security-settings .browser-task-settings__network {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+.security-settings .browser-task-settings__network input[type="checkbox"] { margin: 3px 0 0; }
 .browser-task-settings__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .browser-task-settings__pairing { min-width: 0; overflow-wrap: anywhere; }
 .browser-task-settings__pairing > code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }

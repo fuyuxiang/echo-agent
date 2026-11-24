@@ -79,7 +79,9 @@ function OrganizationError({ reason, onRetry, busy = false, onDismiss }: {
 }) {
   const connection = /error sending request|fetch|network|connect|timed?\s*out|timeout|dns|certificate|tls|ssl/i.test(reason);
   const expired = /\b401\b|unauthorized|token.*expired/i.test(reason);
-  const message = connection ? "暂时无法连接组织服务，请检查网络和服务地址后重试。"
+  const signingKeyChanged = /organization signing key changed/i.test(reason);
+  const message = signingKeyChanged ? "组织签名公钥已变更，请联系组织管理员完成迁移。"
+    : connection ? "暂时无法连接组织服务，请检查网络和服务地址后重试。"
     : expired ? "组织登录状态已过期，请重新登录。"
       : /[\u4e00-\u9fff]/.test(reason) && !/https?:\/\//.test(reason) ? reason.replace(/^Error:\s*/, "").slice(0, 200)
         : "组织操作未完成，请重试或查看技术详情。";
@@ -254,7 +256,7 @@ export function OrganizationMemoryPanel({
   const [error, setError] = useState<string | null>(null);
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [workspaceUnavailable, setWorkspaceUnavailable] = useState(false);
-  const [serverUrl, setServerUrl] = useState("https://");
+  const [serverUrl, setServerUrl] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [tab, setTab] = useState<Tab>("overview");
@@ -1006,7 +1008,7 @@ export function OrganizationMemoryPanel({
             {session?.requiresReauthentication && (
               <div className="org-memory__reauth" role="status">
                 <AlertTriangle size={15} />
-                <span>登录状态已过期，服务器和账号已为你保留，请重新输入密码。</span>
+                <span>请重新输入密码。服务器地址和账号已为你保留。</span>
               </div>
             )}
             <label>服务器地址<input value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder="https://memory.company.com" required /></label>
@@ -1029,6 +1031,8 @@ export function OrganizationMemoryPanel({
   const pageTitle = tab === "overview" ? "组织知识" : tab === "memories" ? "经验" : tab === "documents" ? "文档" : "组织 Skills";
   const orgName = session.bootstrap?.scopes.find(scope => scope.kind === "org")?.name ?? "组织";
   const identity = session.user?.displayName || session.user?.username || session.username || "组织账号";
+  const role = (session.user ?? session.bootstrap?.user)?.role;
+  const roleLabel = role && { member: "成员", curator: "审核员", admin: "管理员" }[role];
   const hasSharedScope = session.bootstrap?.scopes.some(scope => scope.kind !== "personal");
   const capability = session.organizationMemoryEnabled ? "组织知识已启用"
     : hasSharedScope ? "组织知识暂不可用" : "暂无团队或组织共享权限";
@@ -1046,7 +1050,7 @@ export function OrganizationMemoryPanel({
         </span>
         <ActionMenu label={`组织账号：${identity}`} menuLabel="组织账号" triggerClassName="org-account-trigger" resetKey={session.user?.id}
           trigger={<><UserRound size={16} aria-hidden="true" /><span>{identity}</span><ChevronDown size={14} aria-hidden="true" /></>}>
-          {({ close }) => <><div className="org-account-details"><strong>{identity}</strong><span>{session.serverUrl}</span><span>{capability}</span><small>退出登录不会退出组织成员关系</small></div>
+          {({ close }) => <><div className="org-account-details"><strong>{identity}</strong><span>{session.serverUrl}</span><span>{roleLabel ? `组织角色 · ${roleLabel}` : "组织角色暂不可用"}</span><span>{capability}</span><small>退出登录不会退出组织成员关系</small></div>
             <button type="button" role="menuitem" className="topbar-actions__item" disabled={busy} onClick={() => { close(); void handleLogout(); }}><LogOut size={15} />退出登录</button></>}
         </ActionMenu>
       </ManagementToolbar>

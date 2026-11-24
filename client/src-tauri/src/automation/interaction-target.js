@@ -1,15 +1,19 @@
-// Evaluated in a CDP isolated world, separate from website scripts. The weak
-// map keeps actual node identity stable without marking or retaining the DOM.
+// Evaluated in an isolated world, separate from website scripts. Node
+// identities are tracked without marking the document.
 (input, documentToken, scroll, destinationOnly, clickPoint, formGuard) => {
   const state = globalThis.__echoInteractionTargets ??= {
     documentToken,
     nodes: new WeakMap(),
     next: 0,
   };
+  // WebKit can reclaim a DOM wrapper between isolated script calls. Retain
+  // the handful of nodes named by the current approval until it is replaced.
+  if (documentToken !== null) state.approvedNodes = new Set();
   const queryAll=(selector,root=document)=>{const result=[...root.querySelectorAll(selector)];for(const element of root.querySelectorAll('*'))if(element.shadowRoot)result.push(...queryAll(selector,element.shadowRoot));return result;};
   const actionable = 'a[href],button,input,textarea,select,summary,label,[role],[contenteditable],[tabindex]';
   const nodeId = node => {
     if (!state.nodes.has(node)) state.nodes.set(node, ++state.next);
+    if (documentToken !== null) state.approvedNodes.add(node);
     return state.nodes.get(node);
   };
   const implicitInputTypes = new Set(['text', 'search', 'tel', 'url', 'email', 'password',

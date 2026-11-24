@@ -1,5 +1,7 @@
 import { agentCancel } from "./agent-client";
-import { useSessionStore } from "@/stores/session-store";
+import { restoreSessionInteractions } from "./session-interactions";
+import { isAgentOwnedActiveStatus } from "./turn-status";
+import { sessionControlReceiptState, useSessionStore } from "@/stores/session-store";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useMessageQueueStore } from "@/stores/message-queue-store";
 import { usePermissionStore } from "@/stores/permission-store";
@@ -9,12 +11,19 @@ import { useQuestionStore } from "@/stores/question-store";
 export async function pauseProjectSession(sessionId: string) {
   const transcript = useSessionStore.getState().transcripts[sessionId];
   const previousStatus = useSessionsStore.getState().independent.find(s => s.sessionId === sessionId)?.status;
-  const promptId = transcript?.pendingSendNowPromptId ?? transcript?.messages.find(m => m.id === transcript.streamingMessageId)?.promptId;
-  useSessionStore.getState().requestControl(sessionId, "pause", promptId);
+  const activePromptId = transcript?.messages.find(m => m.id === transcript.streamingMessageId)?.promptId;
+  const promptId = transcript?.pendingSendNowPromptId ?? activePromptId;
+  const request = useSessionStore.getState().requestControl(sessionId, "pause", promptId);
   useSessionsStore.getState().upsert({ sessionId, status: "pausing" });
   try {
-    await agentCancel(sessionId, "pause", promptId);
-    useSessionStore.getState().confirmControl(sessionId, "pause");
+    if (transcript?.pendingSendNowPromptId && activePromptId) {
+      await agentCancel(sessionId, "pause", promptId, activePromptId);
+    } else {
+      await agentCancel(sessionId, "pause", promptId);
+    }
+    const receipt = sessionControlReceiptState(sessionId, request);
+    if (!receipt) return;
+    if (receipt === "pending") useSessionStore.getState().confirmControl(sessionId, "pause");
     useMessageQueueStore.getState().pauseQueued(sessionId);
     useMessageQueueStore.getState().settleSending(sessionId, "consume", promptId);
     useSessionsStore.getState().upsert({ sessionId, status: "paused", updatedAt: new Date().toISOString() });
@@ -23,8 +32,15 @@ export async function pauseProjectSession(sessionId: string) {
     const questions = useQuestionStore.getState();
     for (const r of questions.queues[sessionId] ?? []) questions.dismiss(r.requestId, sessionId);
   } catch (error) {
-    useSessionStore.getState().rejectControl(sessionId, "pause");
-    useSessionsStore.getState().upsert({ sessionId, status: previousStatus ?? (transcript?.streamingMessageId ? "working" : "pending") });
+    const receipt = sessionControlReceiptState(sessionId, request);
+    if (!receipt) return;
+    if (receipt === "pending") {
+      useSessionStore.getState().rejectControl(sessionId, "pause");
+      const live = useSessionStore.getState().transcripts[sessionId];
+      const stillActive = isAgentOwnedActiveStatus(previousStatus) || live?.streamingMessageId || live?.pendingSendNowPromptId;
+      const fallback = previousStatus === "planning" ? "planning" : stillActive ? "working" : "pending";
+      void restoreSessionInteractions(sessionId, fallback);
+    }
     throw error;
   }
 }

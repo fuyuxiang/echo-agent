@@ -1,10 +1,4 @@
-/**
- * 浏览器预览 —— 对齐 EchoAgent `context-viewer-components/browser-preview`
- * (嵌入式网页预览框)。
- *
- * 纯函数:URL 安全校验 + iframe sandbox 策略。EchoAgent 是本地桌面应用,在 WebView 内
- * 再嵌 iframe 预览外部页面,需限制可加载的协议 + sandbox 属性。便于单测。
- */
+/** URL parsing shared by the native browser panel and link routing. */
 
 /** 判定 URL 是否可安全嵌入预览。 */
 export function isPreviewableUrl(url: string): boolean {
@@ -84,40 +78,28 @@ export function safeRemoteImageUrl(value?: string): string | undefined {
   }
 }
 
-/** iframe sandbox 最小权限：允许页面基本交互，但保持不透明 origin 并禁止弹窗/顶层导航。 */
-export const PREVIEW_SANDBOX = [
-  "allow-scripts",
-  "allow-forms",
-].join(" ");
-
-/**
- * 规整预览 URL:补全协议(http)、去锚点。
- * 无效(空/非预览able)返回 null。
- */
+/** Parse an address for the native browser. Its proxy enforces the network policy. */
 export function normalizePreviewUrl(input: string): string | null {
-  const trimmed = (input || "").trim();
-  if (!trimmed) return null;
-  // 若已带非 http(s) 协议(file:/data:/javascript: 等)直接拒绝,不补全。
-  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^https?:\/\//i.test(trimmed)) {
-    return null;
-  }
-  // 补全缺省协议(仅当没有协议时)。
-  const withProto = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-  if (!isPreviewableUrl(withProto)) return null;
+  const address = input.trim();
+  if (!address || address.length > 8192 || /[\u0000-\u001f\u007f]/.test(address)) return null;
+  const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(address);
+  const hostWithPort = /^(?:[\w.-]+|\[[\da-f:]+\]):\d+(?:[/?#]|$)/i.test(address);
+  if (hasScheme && !hostWithPort && !/^https?:\/\//i.test(address)) return null;
+  const local = /^(?:localhost|127\.0\.0\.1|\[::1\])(?=[:/?#]|$)/i.test(address);
   try {
-    const u = new URL(withProto);
-    u.hash = ""; // 去锚点
-    return u.toString();
+    const url = new URL(/^https?:\/\//i.test(address) ? address : `${local ? "http" : "https"}://${address}`);
+    return url.hostname && !url.username && !url.password ? url.toString() : null;
   } catch {
     return null;
   }
 }
 
-/** 生成预览标题(用 hostname)。 */
-export function previewTitle(url: string): string {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return "网页预览";
-  }
+/** The panel can request a task-scoped exception for an exact loopback port. */
+export function developmentEndpoint(url: string): string | null {
+  const normalized = normalizePreviewUrl(url);
+  if (!normalized) return null;
+  const parsed = new URL(normalized);
+  return ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)
+    ? `${parsed.hostname}:${parsed.port || (parsed.protocol === "https:" ? "443" : "80")}`
+    : null;
 }

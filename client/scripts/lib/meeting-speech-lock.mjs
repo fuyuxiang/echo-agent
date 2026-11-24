@@ -1,6 +1,23 @@
-import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
+
+async function removeOwner(owner) {
+  try {
+    await rm(owner, { recursive: true, force: true, maxRetries: 4, retryDelay: 50 });
+  } catch (error) {
+    // Windows can report a busy or denied removal when another contender
+    // deletes the stale directory first. A vanished marker is already cleaned up.
+    if (error.code === "EPERM" || error.code === "EBUSY") {
+      try {
+        await lstat(owner);
+      } catch (lookupError) {
+        if (lookupError.code === "ENOENT") return;
+      }
+    }
+    throw error;
+  }
+}
 
 async function hasOtherOwner(root, own) {
   for (const entry of await readdir(root, { withFileTypes: true })) {
@@ -13,7 +30,7 @@ async function hasOtherOwner(root, own) {
       process.kill(pid, 0);
     } catch (error) {
       if (error.code === "ESRCH") {
-        await rm(owner, { recursive: true, force: true });
+        await removeOwner(owner);
         continue;
       }
       if (error.code !== "EPERM") throw error;
@@ -35,7 +52,7 @@ export async function withMeetingSpeechLock(root, prepare, timeoutMs = 20 * 60_0
     try {
       if (!await hasOtherOwner(root, own)) return await prepare();
     } finally {
-      await rm(own, { recursive: true, force: true });
+      await removeOwner(own);
     }
     if (performance.now() >= deadline) break;
     await setTimeout(100 + Math.random() * 150);

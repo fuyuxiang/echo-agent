@@ -14,14 +14,14 @@ Echo Agent offers **EchoAgent Desktop (Client)** for interactive work on your co
 
 ## Desktop: complete tasks in a workspace
 
-Desktop brings conversations, plans, tool activity, approvals, file changes, and deliverables into one application. Coding tasks can use the embedded IDE. Office tasks can generate documents. Browser and computer automation depend on device capabilities.
+Desktop brings conversations, plans, tool activity, approvals, file changes, and deliverables into one application. Review code changes and generated office documents from the conversation. Browser and computer automation depend on device capabilities.
 
 Start by installing the application, choosing a working directory and model, submitting a task, and checking the result.
 
 - [Installation and requirements](desktop/installation.md)
 - [Your first task](desktop/quickstart.md)
 - [Tasks, sessions, and permissions](desktop/tasks-permissions.md)
-- [Coding workspace](desktop/coding.md)
+- [Code tasks and file changes](desktop/coding.md)
 - [Browser and computer automation](desktop/automation.md)
 - [Documents, knowledge, and memory](desktop/knowledge-memory.md)
 - [Models and extensions](desktop/models-extensions.md)

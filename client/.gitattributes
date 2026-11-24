@@ -1,4 +1,3 @@
-patches/echo-agent-build/*.patch -whitespace
 # Preserve the imported upstream snapshot byte-for-byte; its historical files
 # intentionally contain whitespace that does not follow EchoAgent's style.
 vendor/echo-agent-build/** -whitespace
@@ -6,3 +5,4 @@ vendor/echo-agent-build/** -whitespace
 src-tauri/icons/tray/mark.svg text eol=lf
 # Keep the vendored ONNX manifest, build inputs and provenance hashes portable.
 vendor/ort-sys/** text eol=lf
+vendor/faster-hex/** text eol=lf

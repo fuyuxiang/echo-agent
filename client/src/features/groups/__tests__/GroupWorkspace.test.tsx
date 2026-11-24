@@ -6,6 +6,7 @@ import { GroupWorkspace } from "../GroupWorkspace";
 import { useGroupStore } from "../group-store";
 import { groupSend, groupMemberChange, groupControl, type Group } from "../group-client";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
+import { useSessionStore } from "@/stores/session-store";
 import { saveDraftAttachments } from "@/lib/draft-attachments";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => []) }));
@@ -67,6 +68,66 @@ it("模型声称被拦截但没有失败工具记录时，不把文字当作真�
   render(<GroupWorkspace cwd="/work" models={[{id:"test",label:"测试"}]} workspaces={[]} onToast={()=>{}} onOpenSettings={()=>{}} />);
   await act(async()=>{});
   expect(screen.queryByText(/有操作被自动判断拦截/)).not.toBeInTheDocument();
+});
+
+it("专家团方案审批通信失败时保留当前请求，重试成功后仅清除对应请求", async () => {
+  const sessionId = "native-e";
+  const preceding = useSessionStore.getState();
+  preceding.requestPlanApproval({ requestId: "review-first", sessionId, toolCallId: "tool-first", planContent: "第一份待批准方案" });
+  preceding.requestPlanApproval({ requestId: "review-next", sessionId, toolCallId: "tool-next", planContent: "第二份待批准方案" });
+  let retry = false;
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command !== "agent_resolve_plan_approval") return [];
+    if (!retry) throw new Error("暂时无法连接 Agent");
+    return true;
+  });
+  try {
+    render(<GroupWorkspace cwd="/work" models={[{id:"test",label:"测试"}]} workspaces={[]} onToast={() => {}} onOpenSettings={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "批准方案" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("暂时无法连接 Agent");
+    expect(screen.getByText("第一份待批准方案")).toBeInTheDocument();
+    expect(screen.queryByText("第二份待批准方案")).not.toBeInTheDocument();
+
+    retry = true;
+    fireEvent.click(screen.getByRole("button", { name: "批准方案" }));
+    await screen.findByText("第二份待批准方案");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(useSessionStore.getState().transcripts[sessionId].planApprovals.map(plan => plan.requestId)).toEqual(["review-next"]);
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "agent_resolve_plan_approval")).toEqual([
+      ["agent_resolve_plan_approval", { requestId: "review-first", outcome: "approved", feedback: null }],
+      ["agent_resolve_plan_approval", { requestId: "review-first", outcome: "approved", feedback: null }],
+    ]);
+  } finally {
+    cleanup();
+    useSessionStore.setState({ transcripts: preceding.transcripts });
+  }
+});
+
+it("专家团跳过已过期方案并从后端恢复下一项待审批请求", async () => {
+  const sessionId = "native-e";
+  const before = useSessionStore.getState();
+  const onToast = vi.fn();
+  before.requestPlanApproval({ requestId: "expired", sessionId, toolCallId: "expired-tool", planContent: "已过期方案" });
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "agent_resolve_plan_approval") return false;
+    if (command === "agent_list_pending_interactions") return {
+      permissions: [], questions: [], folderTrustRequests: [],
+      planApprovals: [{ requestId: "current", sessionId, toolCallId: "current-tool", planContent: "新的待批准方案" }],
+    };
+    return [];
+  });
+  try {
+    render(<GroupWorkspace cwd="/work" models={[{id:"test",label:"测试"}]} workspaces={[]} onToast={onToast} onOpenSettings={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "批准方案" }));
+    expect(await screen.findByText("新的待批准方案")).toBeInTheDocument();
+    expect(screen.queryByText("已过期方案")).not.toBeInTheDocument();
+    expect(onToast).toHaveBeenCalledWith("此方案的审批请求已结束。");
+    expect(invoke).toHaveBeenCalledWith("agent_list_pending_interactions", { sessionId });
+    expect(useSessionStore.getState().transcripts[sessionId].planApprovals.map(plan => plan.requestId)).toEqual(["current"]);
+  } finally {
+    cleanup();
+    useSessionStore.setState({ transcripts: before.transcripts });
+  }
 });
 
 it("回复收件人可改为协调员，引用保留，发送对象与界面一致", async () => {

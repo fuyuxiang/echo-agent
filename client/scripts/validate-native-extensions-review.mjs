@@ -4,7 +4,6 @@ import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve, relative, isAbsolute } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { pathToFileURL } from 'node:url';
 import { cleanNativeReviewEnvironment } from './lib/native-review-isolation.mjs';
 import { PRIVATE_REVIEW_MODEL_ID, seedReviewModel, captureReviewModelLogs, redactReviewModelSecrets } from './lib/native-review-model.mjs';
 import { nativeReviewOutput } from './lib/native-review-output.mjs';
@@ -22,7 +21,7 @@ export const EXTENSIONS_CHECKS = Object.freeze({
 });
 export function extensionsEnvironment(base, legacy, phase) {
   assert(Object.hasOwn(EXTENSIONS_CHECKS, phase)); const env = cleanNativeReviewEnvironment(base);
-  for (const key of ['ECHO_AGENT_HOME', 'ECHO_THEIA_NODE', 'NODE_OPTIONS', 'NODE_PATH']) delete env[key];
+  for (const key of ['ECHO_AGENT_HOME', 'NODE_OPTIONS', 'NODE_PATH']) delete env[key];
   return { ...env, GROK_HOME: legacy, RUST_LOG: 'warn,echoagent_lib::mcp=info', ECHO_DESKTOP_REVIEW: '1', ECHO_DESKTOP_REVIEW_EXTENSIONS: '1', ECHO_DESKTOP_REVIEW_PHASE: phase };
 }
 export function createExtensionResources(home, nonce) {
@@ -207,7 +206,7 @@ export async function runNativeExtensionsReview(executable) {
   }
   console.log(JSON.stringify({ passed: result.passed, nativeVerified: result.nativeVerified, home, output, errors: result.errors })); return result;
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   assert.equal(process.argv.length, 3, 'Pass a built native executable and explicit NATIVE_REVIEW_MODEL_CONFIG');
   if (!(await runNativeExtensionsReview(process.argv[2])).passed) process.exitCode = 1;
 }

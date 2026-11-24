@@ -2,6 +2,13 @@ import { describe, it, expect } from "vitest";
 import { formatAgentError, friendlyError } from "../error-format";
 
 describe("formatAgentError", () => {
+  it.each([
+    ["response truncated by max_tokens", "输出长度上限"],
+    ["Responses API reached the maximum number of messages", "消息数量上限"],
+    ["Responses API returned an incomplete response", "提前结束"],
+  ])("保留 Responses 终止原因 %s", (detail, expected) => {
+    expect(friendlyError(JSON.stringify({ data: { message: detail } }))).toContain(expected);
+  });
   it("识别服务商窗口超限并保留当前任务的继续处理入口", () => {
     const error = "API error (status 400 Bad Request): bad_request_error: invalid params, context window exceeds limit (2013)";
     expect(formatAgentError(error)).toContain("当前任务");
@@ -68,6 +75,15 @@ describe("formatAgentError", () => {
     const result = formatAgentError(raw);
     expect(result).not.toBeNull();
     expect(result).toContain("网络连接失败");
+  });
+
+  it.each([
+    JSON.stringify({ data: { error_kind: "chat_stream_interrupted", message: "error decoding response body" } }),
+    JSON.stringify({ error_kind: "chat_stream_interrupted", message: "error decoding response body" }),
+    'Error { code: -32603: Internal error, message: "Internal error", data: Some(Object {"error_kind": String("chat_stream_interrupted"), "message": String("error decoding response body")}) }',
+    "reqwest error stream: Chat Completions stream closed before the selected choice finished",
+  ])("将实时和历史断流错误转为可继续的提示", raw => {
+    expect(formatAgentError(raw)).toBe("模型回复中断。已有内容已保留，可在当前任务继续。");
   });
 
   it("将旧版 finish_reason 反序列化错误转为可操作提示", () => {

@@ -38,17 +38,41 @@ export async function renderDocument(model, title, output) {
     styles: { default: { document: { run: { font: 'Noto Sans CJK SC', size: 22 } } } },
     sections: [{ properties: { page: { margin: { top: 1150, bottom: 1150, left: 1200, right: 1200 } } }, children: blocks(document.content) }] });
   await writeFile(output, await Packer.toBuffer(outputDocument));
-  await writeFile(output + '.document.json', JSON.stringify(document));
+  try {
+    await writeFile(output + '.document.json', JSON.stringify(document));
+  } catch (error) {
+    // The desktop independently verifies the Word file and checks the sidecar.
+    // Keep the completed Word file usable if the optional write fails.
+    process.stderr.write(`Unable to save editable source: ${error.message}\n`);
+  }
 }
 
 export function documentBlocks(document) {
   const output = [];
-  function visit(nodes, depth = 0, prefix) {
-    for (const node of nodes) {
-      if (node.type === 'table') output.push({ type: 'table', rows: node.content.map(row => row.content.map(cell => ({text:documentText(cell),colspan:Number(cell.attrs?.colspan ?? 1)}))) });
-      else if (node.type === 'bulletList' || node.type === 'orderedList') node.content.forEach((item, index) => visit(item.content, depth + 1, node.type === 'bulletList' ? '•' : `${Number(node.attrs?.start ?? 1) + index}.`));
-      else if (node.type === 'blockquote' || node.type === 'listItem') visit(node.content, depth + 1);
-      else output.push({ type: node.type === 'heading' ? 'heading' : node.type === 'codeBlock' ? 'code' : 'paragraph', text: documentText(node), level: node.attrs?.level, depth, prefix });
+  function visit(nodes, indentLevel = 0, quote = false, listGutters = [], marker) {
+    for (const [index, node] of nodes.entries()) {
+      const prefix = index === 0 ? marker : undefined;
+      const layout = { indentLevel, quote, listGutters, prefix };
+      if (node.type === 'table') {
+        output.push({ ...layout, type: 'table', rows: node.content.map(row => row.content.map(cell => ({
+          text: documentText(cell), colspan: Number(cell.attrs?.colspan ?? 1),
+        }))) });
+      } else if (node.type === 'bulletList' || node.type === 'orderedList') {
+        if (prefix) output.push({ ...layout, type: 'paragraph', text: '' });
+        const ordered = node.type === 'orderedList';
+        const start = Number(node.attrs?.start ?? 1);
+        const gutter = ordered ? `${start + node.content.length - 1}.` : '•';
+        const nestedGutters = [...listGutters, gutter];
+        node.content.forEach((item, itemIndex) => {
+          visit(item.content, indentLevel + 1, quote, nestedGutters, ordered ? `${start + itemIndex}.` : '•');
+        });
+      } else if (node.type === 'blockquote') visit(node.content, indentLevel + 1, true, listGutters, prefix);
+      else output.push({
+        ...layout,
+        type: node.type === 'heading' ? 'heading' : node.type === 'codeBlock' ? 'code' : 'paragraph',
+        text: node.type === 'horizontalRule' ? '────────────────────' : documentText(node),
+        level: node.attrs?.level,
+      });
     }
   }
   visit(normalizeDocument(document).content);

@@ -129,7 +129,7 @@ export default function DocumentWorkbench({path,sessionId,cwd,content,active=tru
     if(!record)return;
     const receipt=sourceMissing ? await session.export(format,record.revision) : await session.export(format);
     if(!receipt)return;
-    if(isCurrent())onToast?.(sourceMissing?'已导出恢复的编辑稿':'已导出当前版本');
+    if(isCurrent())onToast?.(receipt.editableSourceWarning ?? (sourceMissing?'已导出恢复的编辑稿':'已导出当前版本'));
     if(sourceMissing || format==='docx')openExport(receipt,record.title,isCurrent());
   });
   const createCopy=()=>run(async isCurrent=>{

@@ -132,6 +132,21 @@ describe('document save and recovery workflow',()=>{
     expect(session.snapshot()).toMatchObject({phase:'ready',record:{revision:2},draft:text('刚刚保存的新版本')});
     expect(server.document).toEqual(text('刚刚保存的新版本'));
   });
+  it('keeps a Word publication confirmed when an older read returns the same draft revision', async () => {
+    const session = await open();
+    session.edit(text('Word 待同步'));
+    await session.flush();
+    const stale = structuredClone(server);
+    let release!: (value: unknown) => void;
+    native.invoke.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const refresh = session.refresh();
+    await session.publish();
+    release({ document: stale, path: stale.path, fileSha256: stale.fileSha256, byteSize: 10 });
+    await refresh;
+    expect(session.snapshot().record).toMatchObject({ revision: 2, exportedRevision: 2 });
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(native.invoke.mock.calls.filter(([command]) => command === 'document_workspace_publish')).toHaveLength(1);
+  });
   it('publishes a restored version as a new source and resumes editing afterwards',async()=>{
     const session=await open();const original=native.invoke.getMockImplementation()!;
     native.invoke.mockImplementation(async(command,args)=>{

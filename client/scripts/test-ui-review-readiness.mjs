@@ -20,6 +20,14 @@ test("visual sampling waits for real lazy pages and populated IPC lists", { time
   try {
     browser = await (await reviewChromium()).launch({ headless: true,
       ...(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {}) });
+    const base = `http://127.0.0.1:${server.httpServer.address().port}/__ui-review`;
+    // Let Vite finish the cold, shared fixture graph before measuring the
+    // deferred feature module or IPC. Home does not render the feature pages.
+    const warmup = await browser.newPage();
+    try {
+      await warmup.goto(`${base}?surface=home`, { timeout: 90000 });
+      await warmup.locator('.echo-composer').waitFor({ timeout: 90000 });
+    } finally { await warmup.close(); }
     const scenarios = [
       { label: "技能", theme: "light", module: "experts-panel/index", command: "skills_list", content: ".sk-inst-row" },
       { label: "连接器", theme: "dark", module: "experts-panel/index", command: "mcp_list", content: ".mcp-item" },
@@ -56,9 +64,10 @@ test("visual sampling waits for real lazy pages and populated IPC lists", { time
         }, scenario.command);
         const params = new URLSearchParams({ surface: "page", label: scenario.label,
           theme: scenario.theme, extensionState: "populated" });
-        navigation = page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?${params}`, { waitUntil: "domcontentloaded" });
+        const moduleRequest = page.waitForRequest(request => request.url().includes(`/src/components/${scenario.module}.tsx`));
+        navigation = page.goto(`${base}?${params}`, { waitUntil: "domcontentloaded" });
         void navigation.catch(() => {});
-        await page.locator('.placeholder-page[role="status"]').waitFor();
+        await Promise.all([moduleRequest, page.locator('.placeholder-page[role="status"]').waitFor()]);
         readiness = waitForVisualPolishSurface(page, `page:${scenario.label}`).then(async () => {
           assert.equal(await page.locator('.placeholder-page[role="status"], .capability-loading').count(), 0,
             "A loading state must never become the comparison baseline");

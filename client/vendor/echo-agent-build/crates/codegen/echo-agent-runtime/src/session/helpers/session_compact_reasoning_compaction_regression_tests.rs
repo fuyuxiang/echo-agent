@@ -429,6 +429,154 @@ fn test_config_responses(base_url: &str) -> SamplerConfig {
     config
 }
 
+async fn sample_typed_compaction(
+    backend: ApiBackend,
+    frames: Vec<Event>,
+    keep_open: bool,
+) -> Result<CompactOutput, CompactFailure> {
+    let path = match backend {
+        ApiBackend::Responses => "/v1/responses",
+        ApiBackend::Messages => "/v1/messages",
+        ApiBackend::ChatCompletions => unreachable!(),
+    };
+    let app = Router::new().route(
+        path,
+        post(move || {
+            let frames = frames.clone();
+            async move {
+                let events =
+                    stream::iter(frames.into_iter().map(Ok::<_, std::convert::Infallible>));
+                let events = if keep_open {
+                    events.chain(stream::pending()).boxed()
+                } else {
+                    events.boxed()
+                };
+                Sse::new(events)
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut config = test_config(&base_url);
+    config.api_backend = backend;
+    let result = generate_session_compact(
+        vec![ConversationItem::user("Summarize the conversation so far.")],
+        0,
+        vec![],
+        vec![],
+        Client::new(config.clone()).unwrap(),
+        acp::SessionId::new("typed-compaction-test"),
+        &config,
+        std::time::Duration::from_secs(2),
+        0,
+        crate::util::config::CompactionToolChoice::Auto,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await;
+    server.abort();
+    result
+}
+
+#[tokio::test]
+async fn responses_compaction_requires_typed_terminal() {
+    let mut draft = responses_summary_stream();
+    let completed = draft.pop().unwrap();
+    for tail in [None, Some(Event::default().data("[DONE]"))] {
+        let mut frames = draft.clone();
+        frames.extend(tail);
+        let result = sample_typed_compaction(ApiBackend::Responses, frames, false).await;
+        assert!(matches!(result, Err(CompactFailure::Transient(err))
+            if err.data.as_ref().and_then(|data| data.as_str())
+                .is_some_and(|text| text.contains("before response.completed or response.incomplete"))));
+    }
+
+    let mut frames = draft.clone();
+    frames.push(completed);
+    let output = sample_typed_compaction(ApiBackend::Responses, frames, true)
+        .await
+        .unwrap();
+    assert_eq!(output.content, "<summary>ok</summary>");
+    assert_eq!(output.stop_reason.as_deref(), Some("stop"));
+    assert!(!output.truncated);
+
+    draft.push(
+        Event::default().data(
+            json!({
+                "type": "response.incomplete",
+                "sequence_number": 2,
+                "response": {
+                    "id": "resp_test", "object": "response", "created_at": 1234567890,
+                    "model": "test-model", "status": "incomplete", "output": [],
+                    "incomplete_details": { "reason": "max_output_tokens" }
+                }
+            })
+            .to_string(),
+        ),
+    );
+    let output = sample_typed_compaction(ApiBackend::Responses, draft, false)
+        .await
+        .unwrap();
+    assert_eq!(output.content, "<summary>ok</summary>");
+    assert_eq!(output.stop_reason.as_deref(), Some("max_output_tokens"));
+    assert!(output.truncated);
+}
+
+#[tokio::test]
+async fn messages_compaction_requires_stop_after_stop_reason() {
+    use echo_agent_test_support::sse::messages_api_events;
+
+    let summary = "<summary>ok</summary>";
+    let mut draft = messages_api_events(summary, "test-model", "end_turn");
+    let message_stop = draft.pop().unwrap();
+    let result = sample_typed_compaction(ApiBackend::Messages, draft.clone(), false).await;
+    assert!(matches!(result, Err(CompactFailure::Transient(err))
+        if err.data.as_ref().and_then(|data| data.as_str())
+            .is_some_and(|text| text.contains("before message_stop"))));
+
+    // A typed stop without a stop reason is a malformed terminal, even if
+    // the summary itself has already been streamed.
+    draft.pop();
+    draft.push(message_stop);
+    let result = sample_typed_compaction(ApiBackend::Messages, draft, false).await;
+    assert!(matches!(result, Err(CompactFailure::Deterministic(err))
+        if err.data.as_ref().and_then(|data| data.as_str())
+            .is_some_and(|text| text.contains("message_stop without stop_reason"))));
+
+    for (reason, truncated) in [("end_turn", false), ("max_tokens", true)] {
+        let mut frames = messages_api_events("ok</summary>", "test-model", reason);
+        frames[1] = Event::default().data(
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"<summary>"}})
+                .to_string(),
+        );
+        let output = sample_typed_compaction(ApiBackend::Messages, frames, true)
+            .await
+            .unwrap();
+        assert_eq!(output.content, summary);
+        assert_eq!(output.stop_reason.as_deref(), Some(reason));
+        assert_eq!(output.truncated, truncated);
+    }
+}
+
+#[tokio::test]
+async fn messages_compaction_rejects_unframed_or_unfinished_content() {
+    use echo_agent_test_support::sse::messages_api_events;
+
+    for (missing, expected) in [
+        (0, "unexpected content_block_start"),
+        (1, "content_block_delta without an open block"),
+        (3, "stop_reason before content_block_stop"),
+    ] {
+        let mut frames =
+            messages_api_events("<summary>partial</summary>", "test-model", "end_turn");
+        let _ = frames.remove(missing);
+        let result = sample_typed_compaction(ApiBackend::Messages, frames, false).await;
+        assert!(matches!(result, Err(CompactFailure::Deterministic(err))
+            if err.data.as_ref().and_then(|data| data.as_str())
+                .is_some_and(|text| text.contains(expected))));
+    }
+}
+
 #[tokio::test]
 async fn responses_below_trigger_preserves_images_and_tools() {
     use std::sync::{Arc, Mutex};

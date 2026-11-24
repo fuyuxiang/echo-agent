@@ -3,6 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
+vi.mock("@/lib/backup-client", async original => ({
+  ...await original<typeof import("@/lib/backup-client")>(),
+  exportBackup: vi.fn(),
+}));
+
 vi.mock("@/lib/agent-client", () => ({
   providersList: vi.fn().mockResolvedValue({ providers: [], models: [] }),
   agentsDefaultsGet: vi.fn().mockResolvedValue({
@@ -64,6 +69,7 @@ vi.mock("@/lib/notify-channels", async (original) => ({
   testDesktopNotify: vi.fn(async () => ({id:"desktop",ok:true})),
 }));
 import { testDesktopNotify } from "@/lib/notify-channels";
+import { exportBackup } from "@/lib/backup-client";
 import { SettingsPanel } from "../SettingsPanel";
 import { ThemeProvider } from "../ThemeProvider";
 import {
@@ -837,16 +843,57 @@ describe("SettingsPanel", () => {
     expect(screen.getByRole("button", { name: "保存修改" })).toBeDisabled();
   });
 
+  it("旧规则可以逐条核对并预览转换，保存前保留其他原始条目", async () => {
+    const unsupported = { action: "deny", tool: "any", unparsed: { source: "Unknown(example)", repairable: false } };
+    vi.mocked(permissionList).mockResolvedValueOnce([
+      { action: "deny", tool: "mcp", pattern: "team__*", unparsed: { source: "Mcp(team__*)", repairable: true } },
+      unsupported,
+      { action: "ask", tool: "read" },
+    ]);
+    vi.mocked(permissionSave).mockResolvedValueOnce(undefined);
+    render(<ThemeProvider><SettingsPanel open initialSection="security" onClose={() => {}} /></ThemeProvider>);
+    const convert = await screen.findByRole("button", { name: "转换旧规则 1" });
+    expect(screen.getByText("Mcp(team__*)")).toBeVisible();
+    expect(screen.getByText("Unknown(example)")).toBeVisible();
+    fireEvent.click(convert);
+    expect(screen.getByText("连接器工具", { exact: true })).toBeVisible();
+    expect(screen.getByText("team__*")).toBeVisible();
+    expect(permissionSave).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    await waitFor(() => expect(permissionSave).toHaveBeenCalledWith([
+      { action: "deny", tool: "mcp", pattern: "team__*" },
+      unsupported,
+      { action: "ask", tool: "read" },
+    ]));
+  });
+
+  it("备份数据目录不可用时在导出控件旁显示受影响范围，重试成功后更新结果", async () => {
+    vi.mocked(exportBackup).mockRejectedValueOnce(new Error("无法备份链接中的应用数据（projects、sessions）。"))
+      .mockResolvedValueOnce("/tmp/echoagent-backup.zip");
+    render(<ThemeProvider><SettingsPanel open initialSection="data" onClose={() => {}} /></ThemeProvider>);
+    const exportButton = await screen.findByRole("button", { name: "导出备份" });
+    const backup = exportButton.closest<HTMLElement>("[data-setting-id=backups]")!;
+    fireEvent.click(exportButton);
+    expect(await within(backup).findByRole("alert")).toHaveTextContent("备份未生成。无法备份链接中的应用数据（projects、sessions）。");
+    expect(within(backup).queryByText(/备份已保存/)).not.toBeInTheDocument();
+    fireEvent.click(exportButton);
+    expect(await within(backup).findByRole("status")).toHaveTextContent("备份已保存到 /tmp/echoagent-backup.zip");
+    expect(within(backup).queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("保存规则后收起面板仍会展开失败提示并保留规则", async () => {
-    vi.mocked(permissionList).mockResolvedValue([{action:"deny",tool:"bash",pattern:"rm *"}]);
+    vi.mocked(permissionList).mockReset().mockResolvedValue([{action:"deny",tool:"bash",pattern:"rm *"}]);
     let fail!: (error: Error) => void;
-    vi.mocked(permissionSave).mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+    vi.mocked(permissionSave).mockReset().mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
     render(<ThemeProvider><SettingsPanel open initialSection="security" onClose={() => {}} /></ThemeProvider>);
     const summary = await screen.findByText("高级权限规则", {exact:true});
     fireEvent.click(summary);
-    fireEvent.change(screen.getByPlaceholderText("例如 git *"), { target: { value: "git status" } });
+    const pattern = screen.getByPlaceholderText("例如 git *");
+    await waitFor(() => expect(pattern).toBeEnabled());
+    fireEvent.change(pattern, { target: { value: "git status" } });
     fireEvent.click(screen.getByRole("button", {name:"添加规则"}));
     fireEvent.click(await screen.findByRole("button", {name:"保存修改"}));
+    expect(permissionSave).toHaveBeenCalledTimes(1);
     fireEvent.click(summary);
     await act(async () => { fail(new Error("disk unavailable")); });
     expect(await screen.findByRole("alert")).toHaveTextContent("保存失败");

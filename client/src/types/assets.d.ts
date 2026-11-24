@@ -1,3 +1,5 @@
+/// <reference types="vite/client" />
+
 /** Module declarations for static asset imports. */
 declare module "*?raw" {
   const content: string;

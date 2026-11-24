@@ -4,6 +4,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
+    future::Future,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex, OnceLock,
@@ -46,14 +47,83 @@ impl Callback for PairingHandshake {
 }
 
 type Command = (Value, oneshot::Sender<Result<Value, String>>);
-static CONNECTIONS: OnceLock<Mutex<HashMap<String, Arc<Connection>>>> = OnceLock::new();
-static PAIRINGS: OnceLock<Mutex<HashMap<String, (String, CancellationToken)>>> = OnceLock::new();
-fn pairings() -> &'static Mutex<HashMap<String, (String, CancellationToken)>> {
+struct PairingSlot {
+    token: String,
+    cancellation: CancellationToken,
+    connection: Option<Arc<Connection>>,
+}
+impl Drop for PairingSlot {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        if let Some(connection) = &self.connection {
+            connection.close();
+        }
+    }
+}
+static PAIRINGS: OnceLock<Mutex<HashMap<String, PairingSlot>>> = OnceLock::new();
+fn pairings() -> &'static Mutex<HashMap<String, PairingSlot>> {
     PAIRINGS.get_or_init(|| Mutex::new(HashMap::new()))
 }
-fn connections() -> &'static Mutex<HashMap<String, Arc<Connection>>> {
-    CONNECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+
+/// Own the registry entry as long as binding or serving the ticket is in flight.
+struct PairingReservation {
+    session: String,
+    token: String,
+    cancellation: CancellationToken,
 }
+impl PairingReservation {
+    fn new(session: &str) -> Self {
+        let token = format!(
+            "{}{}",
+            uuid::Uuid::now_v7().simple(),
+            uuid::Uuid::now_v7().simple()
+        );
+        let cancellation = CancellationToken::new();
+        pairings().lock().unwrap().insert(
+            session.into(),
+            PairingSlot {
+                token: token.clone(),
+                cancellation: cancellation.clone(),
+                connection: None,
+            },
+        );
+        Self {
+            session: session.into(),
+            token,
+            cancellation,
+        }
+    }
+
+    fn connect(&self, connection: Arc<Connection>) -> bool {
+        let mut slots = pairings().lock().unwrap();
+        let Some(slot) = slots.get_mut(&self.session) else {
+            return false;
+        };
+        if slot.token != self.token {
+            return false;
+        }
+        slot.connection = Some(connection);
+        true
+    }
+
+    fn remove(&self) -> bool {
+        let mut slots = pairings().lock().unwrap();
+        if slots
+            .get(&self.session)
+            .is_some_and(|slot| slot.token == self.token)
+        {
+            slots.remove(&self.session);
+            return true;
+        }
+        false
+    }
+}
+impl Drop for PairingReservation {
+    fn drop(&mut self) {
+        self.remove();
+    }
+}
+
 pub struct Connection {
     sender: mpsc::Sender<Command>,
     live: AtomicBool,
@@ -70,6 +140,7 @@ impl Connection {
         self.live.load(Ordering::SeqCst)
     }
     pub fn close(&self) {
+        self.live.store(false, Ordering::SeqCst);
         self.stop.cancel();
     }
     pub async fn call(
@@ -90,20 +161,16 @@ impl Connection {
     }
 }
 pub fn connected(session: &str) -> Option<Arc<Connection>> {
-    connections()
+    pairings()
         .lock()
         .unwrap()
         .get(session)
-        .filter(|c| c.live())
+        .and_then(|slot| slot.connection.as_ref())
+        .filter(|connection| connection.live())
         .cloned()
 }
 pub fn disconnect(session: &str) {
-    if let Some((_, token)) = pairings().lock().unwrap().remove(session) {
-        token.cancel();
-    }
-    if let Some(c) = connections().lock().unwrap().remove(session) {
-        c.close();
-    }
+    pairings().lock().unwrap().remove(session);
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,55 +184,60 @@ pub async fn pair(
     extension_path: String,
     on_change: fn(String),
 ) -> Result<Pairing, String> {
-    disconnect(session);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|e| e.to_string())?;
-    let address = listener.local_addr().map_err(|e| e.to_string())?;
-    let token = format!(
-        "{}{}",
-        uuid::Uuid::now_v7().simple(),
-        uuid::Uuid::now_v7().simple()
-    );
-    let endpoint = format!("ws://{address}/{token}");
-    let cancellation = CancellationToken::new();
-    pairings()
-        .lock()
-        .unwrap()
-        .insert(session.into(), (token.clone(), cancellation.clone()));
-    let session = session.to_owned();
+    pair_with_listener(
+        session,
+        extension_path,
+        on_change,
+        tokio::net::TcpListener::bind("127.0.0.1:0"),
+    )
+    .await
+}
+
+async fn pair_with_listener(
+    session: &str,
+    extension_path: String,
+    on_change: fn(String),
+    bind: impl Future<Output = std::io::Result<tokio::net::TcpListener>>,
+) -> Result<Pairing, String> {
+    let reservation = PairingReservation::new(session);
+    let listener = tokio::select! {
+        biased;
+        _ = reservation.cancellation.cancelled() => return Err("browser_extension_pairing_cancelled".into()),
+        result = bind => result.map_err(|error| error.to_string())?,
+    };
+    let address = listener.local_addr().map_err(|error| error.to_string())?;
+    let endpoint = format!("ws://{address}/{}", reservation.token);
     tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
         loop {
-            let accepted = tokio::select! {_=cancellation.cancelled()=>break,value=tokio::time::timeout_at(deadline,listener.accept())=>value};
+            let accepted = tokio::select! {
+                biased;
+                _ = reservation.cancellation.cancelled() => break,
+                value = tokio::time::timeout_at(deadline, listener.accept()) => value,
+            };
             let Ok(Ok((socket, _))) = accepted else { break };
-            let expected = format!("/{token}");
+            let expected = format!("/{}", reservation.token);
             let host = address.to_string();
             let handshake =
                 tokio_tungstenite::accept_hdr_async(socket, PairingHandshake { expected, host });
-            let Ok(Ok(socket)) = tokio::time::timeout(Duration::from_secs(3), handshake).await
-            else {
-                continue;
+            let handshake_deadline =
+                deadline.min(tokio::time::Instant::now() + Duration::from_secs(3));
+            let result = tokio::select! {
+                biased;
+                _ = reservation.cancellation.cancelled() => break,
+                value = tokio::time::timeout_at(handshake_deadline, handshake) => value,
             };
+            let Ok(Ok(socket)) = result else { continue };
             let (sender, mut commands) = mpsc::channel::<Command>(8);
             let connection = Arc::new(Connection {
                 sender,
                 live: AtomicBool::new(true),
                 stop: CancellationToken::new(),
             });
-            {
-                let tickets = pairings().lock().unwrap();
-                if cancellation.is_cancelled()
-                    || tickets.get(&session).is_none_or(|(id, _)| id != &token)
-                {
-                    break;
-                }
-                connections()
-                    .lock()
-                    .unwrap()
-                    .insert(session.clone(), connection.clone());
+            if !reservation.connect(connection.clone()) {
+                break;
             }
-            on_change(session.clone());
+            on_change(reservation.session.clone());
             let (mut output, mut input) = socket.split();
             let mut pending: HashMap<String, oneshot::Sender<Result<Value, String>>> =
                 HashMap::new();
@@ -185,12 +257,14 @@ pub async fn pair(
                     }
                 }
             }
-            connection.live.store(false, Ordering::SeqCst);
-            on_change(session.clone());
-            let _ = output.close().await;
+            connection.close();
+            if reservation.remove() {
+                on_change(reservation.session.clone());
+            }
             for (_, reply) in pending {
                 let _ = reply.send(Err("browser_extension_disconnected: outcome unknown".into()));
             }
+            let _ = tokio::time::timeout(Duration::from_secs(3), output.close()).await;
             break;
         }
     });
@@ -297,6 +371,59 @@ mod tests {
         client.await.unwrap();
         assert!(connected(&session).is_none());
     }
+    #[tokio::test]
+    async fn disconnect_while_listener_binds_revokes_pending_pairing() {
+        let session = uuid::Uuid::now_v7().to_string();
+        let (binding, started) = oneshot::channel();
+        let (release, proceed) = oneshot::channel();
+        let pending_session = session.clone();
+        let pending = tokio::spawn(async move {
+            pair_with_listener(&pending_session, "/fixture".into(), |_| {}, async {
+                binding.send(()).unwrap();
+                proceed.await.unwrap();
+                tokio::net::TcpListener::bind("127.0.0.1:0").await
+            })
+            .await
+        });
+        started.await.unwrap();
+        disconnect(&session);
+        let _ = release.send(());
+        assert!(pending.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn newer_pairing_survives_a_slow_older_listener() {
+        let session = uuid::Uuid::now_v7().to_string();
+        let (binding, started) = oneshot::channel();
+        let (release, proceed) = oneshot::channel();
+        let pending_session = session.clone();
+        let pending = tokio::spawn(async move {
+            pair_with_listener(&pending_session, "/fixture".into(), |_| {}, async {
+                binding.send(()).unwrap();
+                proceed.await.unwrap();
+                tokio::net::TcpListener::bind("127.0.0.1:0").await
+            })
+            .await
+        });
+        started.await.unwrap();
+        let current = pair(&session, "/fixture".into(), |_| {}).await.unwrap();
+        let _ = release.send(());
+        assert!(pending.await.unwrap().is_err());
+        let mut request = current.endpoint.into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("origin", "chrome-extension://synthetic".parse().unwrap());
+        let (_socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while connected(&session).is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        disconnect(&session);
+    }
+
     #[tokio::test]
     async fn replacing_pairing_revokes_the_old_endpoint() {
         let session = uuid::Uuid::now_v7().to_string();

@@ -3,11 +3,13 @@ pub(crate) mod auth_gate;
 pub mod billing;
 pub mod bundle;
 pub(crate) mod chat_conversation_history;
+#[cfg(not(feature = "desktop"))]
 pub mod code_nav;
 pub mod consent;
 pub mod debug;
 pub mod feedback;
 pub mod fs;
+#[cfg(not(feature = "desktop"))]
 pub mod git;
 pub mod hooks;
 pub mod hunk_tracker;
@@ -36,8 +38,10 @@ pub mod share;
 pub mod skills;
 pub mod suggest;
 pub mod task;
+#[cfg(not(feature = "desktop"))]
 pub mod terminal;
 pub mod usage;
+#[cfg(not(feature = "desktop"))]
 pub mod worktree;
 use crate::session::ExtMethodResult;
 use agent_client_protocol as acp;

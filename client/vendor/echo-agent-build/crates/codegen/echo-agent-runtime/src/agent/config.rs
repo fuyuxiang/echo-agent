@@ -1245,14 +1245,11 @@ pub struct MarketplaceSourceEntry {
     #[serde(default)]
     pub branch: Option<String>,
 }
-/// `[storage]` section from config.toml.
-///
-/// Controls session persistence settings like cleanup TTL.
-/// Read by `resolve_cleanup_ttl_days()` in `session/persistence.rs`.
+/// Legacy `[storage]` section accepted for compatibility with existing config files.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct StorageConfig {
-    /// Number of days to keep stale sessions before cleanup. Default: 30.
+    /// Deprecated. Saved sessions are retained until explicitly deleted.
     pub cleanup_ttl_days: Option<u32>,
 }
 /// `[paths]` configuration: extra directories to scan for skills, rules, etc.
@@ -1426,7 +1423,7 @@ pub struct Config {
     /// `[tools]` — also read by `ToolsConfig::resolve()`.
     #[serde(default, skip_serializing)]
     pub tools: crate::config::ToolsConfig,
-    /// `[storage]` — also read by `resolve_cleanup_ttl_days()`.
+    /// Legacy `[storage]` section.
     #[serde(default, skip_serializing)]
     pub storage: StorageConfig,
     /// `[marketplace]` — also read by `echo_agent_plugin_marketplace::load_sources()`.

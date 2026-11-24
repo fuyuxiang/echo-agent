@@ -35,6 +35,7 @@ const SETTINGS_SEARCH: SettingsSearchEntry[] = [
   { section: "cloud-storage", title: "云存储", category: "连接与数据", keywords: "WebDAV 文件 传输 上传 下载 存储源" },
   { section: "usage", title: "模型用量", category: "连接与数据", keywords: "用量统计 tokens 费用 估算 请求 导出" },
   { section: "data", title: "数据备份与恢复", category: "数据管理", keywords: "导出 备份文件 备份恢复 恢复 本机 数据", target: "backups" },
+  { section: "data", title: "旧版工作台资料", category: "数据管理", keywords: "代码开发 迁移 计划草稿 队列 外部操作 核验", target: "legacy-workspace" },
   { section: "data", title: "本地数据目录", category: "数据管理", keywords: "文件夹 存储位置 路径", target: "data-directory" },
   { section: "archived", title: "已归档会话", category: "数据管理", keywords: "任务 恢复 删除 聊天 历史" },
   { section: "help", title: "版本与更新", category: "帮助与更新", keywords: "升级 检查 安装 下载 关于", target: "updates" },

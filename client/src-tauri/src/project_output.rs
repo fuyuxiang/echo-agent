@@ -54,6 +54,10 @@ impl Outputs {
     fn observe(&mut self, session: &str, update: &Value, meta: Option<&Value>) {
         if update.get("sessionUpdate").and_then(Value::as_str) != Some("agent_message_chunk")
             || meta
+                .and_then(|m| m.get(echo_agent_runtime::session::PRIVATE_MEMORY_LOOKUP_META))
+                .and_then(Value::as_bool)
+                == Some(true)
+            || meta
                 .and_then(|m| m.get("isReplay").or_else(|| m.get("replay")))
                 .and_then(Value::as_bool)
                 == Some(true)
@@ -141,6 +145,11 @@ mod tests {
             "session",
             &chunk("duplicate"),
             Some(&json!({"promptId":"run","eventId":"2"})),
+        );
+        output.observe(
+            "session",
+            &chunk("私人查询结果"),
+            Some(&json!({"promptId":"run","privateMemoryLookup":true})),
         );
         output.observe(
             "session",

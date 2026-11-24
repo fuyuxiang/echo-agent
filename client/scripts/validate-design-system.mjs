@@ -23,7 +23,7 @@ const scenarios = [
 const surfaces = process.argv.includes("--controls-only") ? ["page:技能", "page:连接器", "page:插件", "page:项目"] : [
   "home", "home:unconfigured", "home:loading", "home:error", "conversation", "search", "browser-toolbar", "color-system",
   "capabilities", "page:技能", "page:连接器", "page:插件", "page:项目", "collapsed-project",
-  "page:自动化", "automation-edit", "page:知识库", "organization", "organization-login", "meeting", "coding",
+  "page:自动化", "automation-edit", "page:知识库", "organization", "organization-login", "meeting",
   "model", "general", "personalize", "memory", "personal-memory", "agent-settings", "shortcuts",
   "usage", "cloud-storage", "data", "archived", "security", "help", "agent-mail", "notify-channels", "weixin-unconnected",
   "modal-long", "modal-error", "about", "feedback", "update", "results", "details", "trust", "execution", "runtime", "queue",
@@ -166,7 +166,7 @@ try {
         const toggles=await page.locator(".echo-switch--checked").evaluateAll(elements=>elements.map(e=>({track:getComputedStyle(e).backgroundColor,thumb:getComputedStyle(e.querySelector(".echo-switch-thumb")).backgroundColor})));
         assert.ok(toggles.length>0 && toggles.every(toggle=>toggle.track!==toggle.thumb),"Checked switch thumb disappears into its track");
       }
-      await inspect(page,spec,scenario,["capabilities","page:项目","general","modal-long","coding","meeting"].includes(spec));
+      await inspect(page,spec,scenario,["capabilities","page:项目","general","modal-long","meeting"].includes(spec));
       if(surface === "model") await assertSettingsActionsSeparated(page);
       if(surface==="organization") for(const tab of ["经验","文档","Skills"]) {
         await page.locator(".org-memory__nav button").filter({hasText:tab}).click();
@@ -233,6 +233,7 @@ try {
     await page.evaluate(()=>document.querySelector(".app").style.setProperty("--app-sidebar-width","264px"));
     await page.getByRole("button",{name:"创建专家团",exact:true}).click();
     await page.getByRole("textbox",{name:"专家团名称",exact:true}).fill("长中文项目名称与复杂工作目录的协作交付验证专家团");
+    await page.getByText("设置协作目标",{exact:true}).click();
     await page.getByRole("textbox",{name:"协作目标",exact:true}).fill("核对长中文标题、长错误说明和深层目录，持续保留工作记录并形成可验收的交付结果。");
     await page.getByRole("checkbox",{name:/代码专家/}).check();
     await inspect(page,"groups-create",scenario,true);

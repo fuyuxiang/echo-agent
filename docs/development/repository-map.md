@@ -53,7 +53,6 @@
 | `client/src/` | React 界面与应用状态 |
 | `client/src-tauri/src/` | 桌面宿主、ACP 桥接、工作区、自动化与持久化 |
 | `client/vendor/echo-agent-build/` | 固定版本的 Rust 执行引擎源码 |
-| `client/vendor/theia-platform/` | 内嵌 IDE 及其集成 |
 | `client/scripts/` | 构建、打包与验证 |
 
 `echo-agent-runtime/` 中的 Python 引擎与 Desktop 内嵌的 Rust 引擎分别维护。产品关系见[架构总览](../concepts/architecture.md)。

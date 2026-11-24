@@ -18,7 +18,7 @@ Say you're preparing a competitive analysis. Add a brief to your project in Echo
 
 Download the installer for **macOS (Apple Silicon or Intel) or Windows x64**. Under **Settings → Models**, add and test your own model connection or choose an organization-provided model. Select a working folder and a permission mode before submitting a task. [Download Desktop](https://github.com/fuyuxiang/echo-agent-desktop/releases) · [Run your first task](docs/desktop/quickstart.en.md)
 
-- Review diffs and verification results in the Echo Code workbench. For document work, generate and open Word, Excel, PowerPoint, or PDF files for review. [Coding workspace](docs/desktop/coding.en.md) · [Office documents](docs/desktop/knowledge-memory.en.md#generate-and-export-documents)
+- Ask the agent to change code in an authorized folder, then inspect file changes and verification results in the conversation. For document work, generate and open Word, Excel, PowerPoint, or PDF files for review. [Code tasks and file changes](docs/desktop/coding.en.md) · [Office documents](docs/desktop/knowledge-memory.en.md#generate-and-export-documents)
 - Have the agent work in a browser or an authorized desktop app. Follow its activity and review permission requests as it runs. [Platform support and permissions](docs/desktop/automation.en.md)
 - Choose experts, skills, and MCP connectors for a task, or schedule jobs for a project. Invite teammates through the organization service. [Scheduling](docs/desktop/collaboration-scheduling.en.md) · [Team projects (Chinese)](client/docs/team-projects.md)
 
@@ -51,8 +51,6 @@ Desktop embeds a Rust engine. The standalone Python Runtime can be installed and
 ## Contributing
 
 [Contributing guide](CONTRIBUTING.en.md) · [Report an issue](https://github.com/fuyuxiang/echo-agent/issues) · [Discussions](https://github.com/fuyuxiang/echo-agent/discussions) · [QQ group 47572014](https://qm.qq.com/q/JWOPDBNssw) · [Security reporting](SECURITY.md)
-
-Echo Agent was co-founded by **Yuxiang Fu** and **Yanrong Gao**.
 
 ## License
 

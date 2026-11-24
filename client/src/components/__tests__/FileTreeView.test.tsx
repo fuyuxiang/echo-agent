@@ -276,7 +276,7 @@ describe("FileTreeView SP1 — context menu, multi-select, inline rename", () =>
 describe("FileTreeView virtual rows", () => {
   beforeEach(() => listDir.mockReset());
 
-  it("把展开后的子节点作为独立虚拟行渲染，并显示嵌套 Git 状态", async () => {
+  it("把展开后的子节点作为独立虚拟行渲染", async () => {
     listDir.mockImplementation((path: string) => {
       if (path === "/repo") {
         return Promise.resolve([dir("/repo", "src"), file("/repo", "root.ts")]);
@@ -289,22 +289,12 @@ describe("FileTreeView virtual rows", () => {
         rootPath="/repo"
         onFileSelect={vi.fn()}
         topLevelThreshold={1}
-        gitStatusByPath={new Map([["src/nested.ts", {
-          path: "src/nested.ts",
-          status: "modified",
-          staged: false,
-          unstaged: true,
-          untracked: false,
-          added: 1,
-          removed: 0,
-        }]])}
       />,
     );
 
     await user.click(await screen.findByRole("treeitem", { name: /src/ }));
     const nested = await screen.findByRole("treeitem", { name: /nested\.ts/ });
     expect(nested).toHaveStyle({ paddingInlineStart: "22px" });
-    expect(nested).toHaveTextContent("M");
     expect(document.querySelector("[data-fixed-size-list]")).toBeInTheDocument();
   });
 

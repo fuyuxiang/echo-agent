@@ -19,6 +19,8 @@
 .personal-memory__card { min-width:0; padding:20px 22px; }
 .personal-memory__card + .personal-memory__card { border-top:1px solid var(--echo-border-default); }
 .personal-memory__record-main { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; }
+.personal-memory__record-text { min-width:0; }
+.personal-memory__record-key { margin:0; font-size:var(--echo-body-size); font-weight:600; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
 .personal-memory__content { flex:1; min-width:0; margin:3px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; font-size:var(--echo-body-size); line-height:1.7; color:var(--echo-text-strong); }
 .personal-memory__actions { display:flex; align-items:center; gap:4px; flex-shrink:0; }
 .personal-memory__record-meta { display:inline-flex; flex-wrap:wrap; align-items:center; gap:8px; margin:10px 12px 0 0; color:var(--echo-text-medium); font-size:var(--echo-caption-size); }
@@ -34,6 +36,7 @@
 .personal-memory__editor h3 { margin:0; font-size:var(--echo-body-size); }
 .personal-memory__editor label { display:flex; flex-direction:column; flex:1; min-width:0; gap:8px; font-size:var(--echo-caption-size); }
 .personal-memory__editor textarea { resize:vertical; min-height:90px; }
+.personal-memory__editor textarea[rows="1"] { min-height:38px; }
 .personal-memory__editor p { margin:0; font-size:var(--echo-caption-size); line-height:1.6; color:var(--echo-text-medium); overflow-wrap:anywhere; }
 .personal-memory__editor-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
 .personal-memory__import, .personal-memory--manage > .personal-memory__editor { border:1px solid var(--echo-border-default); border-radius:var(--echo-radius-card); background:var(--echo-bg-primary); }
@@ -48,6 +51,7 @@
 .personal-memory__empty p { margin:0; color:var(--echo-text-strong); }
 .personal-memory__empty span { display:block; max-width:400px; margin:8px auto 0; font-size:var(--echo-caption-size); line-height:1.7; }
 .personal-memory__status { margin:0; font-size:var(--echo-caption-size); color:var(--echo-text-medium); }
+.personal-memory__scope { line-height:1.6; overflow-wrap:anywhere; }
 .personal-memory__health { padding:14px 16px; border:1px solid var(--echo-border-default); border-radius:var(--echo-radius-card); background:var(--echo-bg-primary); color:var(--echo-text-medium); font-size:var(--echo-caption-size); overflow-wrap:anywhere; }
 .personal-memory__health > div { display:flex; flex-direction:column; align-items:flex-start; gap:10px; }
 .personal-memory__health p { margin:0; line-height:1.7; }

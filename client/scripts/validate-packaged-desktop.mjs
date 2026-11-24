@@ -6,7 +6,13 @@ import { setTimeout as delay } from "node:timers/promises";
 const executable = process.argv[2];
 if (!executable || !existsSync(executable)) throw new Error("Pass the packaged application executable");
 const home = mkdtempSync(join(tmpdir(), "echo-desktop-validation-"));
-const app = spawn(resolve(executable), [], { env: { ...process.env, ECHO_AGENT_HOME: home, ECHO_DESKTOP_VALIDATION: "1" }, stdio: "inherit" });
+// An empty executable search path makes the Office check independent of system Node and Git.
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"));
+env.PATH = join(home, "empty-path");
+mkdirSync(env.PATH);
+env.GROK_HOME = join(home, "empty-legacy");
+mkdirSync(env.GROK_HOME);
+const app = spawn(resolve(executable), [], { env: { ...env, ECHO_AGENT_HOME: home, ECHO_DESKTOP_VALIDATION: "1" }, stdio: "inherit" });
 let error;
 let validationError;
 let passed = false;
@@ -20,14 +26,11 @@ try {
   console.log(JSON.stringify(report));
   const consoleCheckPassed = process.platform !== "win32"
     || (Array.isArray(report.visibleConsoleWindows) && report.visibleConsoleWindows.length === 0);
-  const cliCheckPassed = process.platform !== "win32"
-    || (Object.hasOwn(report, "cliError") && report.cliError === null);
   if (!report.webviewRendered || !report.ipcReady || !report.resourcesPresent
-      || (["win32", "darwin"].includes(process.platform) && !report.ideStarted)
-      || !cliCheckPassed
+      || !report.officeExported
       || !consoleCheckPassed
       || app.exitCode !== 0) {
-    throw new Error(`Packaged desktop startup check failed: ${report.ideError ?? report.cliError ?? JSON.stringify(report.visibleConsoleWindows ?? [])}`);
+    throw new Error(`Packaged desktop startup check failed: ${report.officeError ?? JSON.stringify(report.visibleConsoleWindows ?? [])}`);
   }
   passed = true;
 } catch (error) {
@@ -44,11 +47,8 @@ try {
         exitCode: app.exitCode, signal: app.signalCode,
         error: validationError?.stack ?? null,
       }, null, 2));
-      // Only retain the isolated startup report and IDE log, not runtime data.
-      for (const [source, target] of [["desktop-validation.json", "desktop-validation.json"], [join("theia", "theia.log"), "theia.log"]]) {
-        const path = join(home, source);
-        if (existsSync(path)) copyFileSync(path, join(output, target));
-      }
+      const report = join(home, "desktop-validation.json");
+      if (existsSync(report)) copyFileSync(report, join(output, "desktop-validation.json"));
     } catch (error) {
       console.error(`Could not retain packaged desktop diagnostics: ${error}`);
     }

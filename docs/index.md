@@ -14,14 +14,14 @@ Echo Agent 提供两种使用入口：**EchoAgent Desktop（Client）** 面向�
 
 ## Desktop：在工作区中完成任务
 
-桌面端将对话、任务计划、工具执行、权限确认、文件变更与交付物放在同一工作台中。代码任务可使用内嵌 IDE；办公任务可生成文档；浏览器与电脑操作按当前设备的能力启用。
+桌面端将对话、任务计划、工具执行、权限确认、文件变更与交付物放在同一工作台中。你可以在会话中审阅代码改动或核对生成的办公文档。浏览器与电脑操作按当前设备的能力启用。
 
 首次使用的顺序是：安装应用 → 选择工作目录与模型 → 提交任务 → 检查执行结果。
 
 - [安装与环境要求](desktop/installation.md)
 - [第一个任务](desktop/quickstart.md)
 - [任务、会话与权限](desktop/tasks-permissions.md)
-- [代码工作台](desktop/coding.md)
+- [代码任务与文件变更](desktop/coding.md)
 - [浏览器与电脑操作](desktop/automation.md)
 - [文档、知识与记忆](desktop/knowledge-memory.md)
 - [模型与扩展](desktop/models-extensions.md)

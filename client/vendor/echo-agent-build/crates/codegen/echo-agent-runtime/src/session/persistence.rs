@@ -686,7 +686,7 @@ pub(crate) fn find_persisted_session_dir_by_id_result(
     find_persisted_session_dir_by_id_in_root_result(session_id, &echo_agent_home().join("sessions"))
 }
 
-pub(crate) fn find_persisted_session_dir_by_id_in_root_result(
+pub fn find_persisted_session_dir_by_id_in_root_result(
     session_id: &str,
     sessions_root: &Path,
 ) -> io::Result<Option<PathBuf>> {
@@ -2725,6 +2725,7 @@ pub(crate) async fn load(
         search_index,
     } = deps;
     let root_dir = echo_agent_home();
+    recover_session_relocation(&root_dir, info.id.0.as_ref()).await?;
     let storage: Box<dyn StorageAdapter> = Box::new(JsonlStorageAdapter::with_root(root_dir));
 
     let (persisted, loaded_info) = match storage.load_session(info).await {
@@ -2837,6 +2838,7 @@ pub(crate) async fn load_light(
         search_index,
     } = deps;
     let root_dir = echo_agent_home();
+    recover_session_relocation(&root_dir, info.id.0.as_ref()).await?;
     let storage: Box<dyn StorageAdapter> =
         Box::new(JsonlStorageAdapter::with_root(root_dir.clone()));
 
@@ -2937,19 +2939,39 @@ pub(crate) async fn load_light(
     Ok((persisted_info, handle))
 }
 
-/// List session summaries, optionally filtered by cwd (absolute path string).
-/// Returns summaries sorted by `last_active_at` (else `updated_at`) descending.
-fn recover_session_relocations_in(root: &Path) -> crate::session::storage::relocation::Result<()> {
-    crate::session::storage::relocation::RelocationStorage::new(root.into()).recover_all()
+/// Complete or roll back interrupted session moves using their journals.
+pub(crate) async fn recover_session_relocations(root: &Path) -> io::Result<()> {
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        crate::session::storage::relocation::RelocationStorage::new(root).recover_all()
+    })
+    .await
+    .map_err(io::Error::other)?
+    .map_err(io::Error::other)
 }
 
+async fn recover_session_relocation(root: &Path, session_id: &str) -> io::Result<()> {
+    use crate::session::storage::relocation::{RelocationError, RelocationStorage};
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let root = root.to_path_buf();
+        let session_id = session_id.to_owned();
+        match tokio::task::spawn_blocking(move || {
+            RelocationStorage::new(root).recover_if_pending(&session_id)
+        }).await.map_err(io::Error::other)? {
+            Err(RelocationError::LeaseBusy(_)) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            result => return result.map_err(io::Error::other),
+        }
+    }
+}
+
+/// List session summaries, optionally filtered by cwd (absolute path string).
+/// Returns summaries sorted by `last_active_at` (else `updated_at`) descending.
 pub async fn list_summaries(cwd: Option<&str>) -> io::Result<Vec<Summary>> {
     let root_dir = crate::util::echo_agent_home::echo_agent_home();
-    let recovery_root = root_dir.clone();
-    tokio::task::spawn_blocking(move || recover_session_relocations_in(&recovery_root))
-        .await
-        .map_err(io::Error::other)?
-        .map_err(io::Error::other)?;
+    recover_session_relocations(&root_dir).await?;
     let storage: Box<dyn StorageAdapter> = Box::new(JsonlStorageAdapter::with_root(root_dir));
     storage.list_sessions(cwd).await
 }
@@ -3179,269 +3201,9 @@ mod delete_session_history_tests;
 /// summary file on disk; final order uses `last_active_at` else `updated_at`.
 pub async fn list_recent_summaries(limit: usize) -> io::Result<Vec<Summary>> {
     let root_dir = crate::util::echo_agent_home::echo_agent_home();
-    let recovery_root = root_dir.clone();
-    tokio::task::spawn_blocking(move || recover_session_relocations_in(&recovery_root))
-        .await
-        .map_err(io::Error::other)?
-        .map_err(io::Error::other)?;
+    recover_session_relocations(&root_dir).await?;
     let storage = JsonlStorageAdapter::with_root(root_dir);
     storage.list_sessions_recent(limit).await
-}
-
-// Session folder TTL cleanup
-
-/// Guard ensuring session cleanup runs at most once per process.
-static CLEANUP_SESSIONS_ONCE: std::sync::Once = std::sync::Once::new();
-
-/// Default TTL for stale session files (30 days).
-const DEFAULT_CLEANUP_TTL_DAYS: u32 = 30;
-
-/// Walk `~/.echo-agent/sessions/` and delete files with mtime older than `ttl_days`.
-/// Removes empty session directories after file cleanup.
-/// Skips `skip_session_dir` if provided (current session).
-///
-/// This is a **synchronous** function intended to be called via
-/// `tokio::task::spawn_blocking` so it runs on the thread pool and
-/// never competes with the agent's single-threaded `LocalSet`.
-pub(crate) fn cleanup_stale_sessions(skip_session_dir: Option<&Path>) {
-    CLEANUP_SESSIONS_ONCE.call_once(|| {
-        let ttl_days = resolve_cleanup_ttl_days();
-        let root = echo_agent_home();
-        if let Err(error) = recover_session_relocations_in(&root) {
-            tracing::error!(%error, "session relocation recovery failed before TTL cleanup");
-            return;
-        }
-        let sessions_root = root.join("sessions");
-        let relocation_view = match storage_view(&sessions_root) {
-            Ok(view) => view,
-            Err(error) => {
-                tracing::error!(%error, "session relocation snapshot failed before TTL cleanup");
-                return;
-            }
-        };
-
-        tracing::info!(
-            target: "echo_agent_runtime::session::persistence",
-            sessions_root = %sessions_root.display(),
-            ttl_days,
-            skip = ?skip_session_dir.map(|p| p.display().to_string()),
-            "SESSION_CLEANUP_START: scanning for stale session files"
-        );
-
-        let stats = cleanup_stale_sessions_inner(
-            &sessions_root,
-            ttl_days,
-            skip_session_dir,
-            &relocation_view,
-            &root,
-            CleanupLevel::SessionsRoot,
-        );
-
-        tracing::info!(
-            target: "echo_agent_runtime::session::persistence",
-            sessions_root = %sessions_root.display(),
-            files_deleted = stats.files_deleted,
-            dirs_removed = stats.dirs_removed,
-            errors = stats.errors,
-            "SESSION_CLEANUP_DONE"
-        );
-    });
-}
-
-/// Resolve TTL from config.toml `[storage] cleanup_ttl_days`, falling back to 30.
-fn resolve_cleanup_ttl_days() -> u32 {
-    // Try to load config and read [storage] section
-    if let Ok(layers) = crate::config::ConfigLayers::load() {
-        let effective = layers.effective_config_disk_only();
-        if let Some(storage) = effective.get("storage")
-            && let Some(ttl) = storage.get("cleanup_ttl_days")
-            && let Some(days) = ttl.as_integer()
-            && days > 0
-        {
-            return days as u32;
-        }
-    }
-    DEFAULT_CLEANUP_TTL_DAYS
-}
-
-#[derive(Default)]
-struct CleanupStats {
-    files_deleted: u32,
-    dirs_removed: u32,
-    errors: u32,
-}
-
-#[derive(Clone, Copy)]
-enum CleanupLevel {
-    SessionsRoot,
-    Cwd,
-    Session,
-}
-
-/// Recursive cleanup: delete stale files, then rmdir empty dirs (post-order).
-fn cleanup_stale_sessions_inner(
-    root: &Path,
-    ttl_days: u32,
-    skip: Option<&Path>,
-    relocation_view: &crate::session::storage::relocation::RelocationView,
-    echo_agent_home: &Path,
-    level: CleanupLevel,
-) -> CleanupStats {
-    let mut stats = CleanupStats::default();
-
-    if root
-        .file_name()
-        .is_some_and(|name| name.to_string_lossy().starts_with('.'))
-    {
-        return stats;
-    }
-    if let Some(skip_dir) = skip
-        && root == skip_dir
-    {
-        return stats;
-    }
-
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return stats;
-    };
-
-    for entry_result in entries {
-        let entry = match entry_result {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::debug!(
-                    target: "echo_agent_runtime::session::persistence",
-                    error = %e,
-                    "SESSION_CLEANUP_READ_ERROR"
-                );
-                stats.errors += 1;
-                continue;
-            }
-        };
-        let path = entry.path();
-
-        if let Some(skip_dir) = skip
-            && path == skip_dir
-        {
-            continue;
-        }
-
-        let metadata = match std::fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(_) => {
-                stats.errors += 1;
-                continue;
-            }
-        };
-        if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
-            if matches!(level, CleanupLevel::SessionsRoot)
-                && relocation_view.protects_cwd_dir(&path)
-            {
-                continue;
-            }
-            let lease = if matches!(level, CleanupLevel::Cwd) {
-                let summary = path.join("summary.json");
-                let summary_type = match std::fs::symlink_metadata(&summary) {
-                    Ok(metadata) => metadata,
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                        let child_stats = cleanup_stale_sessions_inner(
-                            &path,
-                            ttl_days,
-                            skip,
-                            relocation_view,
-                            echo_agent_home,
-                            CleanupLevel::Session,
-                        );
-                        stats.files_deleted += child_stats.files_deleted;
-                        stats.dirs_removed += child_stats.dirs_removed;
-                        stats.errors += child_stats.errors;
-                        if child_stats.files_deleted > 0 && std::fs::remove_dir(&path).is_ok() {
-                            stats.dirs_removed += 1;
-                        }
-                        continue;
-                    }
-                    Err(error) => {
-                        stats.errors += 1;
-                        tracing::debug!(
-                            target: "echo_agent_runtime::session::persistence",
-                            path = %summary.display(),
-                            %error,
-                            "SESSION_CLEANUP_METADATA_ERROR"
-                        );
-                        continue;
-                    }
-                };
-                if !summary_type.file_type().is_file() || summary_type.file_type().is_symlink() {
-                    continue;
-                }
-                let Some(id) = path.file_name().and_then(|name| name.to_str()) else {
-                    continue;
-                };
-                let storage = crate::session::storage::relocation::RelocationStorage::new(
-                    echo_agent_home.to_path_buf(),
-                );
-                let Ok(lease) = storage.acquire(id) else {
-                    continue;
-                };
-                match storage.read_journal(id) {
-                    Err(crate::session::storage::relocation::RelocationError::JournalMissing(
-                        _,
-                    )) => Some(lease),
-                    _ => continue,
-                }
-            } else {
-                None
-            };
-            let next = match level {
-                CleanupLevel::SessionsRoot => CleanupLevel::Cwd,
-                CleanupLevel::Cwd | CleanupLevel::Session => CleanupLevel::Session,
-            };
-            let child_stats = cleanup_stale_sessions_inner(
-                &path,
-                ttl_days,
-                skip,
-                relocation_view,
-                echo_agent_home,
-                next,
-            );
-            stats.files_deleted += child_stats.files_deleted;
-            stats.dirs_removed += child_stats.dirs_removed;
-            stats.errors += child_stats.errors;
-
-            // Only attempt remove_dir if this subtree actually had stale
-            // files deleted in this pass. Otherwise we risk removing dirs
-            // that were deliberately created for use by concurrent sessions.
-            if child_stats.files_deleted > 0 && std::fs::remove_dir(&path).is_ok() {
-                stats.dirs_removed += 1;
-                tracing::debug!(
-                    target: "echo_agent_runtime::session::persistence",
-                    dir = %path.display(),
-                    "SESSION_CLEANUP_RMDIR"
-                );
-            }
-            drop(lease);
-        } else if let Ok(mtime) = metadata.modified()
-            && is_stale(mtime, ttl_days)
-        {
-            if std::fs::remove_file(&path).is_ok() {
-                stats.files_deleted += 1;
-                tracing::debug!(
-                    target: "echo_agent_runtime::session::persistence",
-                    file = %path.display(),
-                    "SESSION_CLEANUP_DELETE"
-                );
-            } else {
-                stats.errors += 1;
-            }
-        }
-    }
-
-    stats
-}
-
-fn is_stale(mtime: std::time::SystemTime, ttl_days: u32) -> bool {
-    let ttl = std::time::Duration::from_secs(u64::from(ttl_days) * 86400);
-    mtime.elapsed().is_ok_and(|age| age > ttl)
 }
 
 #[cfg(test)]

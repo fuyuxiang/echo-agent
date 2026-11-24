@@ -1,7 +1,8 @@
 //! Production logging that survives the Windows GUI subsystem's hidden console.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 const LOG_RETENTION_DAYS: u64 = 14;
@@ -16,7 +17,7 @@ pub(crate) fn log_dir() -> PathBuf {
         .join("logs")
 }
 
-fn remove_expired_logs(directory: &std::path::Path) {
+fn remove_expired_logs(directory: &Path) {
     let cutoff = std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(
         60 * 60 * 24 * LOG_RETENTION_DAYS,
     ));
@@ -46,13 +47,21 @@ fn remove_expired_logs(directory: &std::path::Path) {
 /// Install a daily rolling file subscriber. The returned guard must live for
 /// the entire process so the non-blocking writer can flush queued records.
 pub(crate) fn init() -> Option<tracing_appender::non_blocking::WorkerGuard> {
-    let directory = log_dir();
-    if std::fs::create_dir_all(&directory).is_err() {
+    init_at(&log_dir())
+}
+
+fn init_at(directory: &Path) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    if std::fs::create_dir_all(directory).is_err() {
         return None;
     }
-    remove_expired_logs(&directory);
+    remove_expired_logs(directory);
 
-    let appender = tracing_appender::rolling::daily(&directory, "echoagent.log");
+    let appender = RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_prefix("echoagent.log")
+        .build(directory)
+        .map_err(|error| eprintln!("无法初始化 EchoAgent 文件日志：{error}"))
+        .ok()?;
     let (file_writer, guard) = tracing_appender::non_blocking(appender);
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new("echoagent=info,echoagent_lib=info,echo_agent_runtime=info,warn")
@@ -75,4 +84,20 @@ pub(crate) fn init() -> Option<tracing_appender::non_blocking::WorkerGuard> {
         return None;
     }
     Some(guard)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_file_open_failure_does_not_panic() {
+        let directory = tempfile::tempdir().unwrap();
+        let today = chrono::Utc::now().date_naive();
+        for date in [today, today.succ_opt().unwrap()] {
+            std::fs::create_dir(directory.path().join(format!("echoagent.log.{date}"))).unwrap();
+        }
+
+        assert!(init_at(directory.path()).is_none());
+    }
 }

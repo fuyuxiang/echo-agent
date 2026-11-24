@@ -4,10 +4,12 @@ import { cleanNativeReviewEnvironment } from "./lib/native-review-isolation.mjs"
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { prepareMacosTestSignatures } from './prepare-macos-test-signatures.mjs';
 import { runNativeTestProcess, reportNativeTestFailure } from './lib/native-test-process.mjs';
-assert.equal(process.argv.length, 2, 'This entry runs all host tests; arbitrary filters are not accepted');
+const verifyAutomationRestart = process.argv[2] === '--with-automation-restart' && process.platform === 'darwin';
+assert.equal(process.argv.length, verifyAutomationRestart ? 3 : 2,
+  'This entry runs all host tests and optionally --with-automation-restart on macOS');
 const home = realpathSync(mkdtempSync(join(tmpdir(), 'echo-host-tests-')));
 const legacy = join(home, 'empty-legacy'); mkdirSync(legacy, { mode: 0o700 });
 const clean = cleanNativeReviewEnvironment(process.env);
@@ -47,6 +49,12 @@ if (process.platform === 'darwin') {
       process.exitCode = status;
       break;
     }
+  }
+  if (verifyAutomationRestart && !process.exitCode) {
+    const library = preparation.signed.find(path => basename(path).startsWith('echoagent_lib-'));
+    assert.ok(library, 'Expected the signed desktop library harness');
+    process.exitCode = await runNativeTestProcess(process.execPath,
+      ['scripts/validate-automation-runtime-restart.mjs', library, '--fixture-stream-eof'], { env });
   }
 } else {
   process.exitCode = await runNativeTestProcess('cargo', ['test', '--locked', '--manifest-path', 'src-tauri/Cargo.toml',

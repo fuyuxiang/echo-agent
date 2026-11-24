@@ -309,6 +309,7 @@ async fn execute(
     let root = app
         .state::<crate::shell_fs::FilesystemAccess>()
         .require_workspace(&g.cwd)?;
+    crate::legacy_workspace::ensure_workspace_available(&root)?;
     let tx = state
         .tx
         .lock()
@@ -325,6 +326,7 @@ async fn execute(
         .await;
     let permission_mode = super::permissions::effective_mode(&g);
     if let Some(binding) = &g.project_binding {
+        crate::org::require_shared_project_prompt(&work.prompt)?;
         crate::org::authorize_project_binding(app, binding).await?;
     }
     if let Some(binding) = &g.project_binding {

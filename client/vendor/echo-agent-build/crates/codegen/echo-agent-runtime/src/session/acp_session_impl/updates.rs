@@ -212,16 +212,41 @@ impl SessionActor {
     /// Sends an update to the persistence layer and the gateway.
     /// Optionally includes a `chunk_index` for LLM streaming chunk tracking.
     pub(super) async fn send_update(&self, update: acp::SessionUpdate, chunk_index: Option<u64>) {
-        self.send_update_full(update, chunk_index, None, false)
-            .await;
+        let notification = self.prepare_update(update, chunk_index).await;
+        let _ = self.event_tx.send(SessionEvent::Notification(notification.into()));
     }
-    async fn send_update_full(
+
+    pub(super) async fn publish_scoped_memory_answer(
+        &self,
+        lookup: &super::scoped_memory_lookup::ExactMemoryLookup,
+        answer: &str,
+    ) -> Result<(), acp::Error> {
+        let mut notification = self.prepare_update(
+            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                acp::ContentBlock::Text(acp::TextContent::new(answer.to_owned())),
+            )),
+            None,
+        ).await;
+        notification.meta.get_or_insert_with(Default::default)
+            .insert(crate::session::PRIVATE_MEMORY_LOOKUP_META.into(), true.into());
+        lookup.publish(|| {
+            self.event_tx.send(SessionEvent::Notification(notification.into()))
+                .map_err(|_| std::io::Error::other("会话已关闭，无法显示记忆查询结果"))?;
+            // Keep the actual answer in the private UI transcript. A later
+            // model turn re-resolves memory from the current ledger.
+            self.record_assistant_response(
+                echo_agent_sampling_types::ConversationItem::assistant("已在本地显示记忆查询结果。"),
+                false,
+            );
+            Ok(())
+        }).map_err(|message| acp::Error::internal_error().data(message))
+    }
+
+    async fn prepare_update(
         &self,
         update: acp::SessionUpdate,
         chunk_index: Option<u64>,
-        agent_timestamp_ms_override: Option<i64>,
-        is_replay: bool,
-    ) {
+    ) -> acp::SessionNotification {
         self.close_rewind_window().await;
         if let acp::SessionUpdate::ToolCall(tool_call) = &update
             && matches!(tool_call.kind, acp::ToolKind::Edit)
@@ -248,8 +273,7 @@ impl SessionActor {
             .map(|m| (m.stream_start_ms, m.turn_start_ms))
             .unwrap_or((None, None));
         let event_id = self.generate_event_id();
-        let agent_timestamp_ms =
-            agent_timestamp_ms_override.unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+        let agent_timestamp_ms = chrono::Utc::now().timestamp_millis();
         let (update_type, update_params) = Self::extract_update_info(&update);
         let mut meta = json!({
             "totalTokens": total_tokens,
@@ -285,14 +309,8 @@ impl SessionActor {
         if let Some(idx) = chunk_index {
             obj.insert("chunkId".to_string(), idx.into());
         }
-        if is_replay {
-            obj.insert("isReplay".to_string(), true.into());
-        }
-        let notification = acp::SessionNotification::new(self.session_info.id.clone(), update)
-            .meta(meta.as_object().cloned());
-        let _ = self
-            .event_tx
-            .send(SessionEvent::Notification(notification.into()));
+        acp::SessionNotification::new(self.session_info.id.clone(), update)
+            .meta(meta.as_object().cloned())
     }
     /// Producer for the **high-frequency streaming path** with an EchoAgent
     /// extension payload. Routes through `event_tx` -> `ReplayBuffer` ->

@@ -169,8 +169,7 @@ pub(crate) fn is_supported_attachment_path(path: &Path) -> bool {
 }
 
 /// Build a safe base filename from the suggested name. Strips path
-/// separators, drops empty / dot-only / whitespace-only results, and trims to
-/// 80 chars so we never collide with the filesystem's name limit.
+/// separators and bounds the filename while retaining supported extensions.
 fn sanitize_basename(suggested: Option<&str>) -> Option<String> {
     let raw = suggested?.trim();
     if raw.is_empty() {
@@ -196,11 +195,20 @@ fn sanitize_basename(suggested: Option<&str>) -> Option<String> {
     if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
         return None;
     }
-    Some(if trimmed.chars().count() > 80 {
-        trimmed.chars().take(80).collect()
-    } else {
-        trimmed
-    })
+    let name = Path::new(&trimmed);
+    let extension = name
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|_| is_supported_attachment_path(name));
+    let (stem, suffix) = extension.map_or((trimmed.as_str(), ""), |extension| {
+        trimmed.split_at(trimmed.len() - extension.len() - 1)
+    });
+    let mut bounded: String = stem.chars().take(80 - suffix.len()).collect();
+    while bounded.len() + suffix.len() > 255 {
+        bounded.pop();
+    }
+    bounded.push_str(suffix);
+    Some(bounded)
 }
 
 /// Monotonic + 6-hex-char suffix; combines nanos + epoch nanos fallback to
@@ -250,6 +258,12 @@ fn prune_store_with_limits(
     max_count: usize,
     max_bytes: u64,
 ) -> Result<(), String> {
+    let directory = match crate::paths::canonical_managed_dir(dir) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("读取附件目录失败：{error}")),
+    };
+    let dir = directory.as_path();
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -339,10 +353,18 @@ pub fn save_blob(
         ));
     }
     let destination = build_destination(dir, mime, suggested_name)?;
+    std::fs::create_dir_all(dir)
+        .map_err(|error| format!("创建附件目录 {} 失败：{error}", dir.display()))?;
+    let directory = crate::paths::canonical_managed_dir(dir)
+        .map_err(|error| format!("解析附件目录失败：{error}"))?;
+    let relative = destination
+        .strip_prefix(dir)
+        .map_err(|error| format!("解析附件路径失败：{error}"))?;
+    let destination = directory.join(relative);
     let parent = destination
         .parent()
         .ok_or_else(|| "无法创建附件目录".to_string())?;
-    std::fs::create_dir_all(parent)
+    std::fs::create_dir(parent)
         .map_err(|error| format!("创建附件目录 {} 失败：{error}", parent.display()))?;
     crate::paths::write_private_file(&destination, bytes)?;
     // write_private_file uses a staging file inside the same dir; the
@@ -391,7 +413,7 @@ pub async fn discard_attachment_blob(
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Ok(());
     }
-    let Ok(canonical_dir) = std::fs::canonicalize(&dir) else {
+    let Ok(canonical_dir) = crate::paths::canonical_managed_dir(&dir) else {
         return Ok(());
     };
     let Ok(canonical) = std::fs::canonicalize(&raw) else {
@@ -543,17 +565,23 @@ mod tests {
     }
 
     #[test]
-    fn long_suggested_name_is_truncated_to_80_chars() {
+    fn long_suggested_name_preserves_the_extension_with_portable_limits() {
         let temp = tempfile::tempdir().expect("temp dir");
-        let long = format!("{}.png", "a".repeat(500));
-        let path = save_blob(temp.path(), b"x", "image/png", Some(&long)).unwrap();
-        let file_name = path.file_name().unwrap().to_string_lossy().to_string();
-        // Basename is bounded before landing on disk.
-        assert!(
-            file_name.len() < 200,
-            "got len {}: {file_name}",
-            file_name.len()
-        );
+        for stem in ["a".repeat(500), "经营📑".repeat(100), "📑".repeat(100)] {
+            let long = format!("{stem}.XLSX");
+            let path = save_blob(
+                temp.path(),
+                b"spreadsheet bytes",
+                "application/octet-stream",
+                Some(&long),
+            )
+            .unwrap();
+            let file_name = path.file_name().unwrap().to_str().unwrap();
+            let kept = file_name.strip_suffix(".XLSX").unwrap();
+            assert!(!kept.is_empty() && stem.starts_with(kept));
+            assert!(file_name.len() <= 255 && file_name.chars().count() <= 80);
+            assert_eq!(write_read(&path), b"spreadsheet bytes");
+        }
     }
 
     #[test]
@@ -593,5 +621,21 @@ mod tests {
         assert!(!first.exists(), "oldest blob should be evicted first");
         assert!(second.exists());
         assert!(newest.exists(), "current save must never be evicted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_attachment_root_is_not_written_or_pruned() {
+        let data_home = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let attachment_root = data_home.path().join("clipboard-images");
+        let existing = external.path().join("notes.txt");
+        std::fs::write(&existing, b"external notes").unwrap();
+        std::os::unix::fs::symlink(external.path(), &attachment_root).unwrap();
+
+        assert!(save_blob(&attachment_root, b"pasted", "text/plain", Some("paste.txt")).is_err());
+        assert!(prune_store_with_limits(&attachment_root, None, 0, 0).is_err());
+        assert_eq!(std::fs::read(&existing).unwrap(), b"external notes");
+        assert_eq!(std::fs::read_dir(external.path()).unwrap().count(), 1);
     }
 }

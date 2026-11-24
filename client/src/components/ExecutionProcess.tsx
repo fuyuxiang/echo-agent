@@ -567,9 +567,8 @@ export function ExecutionProcess({
           </ol>
         </div>
       </div>
-      {(summary.toolCount > 0 && onOpenTool || reviewing) && <div className="execution-process__footer">
-        {summary.toolCount > 0 && onOpenTool && <p className="execution-process__hint">选择操作可在右侧查看输入、输出和文件变更</p>}
-        {reviewing && <button type="button" className="execution-process__latest" aria-controls={bodyId}
+      {reviewing && <div className="execution-process__footer">
+        <button type="button" className="execution-process__latest" aria-controls={bodyId}
           title="回到最新进展并恢复执行记录跟随"
           onClick={() => {
             const body = bodyRef.current;
@@ -579,7 +578,7 @@ export function ExecutionProcess({
             followWhileBodyFocused.current = true;
             updateReviewing(false);
             scrollToLatest();
-          }}>回到最新进展</button>}
+          }}>回到最新进展</button>
       </div>}
     </div>}
   </section>;

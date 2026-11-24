@@ -23,3 +23,29 @@ Windows 监听 WebView2 的进程失败和浏览器退出事件：渲染进程�
 原生验收不读取日常用户资料，不按进程名称结束进程。报告写入该临时目录的 `evidence.jsonl`；仅退出码、完整的恢复记录和草稿检查均通过时才报告成功。编译检查和单元测试不替代 Windows 原生故障注入。
 
 完整客户端的强制退出、历史恢复及持续运行使用 [开发与验收](testing.md) 中的生命周期驱动。持续运行需分别记录墙钟、活动时间、锁屏/睡眠与采样进程范围；窗口恢复或有限时长观察不能替代休眠唤醒、全天负载和其他平台的验收。
+
+## 旧版工作台数据
+
+旧会话在普通历史中可读，保存的文本、差异和工具输出仍随会话记录显示。会话中的「查看迁移资料」可直达恢复设置。历史工作目录按现有会话授权或目录选择器授权访问。
+
+「设置 → 备份与恢复 → 旧版工作台资料」可以导出计划、输入草稿、编辑上下文、附件路径和队列为 JSON。升级先将旧数据写入本机档案，再腾出界面存储。备份会包含这些档案，同一草稿键的不同版本也可以导出查看。普通待发消息仍可在恢复后手动确认发送。
+
+如果备份里的界面数据超过 WebView 存储配额，应用保留当前界面数据，并将待恢复的内容存为本机档案，启动后可从「待恢复的界面数据」导出查阅。会话、文档和项目等后端数据仍按正常流程恢复。
+
+数据目录中的 `coding/` 是旧任务和检查点档案，`coding-worktrees/` 可能包含真实用户工作树。旧日志与配置仍在原目录。新版备份按原始内容保存旧任务档案，恢复前的同名文件副本位于 `restore-previous-*`。涉及的外部源码、工作树和附件原件仍由各自的物理目录管理。
+
+状态未知的旧外部调用继续在关联目录约束新回合、调度执行、文件回溯、Word 发布和常用写入入口。先在原工具或服务确认调用实际结束，检查目录中的现有改动，再在「旧版工作台资料」填写核验依据并完成原生确认。核验记入本机记录。同一目录若还有其它待核验调用，目录继续受限。
+
+## 保留的共享机制与兼容路径
+
+| 路径 | 桌面生产用途 |
+| --- | --- |
+| `src/lib/file-index.ts`、`windows-path.ts`、`file-type-icon.tsx`，以及 `src/components/FixedSizeList.tsx`、`src/stores/file-tree-selection-store.ts` | 普通聊天的目录内文件提及、文件图标、大目录文件树、多选与范围选择。 |
+| `src-tauri/src/workspace_ignore.rs`、`shell_fs.rs` | 目录授权、边界校验、文件操作及 `.gitignore`、`.ignore`、`.echoagentignore` 的嵌套规则。 |
+| `src-tauri/src/providers.rs`、`meeting_minutes.rs` | 纪要模型的配置、凭证、组织租约及调用。 |
+| `src-tauri/src/process_supervisor.rs`、`document_export.rs`、`office_node.rs` | 子进程生命周期、更新交接与 Office 导出。安装包的 `office/node/` 提供独立 Node.js 和许可证。 |
+| `src/lib/legacy-workspace.ts`、`src-tauri/src/legacy_workspace.rs`、`backup.rs` | 旧记录读取与导出、备份兼容、未结束操作的目录限制和人工核验。旧工作树、应用数据和草稿是用户数据。 |
+| `src-tauri/windows/install-path.nsh`、`scripts/stage-office-node.mjs` | 识别并清理已登记旧版安装的资源或本地生成的过期暂存物。历史资源路径仅用于清理与验收。 |
+| `vendor/echo-agent-build/crates/codegen/` | 共享 Runtime 中的文件工具、文档变化记录、任务规划、子 Agent、命令执行、MCP、Skills 与权限仍在桌面运行。桌面编译启用 `desktop`，排除语言服务器启动与对应工具，以及代码索引、SCM、PTY 控件和 worktree 创建、恢复与清理的专用入口。旧协议和配置标识继续可读。 |
+| `src-tauri/src/agent_admin.rs`、Runtime 的 `session/acp_types.rs` | 旧值 `code_only` 解析为通用的文件回溯模式 `files_only`，服从原有权限和目录限制。 |
+| Runtime 的 `builtin.rs`、`src-tauri/src/automation/policy.rs` | 旧内置技能哈希仅用于识别已分发且内容未修改的副本。`xterm` 是电脑操作策略中的系统终端应用名称。 |

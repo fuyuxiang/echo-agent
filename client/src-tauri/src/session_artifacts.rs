@@ -70,11 +70,8 @@ fn record_at(
     let mut entries = read_at(home, session)?;
     if pending {
         for entry in &mut entries {
-            if entry.pending
-                && receipt_path(&entry.receipt.path) == receipt_path(&receipt.path)
-                && staged_receipt_matches(&entry.receipt)
-            {
-                entry.pending = false;
+            if entry.pending && receipt_path(&entry.receipt.path) == receipt_path(&receipt.path) {
+                recover_staged_entry(home, session, entry);
             }
         }
     }
@@ -126,8 +123,8 @@ fn creation_receipt_at(
 ) -> Result<Option<DocumentExportReceipt>, String> {
     let _guard = WRITES.lock().map_err(|_| "成果存储锁已损坏")?;
     let entries = read_at(home, session)?;
-    let Some(entry) = entries
-        .iter()
+    let Some(mut entry) = entries
+        .into_iter()
         .rev()
         .find(|e| e.request_key.as_deref() == Some(key))
     else {
@@ -136,13 +133,18 @@ fn creation_receipt_at(
     if entry.request_digest.as_deref() != Some(digest) {
         return Err("该请求或文件名已经用于其他内容，请使用新的请求标识和文件名".into());
     }
-    if !staged_receipt_matches(&entry.receipt) {
+    let verified = if entry.pending {
+        recover_staged_entry(home, session, &mut entry)
+    } else {
+        staged_receipt_matches(&entry.receipt)
+    };
+    if !verified {
         if entry.pending && !Path::new(&entry.receipt.path).exists() {
             return Ok(None);
         }
         return Err("此前生成的文件已移动、删除或被修改，请指定新的文件名后重新生成".into());
     }
-    Ok(Some(entry.receipt.clone()))
+    Ok(Some(entry.receipt))
 }
 
 pub(crate) fn identify_creation(
@@ -222,14 +224,31 @@ fn staged_receipt_matches(receipt: &DocumentExportReceipt) -> bool {
         Ok((size, hash)) if size == receipt.byte_size && hash == receipt.sha256)
 }
 
-fn published_entries(entries: Vec<SessionExport>) -> Vec<SessionExport> {
+fn recover_staged_entry(home: &Path, session: &str, entry: &mut SessionExport) -> bool {
+    if !staged_receipt_matches(&entry.receipt) {
+        return false;
+    }
+    if entry.receipt.editable_source_warning.is_some()
+        && crate::document_workspace::read_record_at(home, session, Path::new(&entry.receipt.path))
+            .ok()
+            .flatten()
+            .is_some_and(|draft| draft.file_sha256 == entry.receipt.sha256)
+    {
+        entry.receipt.editable_source_warning = None;
+    }
+    entry.pending = false;
+    true
+}
+
+fn published_entries(
+    home: &Path,
+    session: &str,
+    entries: Vec<SessionExport>,
+) -> Vec<SessionExport> {
     let mut published = std::collections::BTreeMap::new();
     for mut entry in entries {
-        if entry.pending {
-            if !staged_receipt_matches(&entry.receipt) {
-                continue;
-            }
-            entry.pending = false;
+        if entry.pending && !recover_staged_entry(home, session, &mut entry) {
+            continue;
         }
         published.insert(receipt_path(&entry.receipt.path).to_path_buf(), entry);
     }
@@ -243,7 +262,12 @@ pub fn session_exports_list(
 ) -> Result<Vec<SessionExport>, String> {
     crate::commands::trusted_session_history_cwd(&state, &session_id, None)?;
     let _guard = WRITES.lock().map_err(|_| "成果存储锁已损坏")?;
-    read_at(&crate::paths::echo_agent_home_dir(), &session_id).map(published_entries)
+    let home = crate::paths::echo_agent_home_dir();
+    Ok(published_entries(
+        &home,
+        &session_id,
+        read_at(&home, &session_id)?,
+    ))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -263,7 +287,7 @@ fn catalog_at(
     let _guard = WRITES.lock().map_err(|_| "成果存储锁已损坏")?;
     let mut result = Vec::new();
     for (session_id, title, cwd) in sessions {
-        for export in published_entries(read_at(home, session_id)?) {
+        for export in published_entries(home, session_id, read_at(home, session_id)?) {
             result.push(CatalogExport {
                 session_id: session_id.clone(),
                 session_title: title.clone(),
@@ -380,6 +404,7 @@ mod tests {
             format: "docx".into(),
             byte_size: 100,
             sha256: "a".repeat(64),
+            editable_source_warning: None,
         };
         let draft = EditableDocument {
             id: document_store::identity("owner", Path::new(&receipt.path)),
@@ -442,6 +467,7 @@ mod tests {
             format: "pdf".into(),
             byte_size: bytes.len() as u64,
             sha256: format!("{:x}", Sha256::digest(bytes)),
+            editable_source_warning: None,
         };
         record_at(home.path(), "task", receipt.clone(), "成果", true).unwrap();
         identify_creation_at(home.path(), "task", &receipt.path, "request-1", "digest-1").unwrap();
@@ -495,6 +521,7 @@ mod tests {
             format: "pdf".into(),
             byte_size: bytes.len() as u64,
             sha256: format!("{:x}", Sha256::digest(bytes)),
+            editable_source_warning: None,
         };
         record_at(home.path(), "session", receipt.clone(), "报告", false).unwrap();
         let restarted_access = crate::shell_fs::FilesystemAccess::default();
@@ -546,6 +573,7 @@ mod tests {
             format: "pdf".into(),
             byte_size: bytes.len() as u64,
             sha256: format!("{:x}", Sha256::digest(bytes)),
+            editable_source_warning: None,
         };
         record_at(home.path(), "s", receipt.clone(), "报告", false).unwrap();
         std::os::unix::fs::symlink(&target, &path).unwrap();
@@ -564,26 +592,94 @@ mod tests {
             format: "pdf".into(),
             byte_size: bytes.len() as u64,
             sha256: format!("{:x}", Sha256::digest(bytes)),
+            editable_source_warning: None,
         };
         record_at(home.path(), "session", receipt.clone(), "恢复成果", true).unwrap();
-        assert!(published_entries(read_at(home.path(), "session").unwrap()).is_empty());
+        let published = || {
+            published_entries(
+                home.path(),
+                "session",
+                read_at(home.path(), "session").unwrap(),
+            )
+        };
+        assert!(published().is_empty());
         std::fs::write(&path, bytes).unwrap();
-        let recovered = published_entries(read_at(home.path(), "session").unwrap());
+        let recovered = published();
         assert_eq!(recovered.len(), 1);
         assert!(!recovered[0].pending);
         std::fs::write(&path, b"%PDF-1.7\nmodified").unwrap();
-        assert!(published_entries(read_at(home.path(), "session").unwrap()).is_empty());
+        assert!(published().is_empty());
         std::fs::write(&path, bytes).unwrap();
         let mut next = receipt.clone();
         next.sha256 = "b".repeat(64);
         record_at(home.path(), "session", next, "下一次导出尚未发布", true).unwrap();
-        let retained = published_entries(read_at(home.path(), "session").unwrap());
+        let retained = published();
         assert_eq!(
             retained.len(),
             1,
             "a new staging operation must retain a previously recovered published output"
         );
         assert_eq!(retained[0].receipt.sha256, receipt.sha256);
+    }
+
+    #[test]
+    fn recovered_word_receipt_reports_draft_availability_for_exact_output() {
+        use crate::document_store::{self, EditableDocument};
+
+        let home = tempfile::tempdir().unwrap();
+        let path = dunce::canonicalize(home.path())
+            .unwrap()
+            .join("recover.docx");
+        let mut archive = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        archive
+            .start_file(
+                "word/document.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        archive.finish().unwrap();
+        let (byte_size, sha256) = crate::document_export::validate_output(&path, "docx").unwrap();
+        let session = "owner";
+        let receipt = DocumentExportReceipt {
+            path: path.to_string_lossy().into_owned(),
+            format: "docx".into(),
+            byte_size,
+            sha256,
+            editable_source_warning: Some("应用内编辑稿未能保存".into()),
+        };
+        record_at(home.path(), session, receipt.clone(), "恢复成果", true).unwrap();
+        identify_creation_at(home.path(), session, &receipt.path, "creation", "digest").unwrap();
+        let retry = || {
+            creation_receipt_at(home.path(), session, "creation", "digest")
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(
+            retry().editable_source_warning,
+            receipt.editable_source_warning
+        );
+
+        let mut draft = EditableDocument {
+            id: document_store::identity(session, &path),
+            session_id: session.into(),
+            path: receipt.path.clone(),
+            title: "恢复成果".into(),
+            revision: 1,
+            exported_revision: 1,
+            file_sha256: "a".repeat(64),
+            byte_size,
+            document: serde_json::json!({"type": "doc", "content": [{"type": "paragraph"}]}),
+            saved_at: 1,
+            actor: "生成文档".into(),
+            history: Vec::new(),
+            pending_export: None,
+            external_change: false,
+        };
+        document_store::write(home.path(), &draft).unwrap();
+        assert!(retry().editable_source_warning.is_some());
+        draft.file_sha256 = receipt.sha256.clone();
+        document_store::write(home.path(), &draft).unwrap();
+        assert!(retry().editable_source_warning.is_none());
     }
 
     #[test]
@@ -602,6 +698,7 @@ mod tests {
                     format: "docx".into(),
                     byte_size: 42,
                     sha256: hash.repeat(64),
+                    editable_source_warning: None,
                 },
                 "成果",
                 false,
@@ -637,6 +734,7 @@ mod tests {
                 format: "docx".into(),
                 byte_size: 42,
                 sha256: "a".repeat(64),
+                editable_source_warning: None,
             },
             "export",
             false,

@@ -33,6 +33,7 @@ use echo_agent_acp::{
 use echo_agent_runtime::agent::init::bootstrap;
 use echo_agent_runtime::agent::mvp_agent::MvpAgent;
 use echo_agent_runtime::auth::{AuthManager, EchoAgentComConfig};
+use echo_agent_runtime::session::helpers::host_prompt_admission::HostPromptAdmission;
 use echo_agent_runtime::util::config::load_effective_config;
 
 // Re-aliased to mirror EchoAgent's own internal import style.
@@ -248,10 +249,7 @@ pub fn spawn_agent_runtime(_cwd: PathBuf) -> Result<AgentHandle> {
             .collect();
         let model_urls = legacy_model_base_urls(&cfg);
         if let Some(first_byok_url) = pick_byok_base_url(provider_urls, model_urls) {
-            tracing::info!(
-                models_base_url = %first_byok_url,
-                "BYOK: set endpoints.models_base_url to skip built-in default models"
-            );
+            tracing::info!("BYOK: using the configured endpoint to skip built-in default models");
             cfg.endpoints.models_base_url = Some(first_byok_url);
         }
     }
@@ -310,7 +308,9 @@ pub fn spawn_agent_runtime(_cwd: PathBuf) -> Result<AgentHandle> {
                 // generic AcpGatewayReceiver (not the AcpAgentGatewayReceiver
                 // alias, which fixes C = AgentSideConnection).
                 let shutdown_agent = agent_rc.clone();
-                let gw_rx = AcpGatewayReceiver::new(acp_agent.rx, agent_rc).with_tracing(true);
+                // The gateway's verbose traces serialize complete ACP payloads,
+                // including MCP authorization headers and private user messages.
+                let gw_rx = AcpGatewayReceiver::new(acp_agent.rx, agent_rc);
                 let gateway_task = tokio::task::spawn_local(gw_rx.run());
                 tokio::pin!(gateway_task);
                 tokio::task::yield_now().await;
@@ -976,12 +976,25 @@ pub(crate) fn build_prompt_blocks(
 /// can load them on demand.
 pub async fn prompt_for_automation(
     tx: &AcpAgentTx,
+    admission: &HostPromptAdmission,
     session_id: &str,
     prompt_id: &str,
     text: &str,
     checkpoint: bool,
     recovering: bool,
 ) -> Result<crate::bridge::CompleteEvent> {
+    let stopped_before_send = || {
+        crate::bridge::parse_complete_event(&serde_json::json!({
+            "sessionId": session_id,
+            "promptId": prompt_id,
+            "stopReason": "cancelled",
+            "cancelTrigger": "stop",
+            "agentResult": "本次运行已停止，未发送任务消息",
+        }))
+    };
+    if admission.withdrawn() {
+        return Ok(stopped_before_send());
+    }
     let mut blocks = build_team_prompt_blocks(session_id, prompt_id, text, &[], None)?;
     if checkpoint || recovering {
         if let Some(acp::ContentBlock::Text(block)) = blocks.first_mut() {
@@ -992,11 +1005,13 @@ pub async fn prompt_for_automation(
         }
     }
     let meta = serde_json::Map::from_iter([("promptId".into(), serde_json::json!(prompt_id))]);
-    let req = acp::PromptRequest::new(session_id.to_string(), blocks).meta(Some(meta));
-    let response: acp::PromptResponse = acp_send(req, tx)
-        .await
-        .map_err(|e| anyhow!("prompt: {e:?}"))?;
-    completion_from_prompt_response(response, session_id, prompt_id)
+    let mut req = acp::PromptRequest::new(session_id.to_string(), blocks).meta(Some(meta));
+    admission.attach(&mut req);
+    match acp_send(req, tx).await {
+        Ok(response) => completion_from_prompt_response(response, session_id, prompt_id),
+        Err(_) if admission.withdrawn() => Ok(stopped_before_send()),
+        Err(error) => Err(anyhow!("prompt: {error:?}")),
+    }
 }
 
 pub(crate) fn completion_from_prompt_response(
@@ -1041,7 +1056,6 @@ pub async fn prompt_with_attachments(
         prompt_id,
         send_now,
         None,
-        false,
     )
     .await
 }
@@ -1057,7 +1071,6 @@ pub async fn prompt_with_mode_and_attachments(
     prompt_id: Option<&str>,
     send_now: bool,
     mode: Option<&str>,
-    document_tool_bridge: bool,
 ) -> Result<()> {
     let request = prepare_mode_prompt(
         session_id,
@@ -1067,7 +1080,6 @@ pub async fn prompt_with_mode_and_attachments(
         prompt_id,
         send_now,
         mode,
-        document_tool_bridge,
     )?;
     enqueue_prepared_prompt(tx, request)?.await
 }
@@ -1081,21 +1093,11 @@ pub(crate) fn prepare_mode_prompt(
     prompt_id: Option<&str>,
     send_now: bool,
     mode: Option<&str>,
-    document_tool_bridge: bool,
 ) -> Result<acp::PromptRequest> {
     let prompt_id = prompt_id
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
-    let mut blocks =
-        build_team_prompt_blocks(session_id, &prompt_id, text, attachments, display_text)?;
-    if document_tool_bridge {
-        if let Some(acp::ContentBlock::Text(block)) = blocks.first_mut() {
-            block
-                .meta
-                .get_or_insert_with(acp::Meta::new)
-                .insert("desktopDocumentTools".into(), serde_json::json!(true));
-        }
-    }
+    let blocks = build_team_prompt_blocks(session_id, &prompt_id, text, attachments, display_text)?;
     let mut meta = acp::Meta::new();
     meta.insert(
         "promptId".into(),
@@ -1106,9 +1108,6 @@ pub(crate) fn prepare_mode_prompt(
             return Err(anyhow!("invalid prompt mode"));
         }
         meta.insert("mode".into(), serde_json::json!(mode));
-    }
-    if document_tool_bridge {
-        meta.insert("desktopDocumentTools".into(), serde_json::json!(true));
     }
     if send_now {
         meta.insert("sendNow".into(), serde_json::Value::Bool(true));
@@ -1250,6 +1249,36 @@ pub async fn cancel(
     cancel_trigger: &str,
     prompt_id: Option<&str>,
 ) -> Result<()> {
+    cancel_with_receipt(tx, session_id, cancel_trigger, prompt_id, false).await
+}
+
+pub(crate) async fn cancel_from_user(
+    tx: &AcpAgentTx,
+    session_id: &str,
+    cancel_trigger: &str,
+    prompt_id: Option<&str>,
+) -> Result<()> {
+    cancel_with_receipt(tx, session_id, cancel_trigger, prompt_id, true).await
+}
+
+#[derive(Debug)]
+pub(crate) struct StalePromptCancel;
+
+impl std::fmt::Display for StalePromptCancel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("所选消息已结束或切换，请在当前回合重试")
+    }
+}
+
+impl std::error::Error for StalePromptCancel {}
+
+async fn cancel_with_receipt(
+    tx: &AcpAgentTx,
+    session_id: &str,
+    cancel_trigger: &str,
+    prompt_id: Option<&str>,
+    report_stale: bool,
+) -> Result<()> {
     use echo_agent_acp::{AcpAgentMessage, AcpArgs};
     let mut meta = serde_json::Map::new();
     meta.insert(
@@ -1261,6 +1290,12 @@ pub async fn cancel(
             "promptId".to_string(),
             serde_json::Value::String(prompt_id.to_string()),
         );
+        if report_stale {
+            meta.insert(
+                "reportStalePrompt".to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
     }
     let notif =
         acp::CancelNotification::new(acp::SessionId::new(session_id.to_string())).meta(Some(meta));
@@ -1274,8 +1309,20 @@ pub async fn cancel(
         .await
         .map_err(|_| anyhow!("cancel acknowledgement timed out"))?
         .map_err(|_| anyhow!("cancel acknowledgement channel closed"))?;
-    response.map_err(|error| anyhow!("cancel: {error:?}"))?;
-    Ok(())
+    response.map_err(|error| {
+        if report_stale
+            && error
+                .data
+                .as_ref()
+                .and_then(|data| data.get("kind"))
+                .and_then(|kind| kind.as_str())
+                == Some("stale_prompt_cancel")
+        {
+            anyhow::Error::new(StalePromptCancel)
+        } else {
+            anyhow!("cancel: {error:?}")
+        }
+    })
 }
 
 /// Rename a session by calling EchoAgent's `echo.agent/session/rename` extension method.
@@ -1414,6 +1461,122 @@ mod tests {
     //! fresh data home, empty legacy/compatibility homes and synthetic model
     //! config, cleans inherited credentials, and never sends a model prompt.
     use super::*;
+
+    #[tokio::test]
+    async fn withdrawn_scheduled_prompt_never_reaches_the_runtime_channel() {
+        use echo_agent_runtime::session::helpers::host_prompt_admission::withdraw;
+
+        let session_id = "scheduled-withdrawn-session";
+        let prompt_id = "scheduled-withdrawn-prompt";
+        let admission = HostPromptAdmission::begin(session_id, prompt_id).unwrap();
+        assert!(withdraw(session_id, prompt_id, false));
+        let (client, mut agent) = acp_channels();
+
+        let completion = prompt_for_automation(
+            &client.tx,
+            &admission,
+            session_id,
+            prompt_id,
+            "Synthetic task",
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(completion.session_id, session_id);
+        assert_eq!(completion.prompt_id, prompt_id);
+        assert_eq!(completion.stop_reason, "cancelled");
+        assert_eq!(completion.cancel_trigger.as_deref(), Some("stop"));
+        assert!(matches!(
+            agent.rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn withdrawal_after_posting_is_reported_as_a_stop_when_the_runtime_rejects_admission() {
+        use echo_agent_runtime::session::helpers::host_prompt_admission::withdraw;
+
+        let session_id = "scheduled-withdrawn-after-posting";
+        let prompt_id = "scheduled-prompt-after-posting";
+        let admission = HostPromptAdmission::begin(session_id, prompt_id).unwrap();
+        let (client, mut agent) = acp_channels();
+        let submit = prompt_for_automation(
+            &client.tx,
+            &admission,
+            session_id,
+            prompt_id,
+            "Synthetic task",
+            false,
+            false,
+        );
+        let refuse = async {
+            let echo_agent_acp::AcpAgentMessage::Prompt(request) = agent.rx.recv().await.unwrap()
+            else {
+                panic!("expected prompt request");
+            };
+            assert!(withdraw(session_id, prompt_id, false));
+            request
+                .response_tx
+                .send(Err(acp::Error::invalid_params()))
+                .unwrap();
+        };
+        let (result, ()) = tokio::join!(submit, refuse);
+        let completion = result.unwrap();
+        assert_eq!(completion.prompt_id, prompt_id);
+        assert_eq!(completion.stop_reason, "cancelled");
+        assert_eq!(completion.cancel_trigger.as_deref(), Some("stop"));
+    }
+
+    #[tokio::test]
+    async fn only_named_user_cancel_requests_opt_in_to_stale_prompt_errors() {
+        for (from_user, prompt_id) in [(true, Some("old")), (false, Some("old")), (true, None)] {
+            let (client, mut agent) = echo_agent_acp::acp_channels();
+            let request = async {
+                if from_user {
+                    cancel_from_user(&client.tx, "session", "stop", prompt_id).await
+                } else {
+                    cancel(&client.tx, "session", "stop", prompt_id).await
+                }
+            };
+            let respond = async {
+                let echo_agent_acp::AcpAgentMessage::Cancel(request) =
+                    agent.rx.recv().await.expect("cancel notification")
+                else {
+                    panic!("expected cancel notification");
+                };
+                let meta = request.request.meta.expect("cancel metadata");
+                let opted_in = from_user && prompt_id.is_some();
+                assert_eq!(
+                    meta.get("promptId").and_then(|value| value.as_str()),
+                    prompt_id
+                );
+                assert_eq!(
+                    meta.get("reportStalePrompt")
+                        .and_then(|value| value.as_bool()),
+                    opted_in.then_some(true)
+                );
+                let outcome = if opted_in {
+                    Err(acp::Error::invalid_params().data(serde_json::json!({
+                        "kind": "stale_prompt_cancel"
+                    })))
+                } else {
+                    Ok(())
+                };
+                request.response_tx.send(outcome).expect("cancel receipt");
+            };
+            let (outcome, ()) = tokio::join!(request, respond);
+            if from_user && prompt_id.is_some() {
+                assert!(outcome
+                    .unwrap_err()
+                    .to_string()
+                    .contains("所选消息已结束或切换"));
+            } else {
+                outcome.unwrap();
+            }
+        }
+    }
 
     #[test]
     fn desktop_advertises_interactive_folder_trust_under_capability_meta() {
@@ -1982,13 +2145,22 @@ mod tests {
             .await
             .unwrap();
             let prompt_id = uuid::Uuid::now_v7().to_string();
+            let admission = HostPromptAdmission::begin(&session_id, &prompt_id).unwrap();
             std::fs::write(&binding, format!("{session_id}\n{prompt_id}")).unwrap();
             let prompt = format!(
                 "Use the shell tool exactly once with the exact command from the following line:\n{COMMAND}\nWhen the command returns, report ECHO_RECOVERY_EXTERNAL."
             );
             let completion = tokio::time::timeout(
                 Duration::from_secs(110),
-                prompt_for_automation(&handle.tx, &session_id, &prompt_id, &prompt, true, false),
+                prompt_for_automation(
+                    &handle.tx,
+                    &admission,
+                    &session_id,
+                    &prompt_id,
+                    &prompt,
+                    true,
+                    false,
+                ),
             )
             .await;
             panic!("first Runtime was expected to be terminated by the driver at the durable checkpoint: timeout={}", completion.is_err());
@@ -2016,8 +2188,9 @@ mod tests {
                 .await
                 .unwrap();
             let prompt_id = uuid::Uuid::now_v7().to_string();
+            let admission = HostPromptAdmission::begin(session_id, &prompt_id).unwrap();
             let completion = tokio::time::timeout(Duration::from_secs(80), prompt_for_automation(
-                &handle.tx, session_id, &prompt_id,
+                &handle.tx, &admission, session_id, &prompt_id,
                 "The original turn was interrupted. From the previous command result, return the exact marker that it wrote. Do not use tools.",
                 false, true,
             )).await.unwrap().unwrap();
@@ -2150,21 +2323,39 @@ mod tests {
             new_session_with_options(&first.tx, cwd, init.default_model_id.as_deref(), None, None)
                 .await
                 .unwrap();
+        let storage = echo_agent_memory::MemoryStorage::new(cwd, None);
+        assert!(!storage.is_ephemeral());
+        // Simulate a concurrent writer in the real memory index. The final
+        // session write is required, but an optional chunk-count metric must
+        // never keep the persistence acknowledgement waiting for SQLite.
+        let index = rusqlite::Connection::open_with_flags(
+            storage.index_path(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        )
+        .unwrap();
+        index
+            .query_row("SELECT COUNT(*) FROM chunks", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("the fixture must lock the initialized memory index");
+        index
+            .execute_batch("PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE;")
+            .unwrap();
         first.cancel.cancel();
         tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
             first.shutdown_complete.wait_for(|done| *done),
         )
         .await
-        .unwrap()
+        .expect("shutdown did not acknowledge durable session saves while the index was locked")
         .unwrap();
+        index.execute_batch("ROLLBACK;").unwrap();
+        drop(index);
         if let Some(thread) = first.thread.take() {
             tokio::task::spawn_blocking(move || thread.join().unwrap().unwrap())
                 .await
                 .unwrap();
         }
-        let storage = echo_agent_memory::MemoryStorage::new(cwd, None);
-        assert!(!storage.is_ephemeral());
         let job = echo_agent_runtime::session::memory::pending::PendingMemory {
             source_id: sid.clone(),
             history: vec![echo_agent_runtime::sampling::ConversationItem::user(
@@ -2214,27 +2405,168 @@ mod tests {
         );
     }
 
+    fn receive_no_model_notifications(mut rx: AcpClientRx) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            while let Some(message) = rx.recv().await {
+                match message {
+                    echo_agent_acp::AcpClientMessage::SessionNotification(args) => {
+                        let _ = args.response_tx.send(Ok(()));
+                    }
+                    echo_agent_acp::AcpClientMessage::ExtNotification(args) => {
+                        let _ = args.response_tx.send(Ok(()));
+                    }
+                    unexpected => panic!("unexpected no-model client request: {unexpected:?}"),
+                }
+            }
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "run through the isolated no-model Runtime smoke harness"]
+    async fn persisted_sessions_survive_clock_skew_on_initialize_and_load() {
+        use echo_agent_runtime::sampling::ConversationItem;
+        use echo_agent_runtime::session::{
+            info::Info,
+            persistence::session_dir,
+            storage::{JsonlStorageAdapter, SessionUpdate, StorageAdapter},
+        };
+        use std::fs::{self, FileTimes, OpenOptions};
+        use std::time::{Duration, SystemTime};
+
+        let home = crate::paths::redirected_data_home().expect("isolated session store");
+        assert_eq!(
+            std::env::var("ECHO_AGENT_REVIEW_ISOLATED").as_deref(),
+            Ok("1")
+        );
+        let config = fs::read_to_string(home.join("config.toml")).unwrap();
+        assert!(
+            config.contains("cleanup_ttl_days = 1"),
+            "include the legacy setting"
+        );
+        let workspace = tempfile::tempdir().unwrap();
+        let cwd = workspace.path().canonicalize().unwrap();
+        let storage = JsonlStorageAdapter::with_root(home);
+        let now = SystemTime::now();
+        let year = Duration::from_secs(365 * 86_400);
+        let fixtures = [
+            ("retained-old", now - year),
+            ("retained-archived", now - Duration::from_secs(3 * 86_400)),
+            ("retained-future", now + year),
+        ];
+        let mut protected_files = Vec::new();
+        for (id, modified) in fixtures {
+            let info = Info {
+                id: acp::SessionId::new(id),
+                cwd: cwd.to_str().unwrap().into(),
+            };
+            storage
+                .init_session(&info, acp::ModelId::new("review/mock"))
+                .await
+                .unwrap();
+            storage
+                .append_chat_message(&info, &ConversationItem::user(id))
+                .await
+                .unwrap();
+            storage
+                .append_update(
+                    &info,
+                    &SessionUpdate::Acp(Box::new(acp::SessionNotification::new(
+                        info.id.clone(),
+                        acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(
+                            acp::ContentBlock::Text(acp::TextContent::new(id)),
+                        )),
+                    ))),
+                )
+                .await
+                .unwrap();
+
+            let directory = session_dir(&info);
+            for name in ["summary.json", "chat_history.jsonl", "updates.jsonl"] {
+                let path = directory.join(name);
+                OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_times(FileTimes::new().set_modified(modified))
+                    .unwrap();
+                let contents = fs::read(&path).unwrap();
+                protected_files.push((id, path, contents));
+            }
+        }
+        assert!(crate::meta::set_archived("retained-archived", true).unwrap());
+        assert!(crate::meta::set_pinned("retained-old", true).unwrap());
+
+        crate::team_mcp::serve();
+        let launch_cwd = cwd.clone();
+        let handle = tokio::task::spawn_blocking(move || spawn_agent_runtime(launch_cwd))
+            .await
+            .unwrap()
+            .unwrap();
+        let receiver = receive_no_model_notifications(handle.rx);
+        assert!(initialize(&handle.tx).await.unwrap().ok);
+        let history_payload = || {
+            serde_json::to_value(crate::sessions::list_session_history_page(None, true).unwrap())
+                .unwrap()
+        };
+        let payload = history_payload();
+        let sessions = payload["sessions"].as_array().unwrap();
+        assert!(sessions
+            .iter()
+            .any(|entry| entry["sessionId"] == "retained-old" && entry["pinned"] == true));
+        assert!(sessions
+            .iter()
+            .any(|entry| entry["sessionId"] == "retained-future" && entry["archived"] == false));
+        assert!(sessions
+            .iter()
+            .any(|entry| entry["sessionId"] == "retained-archived" && entry["archived"] == true));
+        for (_, path, expected) in &protected_files {
+            assert!(
+                fs::read(path).unwrap() == *expected,
+                "initialization changed {}",
+                path.display()
+            );
+        }
+
+        assert!(!crate::meta::set_archived("retained-archived", false).unwrap());
+        assert!(history_payload()["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["sessionId"] == "retained-archived" && entry["archived"] == false));
+        let model = load_session(&handle.tx, "retained-archived", &cwd, "default")
+            .await
+            .unwrap();
+        assert_eq!(model.as_deref(), Some("review/mock"));
+
+        handle.cancel.cancel();
+        let thread = handle.thread.unwrap();
+        tokio::task::spawn_blocking(move || thread.join().unwrap().unwrap())
+            .await
+            .unwrap();
+        receiver.abort();
+        for (id, path, expected) in protected_files {
+            let contents = fs::read(&path).unwrap();
+            if id != "retained-archived" {
+                assert!(contents == expected, "loading changed {}", path.display());
+            } else if path.ends_with("summary.json") {
+                serde_json::from_slice::<serde_json::Value>(&contents).unwrap();
+            } else {
+                // Loading may add system context. The original history and
+                // replay update must still be present after shutdown.
+                assert!(
+                    contents
+                        .split_inclusive(|byte| *byte == b'\n')
+                        .any(|line| line == expected.as_slice()),
+                    "original record missing from {}",
+                    path.display()
+                );
+            }
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires an explicit isolated ECHO_AGENT_HOME and local MCP port (~10s)"]
     async fn spawn_smoke_spawn_initialize_new_session() {
-        fn receive_notifications(mut rx: AcpClientRx) -> tokio::task::JoinHandle<()> {
-            tokio::spawn(async move {
-                while let Some(message) = rx.recv().await {
-                    match message {
-                        echo_agent_acp::AcpClientMessage::SessionNotification(args) => {
-                            let _ = args.response_tx.send(Ok(()));
-                        }
-                        echo_agent_acp::AcpClientMessage::ExtNotification(args) => {
-                            let _ = args.response_tx.send(Ok(()));
-                        }
-                        // This acceptance never performs inference or requests
-                        // client-side tools. Dropping an unexpected request also
-                        // closes its response instead of hanging the test.
-                        unexpected => panic!("unexpected no-model client request: {unexpected:?}"),
-                    }
-                }
-            })
-        }
         assert!(
             crate::paths::redirected_data_home().is_some(),
             "Set ECHO_AGENT_HOME to an isolated directory before running this smoke test"
@@ -2266,7 +2598,7 @@ mod tests {
         .expect("spawn_agent_runtime failed");
         // Real clients acknowledge replay notifications before LoadSession
         // returns. The no-UI acceptance must provide the same receiver.
-        let receiver = receive_notifications(handle.rx);
+        let receiver = receive_no_model_notifications(handle.rx);
 
         // 2. ACP initialize handshake: protocol version + auth methods.
         let init = tokio::time::timeout(std::time::Duration::from_secs(30), initialize(&handle.tx))
@@ -2419,7 +2751,7 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
-        let receiver = receive_notifications(restored.rx);
+        let receiver = receive_no_model_notifications(restored.rx);
         initialize(&restored.tx).await.unwrap();
         assert_eq!(
             tokio::time::timeout(
@@ -2700,4 +3032,21 @@ mod memory_retrieval_tests {
             Some(ConfiguredEmbeddingProvider::Api(_))
         ));
     }
+}
+#[cfg(test)]
+#[test]
+fn desktop_registry_exposes_workspace_tools_without_the_language_server_tool() {
+    use echo_agent_tools::registry::types::ToolRegistryBuilder;
+
+    let registry = ToolRegistryBuilder::new();
+    for id in [
+        "EchoAgentBuild:read_file",
+        "EchoAgentBuild:list_dir",
+        "EchoAgentBuild:search_replace",
+        "EchoAgentBuild:run_terminal_cmd",
+        "EchoAgentBuild:task",
+    ] {
+        assert!(registry.has_tool_id(id), "missing shared tool {id}");
+    }
+    assert!(!registry.has_tool_id("EchoAgentBuild:lsp"));
 }

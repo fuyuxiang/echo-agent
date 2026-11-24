@@ -1,7 +1,8 @@
 import { Select } from "@/components/Select";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Users, Settings, Search, Pause, Square, Reply, X, AtSign } from "lucide-react";
-import { agentResolvePlanApproval } from "@/lib/agent-client";
+import { agentResolvePlanApproval, type PlanApprovalOutcome } from "@/lib/agent-client";
+import { refreshPendingPlanApprovals } from "@/lib/session-interactions";
 import type { ToolCallView } from "@/stores/session-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useSessionsStore } from "@/stores/sessions-store";
@@ -22,6 +23,7 @@ import { useWorkspaceMentions } from "@/lib/use-workspace-mentions";
 import { useElementSize } from "@/lib/use-element-size";
 import { attachmentBasename } from "@/lib/user-message";
 import { preparePromptWithPersonalKnowledge } from "@/lib/knowledge-context";
+import { draftRevision, touchDraft } from "@/lib/draft-lifecycle";
 import { knowledgeSourcesForSession, organizationScopeIdsForSession } from "@/stores/knowledge-store";
 import { SaveTeamButton, MemberManager, DecisionList } from "./GroupManagement";
 import { GroupReply } from "./GroupReply";
@@ -56,6 +58,7 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [refreshingSend, setRefreshingSend] = useState(false);
   const [tool, setTool] = useState<ToolCallView | null>(null);
   const [newMessages, setNewMessages] = useState(false);
   const [visibleCount, setVisibleCount] = useState(150);
@@ -195,6 +198,7 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
       if (!stopIntent && new Set([...attachments, ...previousAttachments]).size > 20) throw new Error("新附件与沿用的历史附件合计最多 20 个，请调整附件选择后发送。输入内容已保留。");
       if (!targets.length && !hasAllMemberMention(text) && mentionedMembers(text, members).some(id => members.filter(member => member.name === members.find(item => item.id === id)?.name).length > 1)) throw new Error("成员名称重复，请通过 @菜单选择具体成员后发送");
       const scope = `group:${group.id}`;
+      const submittedRevision = draftRevision(scope);
       const sources = knowledgeSourcesForSession(scope), scopes = organizationScopeIdsForSession(scope);
       const id = useGroupStore.getState().requestId(group.id, JSON.stringify({ text, attachments, recipients, discussion: effectiveDiscussion, reply, sources, scopes, newTopic, selectedRequest, sourceRequestId, ...(sourceRequestId ? { sourceAttachmentPaths: sourceAttachments } : {}) }));
       const stop = isGroupStopRequest({ id, text, attachments, memberIds: recipients, discussion: effectiveDiscussion, replyTo: reply });
@@ -205,15 +209,22 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
         ...(!stop && sourceRequestId ? { sourceAttachmentPaths: sourceAttachments } : {}),
         knowledge: { personal: sources.includes("personal"), organization: sources.includes("organization"), organizationScopeIds: scopes,
           context: prepared.promptText === text ? "" : prepared.promptText.slice(0, -text.length).trim() } });
-      await refresh();
-      useGroupStore.getState().acknowledgeSend(group.id);
+      const settled = useGroupStore.getState().acknowledgeSend(group.id, id, submittedRevision);
+      // Native already owns the sent attachments. If persisting the receipt
+      // failed, leave the recoverable draft in place instead of clearing it
+      // through Composer's separate text and attachment writes.
+      if (!settled) touchDraft(scope);
       if (isCurrent()) {
-        if (selectionIntent.current === submissionIntent) {
+        setRefreshingSend(true);
+        setError(null);
+        if (!settled) onToast("消息已发送，草稿清理待本机存储恢复");
+        else if (group.paused) onToast("补充已保存，未处理的内容会在恢复派发后继续");
+      }
+      void refresh().then(() => {
+        if (settled && isCurrent() && selectionIntent.current === submissionIntent) {
           setReply(null); setTargets([]); mentionSelections.current.clear(); setSelectedRequest(requestTarget ?? id); setNewTopic(false); setNewRound(false); setAttachmentSelection(undefined);
         }
-        setError(null);
-        if (group.paused) onToast("补充已保存，未处理的内容会在恢复派发后继续");
-      }
+      }).finally(() => { if (mounted.current) setRefreshingSend(false); });
       return true;
     } catch (cause) { if (isCurrent()) { if (submitted) setTargets(recipients); setError(errorText(cause)); } return false; }
   };
@@ -273,7 +284,7 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
           })}
           {focused && <GroupTaskNotice group={group} request={focused} busy={busy} onDetails={() => showDetail("work")} onControl={(action, id) => { if (action === "retry") retry(id); else void control(action, id); }} />}
           {activity && !pending.length && <div className="group-activity" role="status" aria-live="polite"><span className="group-activity__dot" aria-hidden="true" />{activity}</div>}
-          {members.map(member => [member.sessionId, member.discussionSessionId].filter((id): id is string => !!id).map(session => <GroupInteractions key={session} member={member.name} session={session} onError={setError} />))}
+          {members.map(member => [member.sessionId, member.discussionSessionId].filter((id): id is string => !!id).map(session => <GroupInteractions key={session} member={member.name} session={session} onToast={onToast} />))}
         </div>
       </div>
       {newMessages && <button type="button" className="group-new-messages" onClick={() => { setQuery(""); following.current = true; setNewMessages(false); if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; useGroupStore.getState().markRead(group.id, groupPublicSeq(group)); }}>查看新消息 ↓</button>}
@@ -281,6 +292,7 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
         <div className="group-chat__compose-options" ref={composeOptions}>
         {!!pending.length && <div className="group-pending-notice" role="status"><span>{pending.length} 位成员需要你处理</span><button type="button" className="groups-text-button" onClick={() => { following.current = true; document.getElementById(`group-interaction-${pending[0]}`)?.scrollIntoView?.({ block: "nearest", behavior: "smooth" }); }}>查看并处理</button></div>}
         {(error || loadError) && <div><p className="groups-error" role="alert">{error || loadError}</p>{error?.includes("附件") && requestTarget && <button type="button" className="groups-text-button" onClick={() => { setNewRound(true); setError(null); }}>改为关联新一轮，选择需要沿用的附件</button>}</div>}
+        {refreshingSend && <p className="group-mode-notice" role="status">已发送，正在刷新消息…</p>}
         {unchecked && <div className="group-pending-notice" role="status"><span>有未确认的执行需要核对。{!unchecked.discussion && !unchecked.summary && !unchecked.resultRepair ? "相关工作区的写入正在等待。" : "已有记录保留。"}</span><button type="button" className="groups-text-button" onClick={() => selectTask(unchecked.rootId)}>查看待检查任务</button></div>}
         {(group.paused || group.archived) && <div className="group-pause-notice"><span>{group.archived ? "专家团已归档，恢复后可继续交流。" : "后续派发已暂停，已有消息与结果保留。"}</span><button type="button" className="btn btn--primary" disabled={busy} onClick={() => void control("resume")}>恢复派发</button></div>}
         <div className="group-compose-context">
@@ -319,7 +331,7 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
         {active.length > 0 && effectiveDiscussion && <p className="group-mode-notice">下一条消息只讨论，正在执行的工作保持原状态。</p>}
         {reply && <div className="group-reply">回复：{quoted?.text.slice(0, 120)}<button type="button" aria-label="取消回复" onClick={() => { setReply(null); setTargets([]); }}><X size={13} /></button></div>}
         </div>
-        <Composer slashCommandsEnabled={false} permissionInline permissionControl={<PermissionPicker groupId={group.id} groupPermissionMode={group.permissionMode} compact={chatWidth !== null && chatWidth < 520} disabled={group.archived} onToast={onToast} />} modelSummary="成员模型" onOpenKnowledgeBase={onOpenKnowledgeBase} onOpenOrganization={onOpenOrganization} streaming={false} disabled={group.archived} apiReady models={models} cwd={group.cwd} filePaths={mentions.filePaths} workspaceSymbols={mentions.workspaceSymbols} mentionMembers={members.map(member => ({ id: member.id, name: member.name, role: member.role }))}
+        <Composer slashCommandsEnabled={false} permissionInline permissionControl={<PermissionPicker groupId={group.id} groupPermissionMode={group.permissionMode} compact={chatWidth !== null && chatWidth < 520} disabled={group.archived} onToast={onToast} />} modelSummary="成员模型" onOpenKnowledgeBase={onOpenKnowledgeBase} onOpenOrganization={onOpenOrganization} streaming={false} disabled={group.archived} sendDisabled={refreshingSend} apiReady models={models} cwd={group.cwd} filePaths={mentions.filePaths} mentionMembers={members.map(member => ({ id: member.id, name: member.name, role: member.role }))}
           onMentionMember={id => { mentionSelections.current.add(id); setTargets(previous => [...new Set([...previous.filter(target => target !== group.coordinatorId), id])]); }}
           draft={draft} draftKey={`group:${group.id}`} knowledgeSessionId={`group:${group.id}`} knowledgeDeferred onToast={onToast}
           onDraftChange={value => { setTargets(previous => previous.filter(id => !mentionSelections.current.has(id) || value.includes(`@${members.find(member => member.id === id)?.name}`))); useGroupStore.getState().setDraft(group.id, value); }}
@@ -338,13 +350,50 @@ export function GroupChat({ group, models, onToast, onBack, onOpenSettings, onOp
   </div>;
 }
 
-function GroupInteractions({ member, session, onError }: { member: string; session: string; onError: (error: string) => void }) {
+function GroupInteractions({ member, session, onToast }: { member: string; session: string; onToast?: (message: string) => void }) {
   const permission = usePermissionStore(state => state.queues[session]?.[0]);
   const question = useQuestionStore(state => state.queues[session]?.[0]);
   const plan = useSessionStore(state => state.transcripts[session]?.planApprovals?.[0]);
-  const [busy, setBusy] = useState(false);
+  const [planDecision, setPlanDecision] = useState<{ requestId: string; pending: boolean; error?: string }>();
+  const pendingPlans = useRef(new Set<string>());
+  const decision = planDecision?.requestId === plan?.requestId ? planDecision : undefined;
+
+  const resolvePlan = async (requestId: string, outcome: PlanApprovalOutcome) => {
+    if (pendingPlans.current.has(requestId)) return;
+    pendingPlans.current.add(requestId);
+    setPlanDecision({ requestId, pending: true });
+    let error: string | undefined;
+    try {
+      const acknowledged = await agentResolvePlanApproval(requestId, outcome);
+      const state = useSessionStore.getState();
+      if (state.transcripts[session]) state.dismissPlanApproval(requestId, session);
+      if (!acknowledged) {
+        onToast?.("此方案的审批请求已结束。");
+        void refreshPendingPlanApprovals(session);
+      }
+    } catch (reason) {
+      error = errorText(reason);
+    } finally {
+      pendingPlans.current.delete(requestId);
+      setPlanDecision(current => current?.requestId === requestId ? { requestId, pending: false, error } : current);
+    }
+  };
+
   if (!permission && !question && !plan) return null;
-  return <section className="group-interaction" id={`group-interaction-${session}`}><strong>{member} 需要你处理</strong><PermissionInlineCard sessionId={session} groupScope /><QuestionInlineCard sessionId={session} />{plan && <div><h3>执行方案</h3><pre>{plan.planContent}</pre>{([['approved', '批准方案'], ['cancelled', '退回方案']] as const).map(([outcome, label]) => <button type="button" className="btn btn--ghost" key={outcome} disabled={busy} onClick={async () => { setBusy(true); try { await agentResolvePlanApproval(plan.requestId, outcome); useSessionStore.getState().dismissPlanApproval(plan.requestId, session); } catch (error) { onError(errorText(error)); } finally { setBusy(false); } }}>{label}</button>)}</div>}</section>;
+  return <section className="group-interaction" id={`group-interaction-${session}`}>
+    <strong>{member} 需要你处理</strong>
+    <PermissionInlineCard sessionId={session} groupScope />
+    <QuestionInlineCard sessionId={session} />
+    {plan && <div aria-busy={decision?.pending ?? false}>
+      <h3>执行方案</h3>
+      <pre>{plan.planContent}</pre>
+      {decision?.error && <p className="groups-error" role="alert">{decision.error}</p>}
+      <button type="button" className="btn btn--ghost" disabled={decision?.pending}
+        onClick={() => void resolvePlan(plan.requestId, "approved")}>批准方案</button>
+      <button type="button" className="btn btn--ghost" disabled={decision?.pending}
+        onClick={() => void resolvePlan(plan.requestId, "cancelled")}>退回方案</button>
+    </div>}
+  </section>;
 }
 export function GroupSettings({ group, models, onSaved, onError }: { group: Group; models: ModelOption[]; onSaved: () => void | Promise<void>; onError: (error: string) => void }) {
   const [name, setName] = useState(group.name), [goal, setGoal] = useState(group.goal), [coordinatorId, setCoordinator] = useState(group.coordinatorId);

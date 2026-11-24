@@ -5,7 +5,6 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
-import { pathToFileURL } from 'node:url';
 import { cleanNativeReviewEnvironment } from './lib/native-review-isolation.mjs';
 import { PRIVATE_REVIEW_MODEL_ID, seedReviewModel, captureReviewModelLogs, redactReviewModelSecrets } from './lib/native-review-model.mjs';
 import { nativeReviewOutput } from './lib/native-review-output.mjs';
@@ -22,7 +21,7 @@ export function collaborationEnvironment(base, legacy, phase) {
   assert(Object.hasOwn(COLLABORATION_CHECKS, phase));
   const env = cleanNativeReviewEnvironment(base);
   for (const key of Object.keys(env)) if (key.startsWith('ECHO_DESKTOP_REVIEW')
-    || ['ECHO_AGENT_HOME', 'ECHO_DESKTOP_VALIDATION', 'ECHO_THEIA_NODE', 'NODE_OPTIONS', 'NODE_PATH'].includes(key)) delete env[key];
+    || ['ECHO_AGENT_HOME', 'ECHO_DESKTOP_VALIDATION', 'NODE_OPTIONS', 'NODE_PATH'].includes(key)) delete env[key];
   return { ...env, GROK_HOME: legacy, ECHO_DESKTOP_REVIEW: '1', ECHO_DESKTOP_REVIEW_COLLABORATION: '1', ECHO_DESKTOP_REVIEW_PHASE: phase };
 }
 export function verifyCollaborationReport(report, scope, pid, startedAt) {
@@ -141,7 +140,7 @@ export async function runNativeCollaborationReview(executable) {
   }
   console.log(JSON.stringify({ passed: result.passed, nativeVerified: result.nativeVerified, home, output, errors: result.errors })); return result;
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   assert.equal(process.argv.length, 3, 'Pass a built native executable and an explicit NATIVE_REVIEW_MODEL_CONFIG');
   if (!(await runNativeCollaborationReview(process.argv[2])).passed) process.exitCode = 1;
 }

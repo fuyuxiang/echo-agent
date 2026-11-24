@@ -1,6 +1,6 @@
 # Desktop 安装与环境要求
 
-**适用范围：桌面端。** 安装应用即可使用内嵌执行引擎、IDE 和办公文档生成器，无需先安装 Python Runtime 或部署 Gateway。
+**适用范围：桌面端。** 安装包自带执行引擎和办公文档生成器，可独立运行。
 
 ## 安装发行包
 
@@ -14,7 +14,7 @@
 | Windows | x86_64 | 电脑操作需要可访问的交互桌面 |
 | Linux | 当前无正式桌面发行包 | 部分底层自动化支持不等于提供安装包 |
 
-发行页没有对应包时，可从源码构建。正式安装包自带 IDE 所需的 Node.js 和办公组件，普通使用不需要开发工具链。代码项目自身的语言运行环境和构建工具仍需按项目准备。
+发行页没有对应包时，可从源码构建。正式安装包自带办公组件使用的 Node.js。代码项目所需的语言运行环境和构建工具按项目准备。
 
 ## 模型与网络
 
@@ -24,7 +24,7 @@
 
 ## 从当前仓库源码运行
 
-需要 Node.js 22.23.4+（22.x）或 24.22.1+（24.x）、pnpm 10、npm 11.21.1+、Rust 1.96.0+ 和 `protoc`。macOS 还需要 Xcode Command Line Tools；Windows 需要 Visual Studio 2022 C++ 构建工具与 Windows SDK。
+需要 Node.js 22.23.4+（22.x）或 24.22.1+（24.x）、pnpm 10、Rust 1.96.0+ 和 `protoc`。macOS 还需要 Xcode Command Line Tools。Windows 需要 Visual Studio 2022 C++ 构建工具和 Windows SDK，准备语音资源时需要在 PATH 中提供 Python 或设置 `PYTHON`。
 
 以下命令从当前仓库根目录开始。
 
@@ -46,7 +46,7 @@
     .\dev.bat
     ```
 
-首次启动会准备内嵌执行引擎、Theia IDE 和 Office Worker，耗时取决于下载与构建。`pnpm tauri dev` 启动完整应用；`pnpm dev` 只启动前端开发服务器。
+首次启动会准备 Office Worker、随包 Node.js、检索和语音资源，并编译内嵌执行引擎。`pnpm tauri dev` 启动完整应用。`pnpm dev` 启动前端开发服务器。
 
 ## 安装验证
 

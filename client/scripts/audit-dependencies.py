@@ -19,47 +19,6 @@ LEGACY_MINIMATCH_INTEGRITIES = {
     "3.1.5": "sha512-VgjWUsnnT6n+NUk6eZq77zeFdpW2LWDzP6zFGrCbHXiYNul5Dzqk2HHQ5uFH2DNW5Xbp8+jVzaeNt94ssEEl4w==",
     "5.1.9": "sha512-7o1wEA2RyMP7Iu7GNba9vc0RWWGACJOCZBJX2GJWip0ikV+wcOsgVuY9uE8CPiyQhkGFSlhuSkZPavN7u1c2Fw==",
 }
-DEEPMERGE_BACKPORT_HASHES = {
-    "index.d.ts": "146ba4b99c5feb82663e17a671bf9f53bb39c704cd76345d6c5a801c26372f44",
-    "license.txt": "6cfc4687cb2f2d86f4a77e6b526290d3878e5e512f3fec2f4cb36a9cb36f798b",
-    "package.json": "a04ab1d7f6de8fe562c71eaebbdd2467de97c011d867a9debc95e7472838cf4b",
-    "index.js": "683b14383fb9af364f6a28a14db2390b900f3e666aa63c55a64617f9b9a67bea",
-}
-
-
-def verified_npm_backports():
-    """Review immutable local patch contents, never an entire package or version range."""
-    source = ROOT / "vendor/theia-platform/security/deepmerge"
-    provenance = json.loads((source / "SOURCE.json").read_text())
-    if (provenance.get("advisory") != "GHSA-gcqx-w48m-w2h4"
-            or provenance.get("patchedSha256") != DEEPMERGE_BACKPORT_HASHES):
-        raise RuntimeError("Deepmerge security backport identity changed without review")
-    for file, expected in DEEPMERGE_BACKPORT_HASHES.items():
-        if hashlib.sha256((source / file).read_bytes()).hexdigest() != expected:
-            raise RuntimeError(f"Security backport changed without review: deepmerge/{file}")
-    return {"deepmerge": {
-        "version": "4.3.1+echo.1", "advisory": "GHSA-gcqx-w48m-w2h4",
-        "workspace": "security/deepmerge", "patch_sha256": dict(DEEPMERGE_BACKPORT_HASHES),
-        "reason": "The verified local backport rejects prototype-poisoning keys in both operands, including null-prototype objects.",
-        "source": "vendor/theia-platform/security/deepmerge/SOURCE.json",
-        "regression_test": "scripts/test-dependency-patches.mjs",
-    }}
-
-
-def reviewed_npm_backport(name, advisory, paths, packages, backports):
-    review = backports.get(name)
-    if not review or review["advisory"] != advisory or not paths:
-        return None
-    workspace = review["workspace"]
-    link = f"node_modules/{name}"
-    if packages.get(link) != {"resolved": workspace, "link": True}:
-        return None
-    package = packages.get(workspace, {})
-    if package.get("version") != review["version"] or package.get("name", name) != name:
-        return None
-    if any(path not in (link, workspace) for path in paths):
-        return None
-    return review
 
 
 def reviewed_npm_exception(name, version, advisory, integrities):
@@ -74,20 +33,19 @@ def reviewed_npm_exception(name, version, advisory, integrities):
             "reason": "This legacy release has no globparts preprocessing or optimizationLevel option involved in the advisory.",
             "source": f"https://registry.npmjs.org/minimatch/-/minimatch-{version}.tgz",
             "integrity": expected,
-            "regression_test": "scripts/test-dependency-patches.mjs",
+            "regression_test": "scripts/test-dependency-runtime-security.mjs",
         }
     return None
 
 
 def npm_lock_path(name):
-    return ROOT / {"frontend": "pnpm-lock.yaml", "theia-source": "vendor/theia-platform/package-lock.json",
-                   "theia-runtime": "scripts/theia-runtime-package-lock.json"}[name]
+    if name != "frontend":
+        raise ValueError(f"Unknown frontend graph: {name}")
+    return ROOT / "pnpm-lock.yaml"
 
 
 def npm_lock_packages(name, text=None):
     text = npm_lock_path(name).read_text() if text is None else text
-    if name != "frontend":
-        return json.loads(text)["packages"]
     # Only the two legacy minimatch identities need reviewing in the pnpm
     # graph. Read the packages section, never the version-only snapshots.
     # Unsupported resolution formats provide no exemption (fail closed).
@@ -104,7 +62,7 @@ def npm_lock_packages(name, text=None):
     return packages
 
 
-def npm_audit_report(data, packages, backports=None):
+def npm_audit_report(data, packages):
     counts = data.get("metadata", {}).get("vulnerabilities")
     if data.get("error") or not isinstance(counts, dict):
         raise RuntimeError(f"incomplete audit: {data.get('error', 'missing vulnerability counts')}")
@@ -125,11 +83,7 @@ def npm_audit_report(data, packages, backports=None):
         row = {"package": name, "version": version, "advisory": identifier,
                "summary": advisory.get("title", ""), "severity": advisory.get("severity"),
                "url": url, "paths": paths}
-        review = reviewed_npm_backport(name, identifier, paths, packages, backports or {})
-        if review:
-            row["version"] = review["version"]
-        else:
-            review = reviewed_npm_exception(name, version, identifier, identities.get((name, version), set()))
+        review = reviewed_npm_exception(name, version, identifier, identities.get((name, version), set()))
         (reviewed if review else findings).append(dict(row, review=review) if review else row)
         return review is None
 
@@ -215,24 +169,6 @@ def request(url, payload=None):
 
 
 def npm_audits(output):
-    backports = verified_npm_backports()
-    for name in ["braces", "sprintf-js", "deepmerge"]:
-        source = ROOT / "vendor/theia-platform/security" / name
-        provenance = json.loads((source / "SOURCE.json").read_text())
-        for file, expected in provenance["patchedSha256"].items():
-            if hashlib.sha256((source / file).read_bytes()).hexdigest() != expected:
-                raise RuntimeError(f"Security backport changed without review: {name}/{file}")
-    for lock in [ROOT / "vendor/theia-platform/package-lock.json", ROOT / "scripts/theia-runtime-package-lock.json"]:
-        packages = json.loads(lock.read_text())["packages"]
-        for name in ["braces", "sprintf-js", "deepmerge"]:
-            if packages.get(f"node_modules/{name}", {}).get("resolved") != f"security/{name}":
-                raise RuntimeError(f"Security workspace is not active: {lock}/{name}")
-    jobs = [
-        ("frontend", ROOT, ["pnpm.cmd" if os.name == "nt" else "pnpm", "audit", "--json"]),
-        ("theia-source", ROOT / "vendor/theia-platform", ["npm.cmd" if os.name == "nt" else "npm", "audit", "--json", "--package-lock-only", "--ignore-scripts"]),
-        ("theia-runtime", ROOT, ["node", "scripts/audit-theia-runtime.mjs"]),
-    ]
-
     def run(job):
         name, cwd, command = job
         lock_path = npm_lock_path(name)
@@ -249,10 +185,7 @@ def npm_audits(output):
         if result.returncode not in (0, 1):
             raise RuntimeError(f"{name}: incomplete audit: {data.get('error', result.stderr[-500:])}")
         try:
-            # Recheck contents after the scanner, just as we do the lockfile.
-            if verified_npm_backports() != backports:
-                raise RuntimeError("Security backport changed during the audit")
-            report = npm_audit_report(data, packages, backports)
+            report = npm_audit_report(data, packages)
             if result.returncode and not sum(report["reported_counts"][severity] for severity in SEVERITIES):
                 raise RuntimeError("audit exited unsuccessfully without reporting vulnerabilities")
             report["lockfile"] = str(lock_path.relative_to(ROOT))
@@ -270,8 +203,7 @@ def npm_audits(output):
                   f"{row['advisory']}: {row['review']['reason']}", flush=True)
         return len(report["affected_packages"])
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        return sum(executor.map(run, jobs))
+    return run(("frontend", ROOT, ["pnpm.cmd" if os.name == "nt" else "pnpm", "audit", "--json"]))
 
 
 def rust_audit(output):
@@ -302,7 +234,7 @@ def rust_audit(output):
     fuzz = tomllib.loads((ROOT / "vendor/echo-agent-build/crates/codegen/echo-agent-markdown/fuzz/Cargo.toml").read_text())
     if fuzz.get("patch", {}).get("crates-io", {}).get("lru", {}).get("path") != "../../../../../lru-0.12":
         raise RuntimeError("Markdown fuzz LRU security backport is not active")
-    for directory in ["vendor/glib", "vendor/lru-0.12", "vendor/lru-0.16"]:
+    for directory in ["vendor/glib", "vendor/lru-0.12", "vendor/lru-0.16", "vendor/ort-sys", "vendor/faster-hex"]:
         source = ROOT / directory
         provenance = json.loads((source / "SOURCE.json").read_text())
         for file, expected in provenance["patchedSha256"].items():
@@ -369,7 +301,7 @@ def rust_audit(output):
 def write_summary(output, error=None):
     lines = ["## Dependency security", "", "| Graph | Affected packages | Reviewed not affected |",
              "| --- | ---: | ---: |"]
-    for name in ("frontend", "theia-source", "theia-runtime"):
+    for name in ("frontend",):
         path = output / f"{name}-reviewed.json"
         if path.exists():
             report = json.loads(path.read_text())
@@ -402,7 +334,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     # An interrupted rerun must not present a previous successful scan as new
     # evidence. Only remove files owned by this audit, preserving other files.
-    evidence = [f"{name}{suffix}" for name in ("frontend", "theia-source", "theia-runtime")
+    evidence = [f"{name}{suffix}" for name in ("frontend",)
                 for suffix in (".json", ".log", "-reviewed.json")]
     for name in [*evidence, "rust.json", "rust-advisories.json", "rust-packages.json", "summary.md"]:
         (output / name).unlink(missing_ok=True)

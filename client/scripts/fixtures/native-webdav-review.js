@@ -140,7 +140,16 @@ window.__echoNativeWebDavReview = async ({ invoke, context, scope }) => {
       const element = panel()?.querySelector('.storage-panel__config');
       return visible(element) ? element : null;
     }, 'Actual provider configuration editor');
-    if (changes.baseUrl) inputValue(config.querySelector('[aria-label="WebDAV 地址"]'), changes.baseUrl);
+    if (changes.baseUrl) {
+      inputValue(config.querySelector('[aria-label="WebDAV 地址"]'), changes.baseUrl);
+      await clickButton(config, '保存');
+      await waitFor(() => config.querySelector('[role="alert"]')?.textContent.includes('重新输入密码'),
+        'Changing the endpoint with a saved mask is rejected');
+      const persisted = (await call('storage_providers_list')).find(({ id }) => id === report.expected.recoveryId);
+      assert(persisted?.baseUrl === scope.readOnlyUrl && persisted.password === '••••',
+        'Rejected endpoint edit must preserve the old connection');
+      inputValue(config.querySelector('[aria-label="WebDAV 密码或应用令牌"]'), scope.password);
+    }
     if (typeof changes.enabled === 'boolean') {
       const enabled = config.querySelector('.storage-panel__enabled input[type="checkbox"]');
       assert(visible(enabled) && !enabled.disabled, 'Actual enabled checkbox unavailable');
@@ -254,15 +263,30 @@ window.__echoNativeWebDavReview = async ({ invoke, context, scope }) => {
       await waitFor(() => !visible(folder), 'Native folder creation');
       await navigateDirectory(directory);
       await createText(fileName, initial);
+      await clickButton(panel, '新建文本');
+      const duplicate = await appDialog('新建文本文件');
+      fillDialog(duplicate, '文件名', fileName);
+      const draft = '同名冲突应保留的合成草稿';
+      fillDialog(duplicate, '文件内容', draft);
+      await clickButton(duplicate, '创建文件');
+      await waitFor(() => duplicate.querySelector('[role="alert"]')?.textContent.includes('同名'),
+        'Duplicate text creation is rejected in the open dialog');
+      assert(duplicate.querySelector('textarea')?.value === draft, 'Conflict discarded the new text draft');
+      assert(await call('storage_read_text', { id: report.expected.rwId, path: `/${directory}/${fileName}` }) === initial,
+        'Duplicate creation modified the existing file');
+      fillDialog(duplicate, '文件名', deletedName);
+      await clickButton(duplicate, '创建文件');
+      await waitFor(() => !visible(duplicate), 'Renamed text creation completes');
+      assert(await call('storage_read_text', { id: report.expected.rwId, path: `/${directory}/${deletedName}` }) === draft,
+        'Renaming after a conflict did not save the retained draft');
       const text = await openFile(fileName, initial);
       inputValue(text, edited);
       await clickButton(() => panel()?.querySelector('.storage-panel__preview'), '保存');
       await waitFor(() => [...(panel()?.querySelectorAll('.storage-panel__preview button') || [])].some(element => element.textContent?.trim() === '已保存' && element.disabled), 'Text saved inline');
       assert(await call('storage_read_text', { id: report.expected.rwId, path: `/${directory}/${fileName}` }) === edited, 'UI text save did not persist actual bytes');
       await createText(recoveryName, initial);
-      record(activeCheck, { directory, fileName, content: edited, actualUiCreationAndSave: true, exactNativeGet: true });
+      record(activeCheck, { directory, fileName, content: edited, actualUiCreationAndSave: true, exactNativeGet: true, duplicatePreservedExistingFileAndDraft: true });
       activeCheck = required[5];
-      await createText(deletedName, '只删除本轮创建的合成文件。');
       const scratch = await waitListing(deletedName);
       scratch.querySelector(`button[aria-label="删除 ${CSS.escape(deletedName)}"]`).click();
       const deletion = await appDialog(`删除文件“${deletedName}”？`);
@@ -278,9 +302,14 @@ window.__echoNativeWebDavReview = async ({ invoke, context, scope }) => {
       inputValue(recoveryInput, recovery);
       const deniedToasts = toastSnapshot();
       await clickButton(() => panel()?.querySelector('.storage-panel__preview'), '保存');
-      const deniedToast = await newToast(deniedToasts, '保存失败：');
-      assert((deniedToast.closest('.toast')?.textContent.includes('403') || deniedToast.textContent.includes('没有访问权限')) && previewInput(recoveryName)?.value === recovery,
-        'Readonly save did not report real 403 and retain draft');
+      const deniedToast = await newToast(deniedToasts, '保存失败');
+      assert(deniedToast.textContent.includes('没有访问权限'), 'Readonly save should explain the permission problem');
+      const details = deniedToast.closest('.toast')?.querySelector('.toast__details');
+      if (details && !details.open) details.querySelector('summary').click();
+      const failure = details?.querySelector('pre') ?? deniedToast;
+      assert(visible(failure) && /\bHTTP\s+403\b/i.test(failure.textContent)
+        && previewInput(recoveryName)?.value === recovery,
+        'Readonly save did not expose the real HTTP 403 and retain the draft');
       assert(await call('storage_read_text', { id: report.expected.rwId, path: `/${directory}/${recoveryName}` }) === initial, 'Readonly failure modified physical source');
       record(activeCheck, { status: 403, draftRetained: true, remoteInitialContentPreserved: true });
       activeCheck = required[7];
@@ -295,7 +324,7 @@ window.__echoNativeWebDavReview = async ({ invoke, context, scope }) => {
       await clickButton(() => panel()?.querySelector('.storage-panel__preview'), '保存');
       await waitFor(() => [...(panel()?.querySelectorAll('.storage-panel__preview button') || [])].some(element => element.textContent?.trim() === '已保存' && element.disabled), 'Retried save shown inline');
       assert(await call('storage_read_text', { id: report.expected.recoveryId, path: `/${directory}/${recoveryName}` }) === recovery, 'Retry did not persist exact retained draft');
-      record(activeCheck, { recoveredThroughConfigUi: true, retryThroughUi: true, exactContent: recovery });
+      record(activeCheck, { recoveredThroughConfigUi: true, retryThroughUi: true, exactContent: recovery, maskedEndpointChangeRejected: true });
       activeCheck = required[9];
       await select(report.expected.rwId);
       await editConfig({ enabled: false });

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { prepareModels } from "./prepare-retrieval-models.mjs";
 
 async function fixture(t) {
@@ -117,4 +118,15 @@ test("Tauri packages the model directory and prepares it for development and rel
   assert.equal(config.bundle.resources["resources/retrieval-models"], "retrieval-models");
   for (const hook of ["beforeDevCommand", "beforeBuildCommand"]) assert.match(config.build[hook], /^pnpm retrieval:prepare &&/);
   assert.match(config.build.beforeBundleCommand, /^pnpm retrieval:check(?: && |$)/);
+});
+
+test("the installed-resource check rejects missing data through an aliased checkout", async t => {
+  const root = await mkdtemp(join(tmpdir(), "echo-model-check-alias-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const alias = join(root, "checkout");
+  await symlink(fileURLToPath(new URL("../", import.meta.url)), alias, process.platform === "win32" ? "junction" : "dir");
+  const script = join(alias, "scripts", "prepare-retrieval-models.mjs");
+  const result = spawnSync(process.execPath, [script, "--check", "--directory", join(root, "missing")], { encoding: "utf8" });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /verified\.json/);
 });

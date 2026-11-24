@@ -33,6 +33,7 @@ use chrono::{
     DateTime, Datelike, Duration, Local, MappedLocalTime, NaiveDate, NaiveDateTime, NaiveTime,
     Weekday,
 };
+use echo_agent_runtime::session::helpers::host_prompt_admission::{self, HostPromptAdmission};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -43,7 +44,7 @@ use tauri_plugin_autostart::ManagerExt;
 use crate::commands::AppState;
 
 #[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
@@ -131,9 +132,9 @@ pub struct Automation {
     pub name: String,
     /// The prompt to send when this automation fires.
     pub prompt: String,
-    /// Comma-separated workspace directories (first entry is the run cwd).
+    /// Authorized workspace directories. The first entry is the run cwd.
     #[serde(default)]
-    pub cwds: String,
+    pub cwds: Vec<String>,
     /// "ACTIVE" | "PAUSED".
     #[serde(default = "default_status")]
     pub status: String,
@@ -653,45 +654,53 @@ fn read_bounded_string(path: &Path, max_bytes: u64) -> Result<Option<String>, St
 /// Accepts the legacy v1 shape ({schedule:{type:"daily"|...}}, lowercase
 /// status, single `cwd` string) and migrates it in memory.
 fn read_store() -> Result<AutomationStore, String> {
+    read_store_with_repairs().map(|(store, _)| store)
+}
+
+fn read_store_with_repairs() -> Result<(AutomationStore, bool), String> {
     let path = store_path();
     let content = match read_bounded_string(&path, MAX_AUTOMATION_STORE_BYTES)? {
         Some(content) => content,
-        None => return Ok(AutomationStore::default()),
+        None => return Ok((AutomationStore::default(), false)),
     };
-    if let Ok(mut store) = serde_json::from_str::<AutomationStore>(&content) {
-        pause_automations_with_removed_models(&mut store);
-        return Ok(store);
-    }
-    // Legacy fallback: reshape each automation object, then parse.
     let mut value = serde_json::from_str::<serde_json::Value>(&content)
         .map_err(|error| format!("parse {}: {error}", path.display()))?;
-    migrate_legacy_json(&mut value);
+    let migrated = migrate_legacy_json(&mut value);
     let mut store = serde_json::from_value(value)
         .map_err(|error| format!("migrate {}: {error}", path.display()))?;
-    pause_automations_with_removed_models(&mut store);
-    Ok(store)
+    let repaired = pause_automations_with_removed_models(&mut store) || migrated;
+    #[cfg(unix)]
+    let repaired = repaired
+        || std::fs::symlink_metadata(&path)
+            .is_ok_and(|metadata| metadata.permissions().mode() & 0o777 != 0o600);
+    Ok((store, repaired))
 }
 
-fn pause_automations_with_removed_models(store: &mut AutomationStore) {
+fn pause_automations_with_removed_models(store: &mut AutomationStore) -> bool {
+    let mut changed = false;
     for automation in &mut store.automations {
         if automation
             .model_id
             .as_deref()
             .is_some_and(crate::providers::is_removed_model_id)
+            && (automation.status != "PAUSED" || automation.next_run_at.is_some())
         {
             // Keep the explicit selection until the user replaces it. None is
             // Auto and would silently send an unattended task to another service.
             automation.status = "PAUSED".into();
             automation.next_run_at = None;
+            changed = true;
         }
     }
+    changed
 }
 
 /// Convert legacy v1 automation objects to the current model, in place.
-fn migrate_legacy_json(root: &mut serde_json::Value) {
+fn migrate_legacy_json(root: &mut serde_json::Value) -> bool {
     let Some(items) = root.get_mut("automations").and_then(|a| a.as_array_mut()) else {
-        return;
+        return false;
     };
+    let mut changed = false;
     for item in items {
         let Some(obj) = item.as_object_mut() else {
             continue;
@@ -699,15 +708,25 @@ fn migrate_legacy_json(root: &mut serde_json::Value) {
         // status: "active"|"paused" → "ACTIVE"|"PAUSED"
         if let Some(status) = obj.get("status").and_then(|s| s.as_str()) {
             let upper = status.to_uppercase();
-            obj.insert("status".into(), serde_json::Value::String(upper));
-        }
-        // cwd → cwds
-        if !obj.contains_key("cwds") {
-            if let Some(cwd) = obj.get("cwd").and_then(|c| c.as_str()) {
-                obj.insert("cwds".into(), serde_json::Value::String(cwd.to_string()));
+            if upper != status {
+                obj.insert("status".into(), serde_json::Value::String(upper));
+                changed = true;
             }
         }
-        obj.remove("cwd");
+        if let Some(cwd) = obj.remove("cwd") {
+            changed = true;
+            if let Some(cwd) = cwd.as_str().filter(|cwd| !cwd.trim().is_empty()) {
+                obj.entry("cwds")
+                    .or_insert_with(|| serde_json::json!([cwd]));
+            }
+        }
+        if let Some(raw) = obj.get("cwds").and_then(|value| value.as_str()) {
+            obj.insert(
+                "cwds".into(),
+                serde_json::json!(legacy_workspace_paths(raw)),
+            );
+            changed = true;
+        }
         // schedule {type: ...} → {freq: ...} (+ once fields)
         let Some(schedule) = obj.get("schedule").cloned() else {
             continue;
@@ -718,6 +737,7 @@ fn migrate_legacy_json(root: &mut serde_json::Value) {
         let Some(kind) = schedule.get("type").and_then(|t| t.as_str()) else {
             continue;
         };
+        changed = true;
         let parse_time = |key: &str| -> (u32, u32) {
             schedule
                 .get(key)
@@ -802,6 +822,17 @@ fn migrate_legacy_json(root: &mut serde_json::Value) {
         }
         obj.insert("schedule".into(), new_schedule);
     }
+    changed
+}
+
+fn legacy_workspace_paths(raw: &str) -> Vec<&str> {
+    // The old scheduler always ran in the first nonempty element. Directory
+    // existence must never change where an unattended task runs on upgrade.
+    // Literal paths in the older singular `cwd` field are handled separately.
+    raw.split(',')
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .collect()
 }
 
 fn write_store(store: &AutomationStore) -> Result<(), String> {
@@ -2618,7 +2649,8 @@ fn compute_next_run(a: &Automation, from: DateTime<Local>) -> Option<String> {
 /// Initialize only schedules that do not have a persisted next run. It is
 /// essential not to recompute an already-due timestamp before the scheduler
 /// gets a chance to claim it.
-fn ensure_next_runs(store: &mut AutomationStore, now: DateTime<Local>) {
+fn ensure_next_runs(store: &mut AutomationStore, now: DateTime<Local>) -> bool {
+    let mut changed = false;
     for a in &mut store.automations {
         let next_run_missing_or_damaged = a
             .next_run_at
@@ -2626,6 +2658,7 @@ fn ensure_next_runs(store: &mut AutomationStore, now: DateTime<Local>) {
             .map(|value| DateTime::parse_from_rfc3339(value).is_err())
             .unwrap_or(true);
         if next_run_missing_or_damaged && a.status == "ACTIVE" {
+            changed = true;
             a.next_run_at = compute_next_run(a, now);
             // An ACTIVE schedule without any computable occurrence is a ghost:
             // it keeps the resident process/autostart alive but can never fire.
@@ -2635,6 +2668,7 @@ fn ensure_next_runs(store: &mut AutomationStore, now: DateTime<Local>) {
             }
         }
     }
+    changed
 }
 
 #[derive(Debug, Clone)]
@@ -2663,9 +2697,9 @@ fn claim_due_unblocked(
     store: &mut AutomationStore,
     now: DateTime<Local>,
     blocked: &HashSet<String>,
-) -> Vec<ClaimedAutomation> {
-    pause_automations_with_removed_models(store);
-    ensure_next_runs(store, now);
+) -> (Vec<ClaimedAutomation>, bool) {
+    let mut changed = pause_automations_with_removed_models(store);
+    changed |= ensure_next_runs(store, now);
     let mut due = Vec::new();
     for a in &mut store.automations {
         if a.status != "ACTIVE" || blocked.contains(&a.id) {
@@ -2690,6 +2724,7 @@ fn claim_due_unblocked(
             .as_deref()
             .and_then(parse_date)
             .is_some_and(|until| now.date_naive() > until);
+        changed = true;
         if missed_once || expired {
             a.status = "PAUSED".into();
             a.next_run_at = None;
@@ -2715,38 +2750,48 @@ fn claim_due_unblocked(
             }
         }
     }
-    due
+    (due, changed)
 }
 
 #[cfg(test)]
 fn claim_due(store: &mut AutomationStore, now: DateTime<Local>) -> Vec<Automation> {
     claim_due_unblocked(store, now, &HashSet::new())
+        .0
         .into_iter()
         .map(|claim| claim.automation)
         .collect()
 }
 
 fn first_cwd(a: &Automation) -> Option<String> {
-    a.cwds
-        .split(',')
-        .map(|c| c.trim())
-        .find(|c| !c.is_empty())
-        .map(|c| c.to_string())
+    a.cwds.first().cloned()
 }
 
 fn normalize_authorized_cwds(
     filesystem: &crate::shell_fs::FilesystemAccess,
-    raw: &str,
-) -> Result<String, String> {
+    paths: &[String],
+) -> Result<Vec<String>, String> {
+    if paths.len() == 1 && paths[0].trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    if paths.first().is_some_and(|path| path.trim().is_empty()) {
+        return Err("请选择主工作目录，或移除附加目录后使用默认目录".into());
+    }
     let mut normalized = Vec::new();
     let mut seen = HashSet::new();
-    for claimed in raw.split(',').map(str::trim).filter(|cwd| !cwd.is_empty()) {
-        let canonical = filesystem.require_workspace(claimed)?;
+    for (index, claimed) in paths.iter().enumerate() {
+        let canonical = filesystem.require_workspace(claimed).map_err(|error| {
+            let role = if index == 0 {
+                "主工作目录"
+            } else {
+                "附加目录"
+            };
+            format!("{role}「{claimed}」不可用：{error}")
+        })?;
         if seen.insert(canonical.clone()) {
             normalized.push(canonical.to_string_lossy().into_owned());
         }
     }
-    Ok(normalized.join(","))
+    Ok(normalized)
 }
 
 fn require_automation_cwd(
@@ -2928,9 +2973,11 @@ pub async fn automations_snapshot(app: AppHandle) -> Result<AutomationSnapshot, 
     // before looking up its automation, so nested locking here could deadlock.
     let automations = {
         let _guard = store_access().lock().unwrap();
-        let mut store = read_store()?;
-        ensure_next_runs(&mut store, now_local());
-        write_store(&store)?;
+        let (mut store, repaired) = read_store_with_repairs()?;
+        let changed = ensure_next_runs(&mut store, now_local());
+        if repaired || changed {
+            write_store(&store)?;
+        }
         store.automations
     };
     let mut records = {
@@ -3309,8 +3356,9 @@ pub async fn automation_run_stop(
         }
         record.stop_requested = true;
         let mut identity = (record.session_id.clone(), record.prompt_id.clone());
+        // A run cannot submit its prompt before publishing the session binding.
         let settle_without_runtime = record.status == "queued"
-            || (record.waiting_reason.is_some() && record.session_id.is_none())
+            || record.session_id.is_none()
             || (record.recovered_from_prompt_id.is_some()
                 && record.recovered_from_prompt_id == record.prompt_id);
         let fact = settle_without_runtime.then(|| {
@@ -3336,18 +3384,36 @@ pub async fn automation_run_stop(
         publish_automation_completion(&app, completion);
     }
     if let Some(session_id) = session_id {
-        let tx = state
-            .tx
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or("Agent 尚未初始化，本次运行将于恢复时结束")?;
-        let (tools, runtime) = tokio::join!(
-            crate::automation::stop_existing_session(&session_id),
-            crate::agent_runtime::cancel(&tx, &session_id, "stop", prompt_id.as_deref())
-        );
-        runtime.map_err(|e| e.to_string())?;
-        tools?;
+        let withdrawn = prompt_id
+            .as_deref()
+            .is_some_and(|prompt| host_prompt_admission::withdraw(&session_id, prompt, false));
+        // A withdrawn prompt has not taken ownership of the Runtime or desktop tools.
+        if !withdrawn {
+            let tx = state
+                .tx
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or("Agent 尚未初始化，本次运行将于恢复时结束")?;
+            let (tools, runtime) = tokio::join!(
+                crate::automation::stop_existing_session_for_prompt(
+                    &session_id,
+                    prompt_id.as_deref()
+                ),
+                crate::agent_runtime::cancel_from_user(
+                    &tx,
+                    &session_id,
+                    "stop",
+                    prompt_id.as_deref()
+                )
+            );
+            if let Err(error) = runtime {
+                if !error.is::<crate::agent_runtime::StalePromptCancel>() {
+                    return Err(error.to_string());
+                }
+            }
+            tools?;
+        }
     }
     let _ = app.emit("automation://changed", ());
     Ok(())
@@ -4050,19 +4116,15 @@ async fn execute_automation_run(
                     tracing::error!(error = %read_error, %record_id, "failed to read failed automation session");
                 }
             }
-            let session_id = record_session_id(&record_id).ok().flatten();
             if record_run_finished(&record_id, false, None, Some(&error)) {
-                emit_run_update(
-                    &app,
-                    &automation,
-                    &record_id,
-                    &cwd,
-                    RunUpdate::Failed {
-                        session_id: session_id.as_deref(),
-                        error: &error,
-                    },
-                );
-                publish_pending_completion(&app, &record_id);
+                if let Some(completion) = pending_terminal(&record_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|fact| fact.completion)
+                {
+                    emit_automation_update(&app, completion.event.clone());
+                    publish_automation_completion(&app, completion);
+                }
             }
         }
         Err(_) => {
@@ -4231,6 +4293,7 @@ async fn run_automation_once(
     if !cwd.is_dir() {
         return Err(format!("自动化工作空间不存在：{}", cwd.display()));
     }
+    crate::legacy_workspace::ensure_workspace_available(cwd)?;
     let recovering = recovery_session.is_some();
     let reasoning_effort = automation.model_is_thinking.then_some("high");
     let full_access = !recovering && automation.permission_mode == "fullAccess";
@@ -4295,7 +4358,7 @@ async fn run_automation_once(
         .lock()
         .await;
     let target_mode = crate::permission_config::permission_mode_for_session();
-    let session_id = if let Some(session_id) = existing {
+    let (session_id, mut admission) = if let Some(session_id) = existing {
         // Do not replay into an already-live actor; resume persisted history
         // only after a restart, then reapply the task's exact execution model.
         resume_automation_session(
@@ -4308,6 +4371,7 @@ async fn run_automation_once(
             state.session_workspace(&session_id).is_ok(),
         )
         .await?;
+        let admission = HostPromptAdmission::begin(&session_id, &prompt_id)?;
         // Persist identity before elevating an existing actor. Even a partial
         // permission-sync failure can then be found and revoked by the caller.
         record_run_session(record_id, &session_id, &prompt_id)?;
@@ -4327,7 +4391,7 @@ async fn run_automation_once(
             },
         )
         .await?;
-        session_id
+        (session_id, Some(admission))
     } else {
         let session_id = crate::agent_runtime::new_session_with_options(
             tx,
@@ -4339,7 +4403,7 @@ async fn run_automation_once(
         .await
         .map_err(|e| e.to_string())?;
         *session_guard = Some(session_turn_lock(&session_id).lock_owned().await);
-        session_id
+        (session_id, None)
     };
     if let Err(failure) = commit_created_automation_session(
         tx,
@@ -4350,7 +4414,15 @@ async fn run_automation_once(
             let project = (!recovering).then_some(automation.project_id.as_deref()).flatten();
             state.record_session_workspace_with_project(&session_id, cwd, project)
         },
-        || record_run_session(record_id, &session_id, &prompt_id).and_then(|()| bind_dedicated_session(automation, &session_id)),
+        || {
+            // Once a run's prompt ID is visible, Stop must be able to
+            // withdraw that exact request until the Runtime dispatches it.
+            if admission.is_none() {
+                admission = Some(HostPromptAdmission::begin(&session_id, &prompt_id)?);
+                record_run_session(record_id, &session_id, &prompt_id)?;
+            }
+            bind_dedicated_session(automation, &session_id)
+        },
         |reset_error| {
             let reason = format!(
                 "自动化会话创建失败后无法恢复权限（{reset_error}）；为避免残留全权限会话，Agent 已安全停止，请重新启动"
@@ -4371,6 +4443,7 @@ async fn run_automation_once(
         state.forget_session_workspace(&session_id);
         return Err(failure.error);
     }
+    let admission = admission.ok_or("定时任务的回合尚未准备好")?;
     let mut update = run_update_event(
         automation,
         record_id,
@@ -4403,6 +4476,7 @@ async fn run_automation_once(
     }
     let completion = crate::agent_runtime::prompt_for_automation(
         tx,
+        &admission,
         &session_id,
         &prompt_id,
         prompt,
@@ -4410,10 +4484,7 @@ async fn run_automation_once(
         recovering,
     )
     .await
-    .map_err(|e| {
-        state.forget_session_workspace(&session_id);
-        e.to_string()
-    })?;
+    .map_err(|error| error.to_string())?;
     Ok((session_id, completion))
 }
 
@@ -4830,7 +4901,7 @@ pub async fn scheduler_tick(app: &AppHandle, tx: &echo_agent_acp::AcpAgentTx, de
         };
         let blocked = scheduled_runs_in_flight(&records);
         let _store_guard = store_access().lock().unwrap();
-        let mut store = match read_store() {
+        let (mut store, repaired) = match read_store_with_repairs() {
             Ok(store) => store,
             Err(error) => {
                 tracing::error!(%error, "automation scheduler could not read schedules");
@@ -4841,7 +4912,7 @@ pub async fn scheduler_tick(app: &AppHandle, tx: &echo_agent_acp::AcpAgentTx, de
             .automations
             .iter()
             .any(|automation| automation.status == "ACTIVE");
-        let claimed = claim_due_unblocked(&mut store, now, &blocked);
+        let (claimed, changed) = claim_due_unblocked(&mut store, now, &blocked);
         let had_claims = !claimed.is_empty();
         let started = now.to_rfc3339();
         let mut dispatches = Vec::with_capacity(claimed.len());
@@ -4887,7 +4958,13 @@ pub async fn scheduler_tick(app: &AppHandle, tx: &echo_agent_acp::AcpAgentTx, de
                 return;
             }
         }
-        if let Err(error) = write_store(&store) {
+        // Idle polls and reads do not need to replace and fsync the store.
+        let persisted = if repaired || changed {
+            write_store(&store)
+        } else {
+            Ok(())
+        };
+        if let Err(error) = persisted {
             tracing::error!(%error, "failed to persist automation schedule claim");
             rejected_dispatches.extend(dispatches.into_iter().map(|dispatch| {
                 RejectedAutomationDispatch {
@@ -5689,14 +5766,17 @@ mod tests {
         };
         let blocked = HashSet::from(["busy".to_string()]);
 
-        assert!(claim_due_unblocked(&mut store, now, &blocked).is_empty());
+        let (claimed, changed) = claim_due_unblocked(&mut store, now, &blocked);
+        assert!(claimed.is_empty());
+        assert!(!changed);
         assert_eq!(
             store.automations[0].next_run_at.as_deref(),
             Some(scheduled_for.as_str())
         );
         assert!(store.automations[0].last_run_at.is_none());
 
-        let claimed = claim_due_unblocked(&mut store, now, &HashSet::new());
+        let (claimed, changed) = claim_due_unblocked(&mut store, now, &HashSet::new());
+        assert!(changed);
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].scheduled_for, scheduled_for);
     }
@@ -5989,7 +6069,8 @@ mod tests {
             automations: vec![expired_recurring, missed_once],
         };
 
-        ensure_next_runs(&mut store, now);
+        assert!(ensure_next_runs(&mut store, now));
+        assert!(!ensure_next_runs(&mut store, now));
 
         assert!(store
             .automations
@@ -6017,7 +6098,8 @@ mod tests {
             automations: vec![automation],
         };
 
-        ensure_next_runs(&mut store, now);
+        assert!(ensure_next_runs(&mut store, now));
+        assert!(!ensure_next_runs(&mut store, now));
 
         assert_eq!(
             store.automations[0].next_run_at,
@@ -6030,16 +6112,81 @@ mod tests {
     #[test]
     fn first_cwd_extracts_first_entry() {
         let a = Automation {
-            cwds: "/home/user, /tmp".into(),
+            cwds: vec!["/home/user".into(), "/tmp".into()],
             ..test_automation()
         };
         assert_eq!(first_cwd(&a), Some("/home/user".into()));
     }
 
     #[test]
+    fn comma_workspace_survives_legacy_migration_save_and_reload() {
+        let parent = tempfile::tempdir().unwrap();
+        let comma_directory = parent.path().join("Reports,2026");
+        let other_directory = parent.path().join("Other");
+        std::fs::create_dir(&comma_directory).unwrap();
+        std::fs::create_dir(&other_directory).unwrap();
+        let filesystem = crate::shell_fs::FilesystemAccess::default();
+        filesystem
+            .authorize_workspace(&parent.path().to_string_lossy())
+            .unwrap();
+
+        let mut raw = serde_json::to_value(test_automation()).unwrap();
+        raw.as_object_mut().unwrap().remove("cwds");
+        raw["cwd"] = serde_json::json!(comma_directory);
+        let mut document = serde_json::json!({"automations": [raw]});
+        assert!(migrate_legacy_json(&mut document));
+        assert!(!migrate_legacy_json(&mut document));
+        let mut store: AutomationStore = serde_json::from_value(document).unwrap();
+        let task = &mut store.automations[0];
+        assert_eq!(
+            task.cwds,
+            vec![comma_directory.to_string_lossy().into_owned()]
+        );
+        task.cwds.extend([
+            other_directory.to_string_lossy().into_owned(),
+            task.cwds[0].clone(),
+        ]);
+        task.cwds = normalize_authorized_cwds(&filesystem, &task.cwds).unwrap();
+        assert_eq!(task.cwds.len(), 2);
+        let serialized = serde_json::to_vec(&store).unwrap();
+        let reopened: AutomationStore = serde_json::from_slice(&serialized).unwrap();
+        assert_eq!(
+            require_automation_cwd(&filesystem, &reopened.automations[0], parent.path()).unwrap(),
+            comma_directory.canonicalize().unwrap()
+        );
+        let legacy = format!("{}, {}", other_directory.display(), parent.path().display());
+        assert_eq!(
+            legacy_workspace_paths(&legacy),
+            [
+                other_directory.to_str().unwrap(),
+                parent.path().to_str().unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_workspace_list_preserves_its_primary_even_if_the_literal_exists() {
+        let parent = tempfile::tempdir().unwrap();
+        let first = parent.path().join("first");
+        // Keep the second entry relative so the literal name is also valid on
+        // Windows, where a second absolute path would put a colon in the name.
+        let legacy = format!("{},second", first.display());
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&legacy).unwrap();
+        assert_eq!(
+            legacy_workspace_paths(&legacy),
+            [first.to_str().unwrap(), "second"]
+        );
+        assert_eq!(
+            legacy_workspace_paths(" , /work/first, , "),
+            ["/work/first"]
+        );
+    }
+
+    #[test]
     fn first_cwd_empty_returns_none() {
         let a = Automation {
-            cwds: "".into(),
+            cwds: Vec::new(),
             ..test_automation()
         };
         assert_eq!(first_cwd(&a), None);
@@ -6083,13 +6230,18 @@ mod tests {
             .unwrap();
 
         assert!(
-            normalize_authorized_cwds(&filesystem, &forged.to_string_lossy())
+            normalize_authorized_cwds(&filesystem, &[forged.to_string_lossy().into_owned()])
                 .unwrap_err()
                 .contains("未经用户授权")
         );
         assert_eq!(
-            normalize_authorized_cwds(&filesystem, &trusted.to_string_lossy()).unwrap(),
-            trusted.canonicalize().unwrap().to_string_lossy()
+            normalize_authorized_cwds(&filesystem, &[trusted.to_string_lossy().into_owned()])
+                .unwrap(),
+            vec![trusted
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()]
         );
     }
 
@@ -6105,14 +6257,14 @@ mod tests {
             .authorize_workspace(&trusted.to_string_lossy())
             .unwrap();
         let forged_task = Automation {
-            cwds: forged.to_string_lossy().into_owned(),
+            cwds: vec![forged.to_string_lossy().into_owned()],
             permission_mode: "fullAccess".into(),
             ..test_automation()
         };
         assert!(require_automation_cwd(&filesystem, &forged_task, &trusted).is_err());
 
         let trusted_task = Automation {
-            cwds: trusted.to_string_lossy().into_owned(),
+            cwds: vec![trusted.to_string_lossy().into_owned()],
             permission_mode: "fullAccess".into(),
             ..test_automation()
         };
@@ -6422,7 +6574,7 @@ mod tests {
         migrate_legacy_json(&mut json);
         let item = &json["automations"][0];
         assert_eq!(item["status"], "ACTIVE");
-        assert_eq!(item["cwds"], "/home");
+        assert_eq!(item["cwds"], serde_json::json!(["/home"]));
         assert_eq!(item["schedule"]["freq"], "DAILY");
         assert_eq!(item["schedule"]["byhour"], 8);
         assert_eq!(item["schedule"]["byminute"], 30);
@@ -6603,7 +6755,7 @@ mod tests {
                 .collect(),
         };
         let original = serde_json::to_value(&store).unwrap();
-        pause_automations_with_removed_models(&mut store);
+        assert!(pause_automations_with_removed_models(&mut store));
         for (index, task) in store.automations.iter().enumerate() {
             assert_eq!(task.model_id.as_deref(), selections[index]);
             if task
@@ -6621,7 +6773,7 @@ mod tests {
             }
         }
         let migrated = serde_json::to_value(&store).unwrap();
-        pause_automations_with_removed_models(&mut store);
+        assert!(!pause_automations_with_removed_models(&mut store));
         assert_eq!(serde_json::to_value(&store).unwrap(), migrated);
         store.automations.retain(|task| {
             task.model_id
@@ -6727,7 +6879,7 @@ mod tests {
         for change in 0..5 {
             let mut draft = original.clone();
             match change {
-                0 => draft.cwds = "/other-workspace".into(),
+                0 => draft.cwds = vec!["/other-workspace".into()],
                 1 => draft.permission_mode = "default".into(),
                 2 => draft.expert_path = Some("/different-expert.md".into()),
                 3 => draft.new_session_each_run = true,
@@ -6950,7 +7102,7 @@ mod tests {
             id: String::new(),
             name: String::new(),
             prompt: String::new(),
-            cwds: String::new(),
+            cwds: Vec::new(),
             status: "ACTIVE".into(),
             model_id: None,
             model_is_thinking: false,

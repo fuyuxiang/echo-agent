@@ -24,9 +24,9 @@ body {
 }
 /* Match the optical weight of our small custom outline icons. Keep hosted
  * Monaco, terminal, document and user-rendered graphics on their own styles. */
-:where(.app, .settings-modal, .app-dialog, .modal-overlay, .echo-coding-portal,
+:where(.app, .settings-modal, .app-dialog, .modal-overlay,
     .permission-picker__popover, .model-selector__menu, .workspace-picker__menu)
-  svg.lucide:not(:where(.monaco-editor *, .xterm *, .markdown-body *, .md-content *)) {
+  svg.lucide:not(:where(.markdown-body *, .md-content *)) {
   stroke-width: var(--echo-icon-stroke-width);
 }
 .echo-icon--spin {

@@ -1,4 +1,4 @@
-import { agentSend, type CodingTurnOptions } from "@/lib/agent-client";
+import { agentSend, type AgentTurnOptions } from "@/lib/agent-client";
 import { friendlyError } from "@/lib/error-format";
 import { sessionControlStatus } from "@/lib/session-control";
 import { useSessionsStore } from "@/stores/sessions-store";
@@ -12,7 +12,7 @@ export type AgentTurnSender = (
   attachments: string[],
   displayText: string,
   promptId: string,
-  coding?: CodingTurnOptions,
+  options?: AgentTurnOptions,
 ) => Promise<void>;
 
 export interface AgentTurnInput {
@@ -20,7 +20,7 @@ export interface AgentTurnInput {
   promptText: string;
   displayText: string;
   attachments?: string[];
-  coding?: CodingTurnOptions;
+  options?: AgentTurnOptions;
   /** Reuse the id assigned while atomically claiming a queued row. */
   promptId?: string;
   /** Message replacement may finish after navigation and must remain scoped to
@@ -84,7 +84,7 @@ export function beginAgentTurn(
   useSessionsStore.getState().upsert({ sessionId, status: "working" });
   // This records the admitted turn, not the next composer selection. Runtime
   // receives the same immutable mode, including background/queued turns.
-  if (input.coding?.mode) transcript.setAgentMode(input.coding.mode === "agent" ? "default" : input.coding.mode, sessionId);
+  if (input.options?.mode) transcript.setAgentMode(input.options.mode === "agent" ? "default" : input.options.mode, sessionId);
   transcript.pushUser(displayText, attachments, sessionId, promptText);
   transcript.startStreaming(sessionId, promptId);
   // A new request reopens an accepted local task; merely viewing it does not.
@@ -94,34 +94,34 @@ export function beginAgentTurn(
     }
   }
 
-  const sending = input.coding
-    ? send(sessionId, promptText, attachments, displayText, promptId, input.coding)
+  const sending = input.options
+    ? send(sessionId, promptText, attachments, displayText, promptId, input.options)
     : send(sessionId, promptText, attachments, displayText, promptId);
   void sending.catch((error) => {
     if (isAgentPromptSettled(sessionId, promptId)) return;
     const latest = useSessionStore.getState();
     const detail = friendlyError(error);
-    latest.markComplete({
+    const completedCurrentTurn = latest.markComplete({
       sessionId,
       promptId,
       stopReason: "error",
       agentResult: detail,
     });
-    if (previousControl) {
-      latest.restoreControl(sessionId, previousControl);
+    // The old turn can settle its own transcript and queue row after Send Now
+    // starts. Only the current turn can change the session's control and status.
+    if (completedCurrentTurn) {
+      if (previousControl) latest.restoreControl(sessionId, previousControl);
+      if (latest.sessionId === sessionId) {
+        latest.setError(detail, { sessionId, promptId });
+      }
+      useSessionsStore.getState().upsert({
+        sessionId,
+        status: previousControl ? sessionControlStatus(previousControl) : "failed",
+      });
     }
-    // Error banners belong to the focused conversation. A late failure from a
-    // background turn must not stop or overwrite whichever session is active.
-    if (latest.sessionId === sessionId) {
-      latest.setError(detail, { sessionId, promptId });
-    }
-    useSessionsStore.getState().upsert({
-      sessionId,
-      status: previousControl ? sessionControlStatus(previousControl) : "failed",
-    });
     input.onRejected?.(error, promptId);
     const current = useSessionStore.getState().transcripts[sessionId];
-    if (!current?.streamingMessageId && !current?.pendingSendNowPromptId) {
+    if (completedCurrentTurn && !current?.streamingMessageId && !current?.pendingSendNowPromptId) {
       useMessageQueueStore.getState().pauseQueued(sessionId);
     }
   });

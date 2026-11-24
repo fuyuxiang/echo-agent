@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type AutomationMode = "default" | "browser_use" | "computer_use";
+export type TaskBrowserSource = "panel" | "isolated";
+export interface BrowserPanelCapabilities { web: boolean; artifacts: boolean }
 
 export interface BrowserCapability {
   available: boolean;
@@ -59,6 +61,8 @@ export interface AutomationStatus {
   execution?:{nativeIsolation:string;backgroundNativeActions?:boolean;backgroundPointerInput?:boolean;foregroundCoordinateInput?:boolean;humanInputPolicy?:string;inputConflictDetection?:boolean;browserSource?:string;emergencyShortcut?:boolean;backgroundInput:boolean;inputMode:string;platform:string;fileDialog:boolean;windowClick:boolean};
   allowPrivateNetwork: boolean;
   browser: BrowserCapability;
+  browserPanel?: BrowserPanelCapabilities;
+  isolatedBrowserAvailable?: boolean;
   computer: ComputerCapability;
   browserRunning: boolean;
   browserUrl?: string | null;
@@ -69,6 +73,7 @@ export interface AutomationStatus {
 export interface AutomationCapabilities {
   browser: BrowserCapability;
   computer: ComputerCapability;
+  browserPanel?: BrowserPanelCapabilities;
 }
 
 export interface AutomationApproval {
@@ -137,4 +142,4 @@ export const automationSelectTarget=(sessionId:string,applicationId:string)=>inv
 export const automationPreview=(sessionId:string)=>invoke<{data:string;meta:unknown}>("automation_preview",{sessionId});
 export const automationPairBrowser=(sessionId:string)=>invoke<{endpoint:string;extensionPath:string;expiresInSeconds:number}>("automation_pair_browser",{sessionId});
 export const automationDisconnectBrowser=(sessionId:string)=>invoke<void>("automation_disconnect_browser",{sessionId});
-export const automationUseIsolatedBrowser=(sessionId:string)=>invoke<AutomationStatus>("automation_use_isolated_browser",{sessionId});
+export const automationUseIsolatedBrowser=(sessionId:string, source?:TaskBrowserSource)=>invoke<AutomationStatus>("automation_use_isolated_browser",{sessionId, ...(source ? { source } : {})});

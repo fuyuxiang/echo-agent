@@ -368,7 +368,7 @@ export function AutomationPanel({
 
   // ---------- 引用数据（工作空间/模型/技能/专家/连接器） ----------
   const [referenceCwd, setReferenceCwd] = useState(
-    () => draft?.cwds.split(",")[0]?.trim() || cwd,
+    () => draft?.cwds[0] || cwd,
   );
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [models, setModels] = useState<ModelOption[]>([]);
@@ -572,7 +572,7 @@ export function AutomationPanel({
       }
       useAutomationEditorStore.getState().begin(nextDraft, automation);
       setEditorError(null);
-      setReferenceCwd(nextDraft.cwds.split(",")[0]?.trim() || cwd);
+      setReferenceCwd(nextDraft.cwds[0] || cwd);
       setShowTemplatePage(false);
     },
     [confirmReplaceDraft, onToast, cwd],
@@ -1058,7 +1058,7 @@ export function AutomationPanel({
           (taskFilter === "all" ||
             taskState(task, snapshot?.records) === taskFilter) &&
           (!query ||
-            `${task.name} ${task.prompt} ${task.cwds}`
+            `${task.name} ${task.prompt} ${task.cwds.join(" ")}`
               .toLowerCase()
               .includes(query)),
       ),
@@ -1273,7 +1273,7 @@ export function AutomationPanel({
                 onNavigate?.("连接器");
               }}
               onWorkspaceCommit={(value) =>
-                setReferenceCwd(value.split(",")[0]?.trim() || cwd)
+                setReferenceCwd(value || cwd)
               }
               onOpenNotificationSettings={() =>
                 onOpenSettings?.("notifications")

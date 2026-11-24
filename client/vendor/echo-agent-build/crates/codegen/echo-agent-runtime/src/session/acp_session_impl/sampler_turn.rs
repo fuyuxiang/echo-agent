@@ -219,20 +219,6 @@ impl SessionActor {
                 readonly_tool_kind_allowed(bridge.tool_kind(&definition.function.name))
             });
         }
-        if bridge
-            .read_resource::<DesktopDocumentTools>()
-            .await
-            .is_some_and(|policy| policy.0)
-        {
-            // Task children inherit root authority. MCP use_tool is coordinated
-            // by the same before/after dispatch; workflows have a separate adapter.
-            defs.retain(|definition| {
-                !matches!(
-                    bridge.tool_kind(&definition.function.name),
-                    Some(echo_agent_tools::types::tool::ToolKind::Workflow)
-                )
-            });
-        }
         let plan_active = self.plan_mode.lock().is_active();
         filter_cursor_tools_by_plan_mode(defs, plan_active)
     }
@@ -851,10 +837,20 @@ impl SessionActor {
             })),
         );
     }
+    #[cfg(test)]
     pub(crate) async fn handle_sampling_failure(
         self: &Arc<Self>,
         error: echo_agent_sampler::SamplingErrorInfo,
         rate_limit_waits: u32,
+    ) -> Result<SamplerFailureRecovery, acp::Error> {
+        self.handle_turn_sampling_failure(error, rate_limit_waits, true).await
+    }
+
+    async fn handle_turn_sampling_failure(
+        self: &Arc<Self>,
+        error: echo_agent_sampler::SamplingErrorInfo,
+        rate_limit_waits: u32,
+        allow_compaction: bool,
     ) -> Result<SamplerFailureRecovery, acp::Error> {
         use echo_agent_sampler::SamplingErrorKind;
         if self.tool_context.task_output_token_budget.is_some() {
@@ -882,7 +878,7 @@ impl SessionActor {
             );
             return Err(acp::Error::internal_error().data(message));
         }
-        if (self.should_compact_on_error(&error).await
+        if allow_compaction && (self.should_compact_on_error(&error).await
             || echo_agent_sampling_types::is_context_length_error(&error.message))
             && self.claim_context_recovery().await
         {
@@ -1187,10 +1183,11 @@ impl SessionActor {
         self: &Arc<Self>,
         mut request: ConversationRequest,
         budget: &mut RateLimitWaitBudget,
+        buffer_memory_lookup: bool,
     ) -> Result<SamplerTurnOutcome, acp::Error> {
         self.prepare_sampler_for_turn().await;
         if let Err(error) = self.bound_request(&mut request).await {
-            if matches!(error, super::document_tasks::RequestBudgetError::Exceeded)
+            if !buffer_memory_lookup && matches!(error, super::document_tasks::RequestBudgetError::Exceeded)
                 && self.tool_context.task_output_token_budget.is_none()
                 && self.claim_context_recovery().await
                 && let Some(config) = self.chat_state_handle.get_sampling_config().await
@@ -1211,13 +1208,13 @@ impl SessionActor {
             return Err(error.into_acp_error());
         }
         if !budget.can_wait() {
-            return match self.submit_turn_request(request).await {
+            return match self.submit_turn_request(request, buffer_memory_lookup).await {
                 Ok(outcome) => Ok(outcome),
-                Err(info) => self.recover_from_sampling_failure(info, budget).await,
+                Err(info) => self.recover_from_sampling_failure(info, budget, !buffer_memory_lookup).await,
             };
         }
         loop {
-            match self.submit_turn_request(request.clone()).await {
+            match self.submit_turn_request(request.clone(), buffer_memory_lookup).await {
                 Ok(outcome) => {
                     budget.record_submission_accepted();
                     return Ok(outcome);
@@ -1226,7 +1223,7 @@ impl SessionActor {
                     let decision = budget.decide(&info);
                     let RateLimitWaitDecision::Wait { attempt, backoff } = decision else {
                         self.log_rate_limit_budget_spent(decision, &info);
-                        return self.recover_from_sampling_failure(info, budget).await;
+                        return self.recover_from_sampling_failure(info, budget, !buffer_memory_lookup).await;
                     };
                     self.notify_rate_limit_wait(attempt, budget, backoff).await;
                     sleep(backoff).await;
@@ -1238,6 +1235,7 @@ impl SessionActor {
     async fn submit_turn_request(
         self: &Arc<Self>,
         mut request: ConversationRequest,
+        buffer_memory_lookup: bool,
     ) -> Result<SamplerTurnOutcome, echo_agent_sampler::SamplingErrorInfo> {
         struct DrainBarrier<'a>(&'a parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
         impl Drop for DrainBarrier<'_> {
@@ -1250,9 +1248,13 @@ impl SessionActor {
             *self.turn_stream_drained.lock() = Some(tx);
             (DrainBarrier(&self.turn_stream_drained), rx)
         };
-        let request_id = echo_agent_sampler::RequestId::random();
+        let request_id = if buffer_memory_lookup {
+            super::scoped_memory_lookup::request_id()
+        } else {
+            echo_agent_sampler::RequestId::random()
+        };
         let request_id_str = request_id.as_str().to_string();
-        if let Some(storage) = self.memory.storage() {
+        if request.preflight.is_none() && let Some(storage) = self.memory.storage() {
             request.preflight = Some(Arc::new(
                 crate::session::memory_state::MemoryRequestPolicy {
                     storage,
@@ -1300,9 +1302,10 @@ impl SessionActor {
         self: &Arc<Self>,
         info: echo_agent_sampler::SamplingErrorInfo,
         budget: &RateLimitWaitBudget,
+        allow_compaction: bool,
     ) -> Result<SamplerTurnOutcome, acp::Error> {
         match self
-            .handle_sampling_failure(info, budget.attempts_used())
+            .handle_turn_sampling_failure(info, budget.attempts_used(), allow_compaction)
             .await?
         {
             SamplerFailureRecovery::CompactAndResubmit => {
@@ -1579,7 +1582,7 @@ impl SessionActor {
     }
     /// Persist one response's items without re-estimating model output when
     /// provider usage already includes it.
-    pub(super) async fn record_response_items(
+    pub(super) fn record_response_items(
         &self,
         items: Vec<ConversationItem>,
         usage_reported: bool,
@@ -1587,14 +1590,14 @@ impl SessionActor {
         for item in items {
             match item {
                 ConversationItem::Assistant(_) => {
-                    self.record_assistant_response(item, usage_reported).await;
+                    self.record_assistant_response(item, usage_reported);
                 }
                 _ if usage_reported => self.chat_state_handle.push_model_output(item),
                 _ => self.chat_state_handle.push_tool_result(item),
             }
         }
     }
-    pub(super) async fn record_assistant_response(
+    pub(super) fn record_assistant_response(
         &self,
         assistant_item: ConversationItem,
         usage_reported: bool,

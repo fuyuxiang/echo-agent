@@ -100,9 +100,14 @@ pub struct ReportedTaskCompletions {
     reported: HashSet<String>,
 }
 impl ReportedTaskCompletions {
+    /// Returns whether this completion has already been surfaced.
+    pub fn is_reported(&self, id: &str) -> bool {
+        self.reported.contains(id)
+    }
+
     /// Returns `true` if the ID was newly inserted.
     pub fn mark_reported(&mut self, id: &str) -> bool {
-        if self.reported.contains(id) {
+        if self.is_reported(id) {
             return false;
         }
         self.reported.insert(id.to_owned())

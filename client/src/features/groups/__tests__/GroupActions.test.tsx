@@ -71,15 +71,20 @@ it("删除失败保留群聊和草稿，重试成功后清理当前选择及持�
   expect(JSON.parse(localStorage.getItem("echoagent.group-drafts.v1")!).data[id]).toBeUndefined();
 });
 
-it("超过首屏数量的专家团仍可全量搜索，并提供继续加载", async () => {
-  records=Array.from({length:55},(_,i)=>makeGroup(`专家团${i}`));
-  useGroupStore.setState({groups:structuredClone(records)}); mount();
-  expect(screen.queryByRole("button",{name:"打开专家团 专家团54"})).toBeNull();
-  fireEvent.change(screen.getByRole("textbox",{name:"搜索专家团"}),{target:{value:"专家团54"}});
-  expect(screen.getByRole("button",{name:"打开专家团 专家团54"})).toBeInTheDocument();
-  fireEvent.change(screen.getByRole("textbox",{name:"搜索专家团"}),{target:{value:""}});
-  fireEvent.click(screen.getByRole("button",{name:/加载更多专家团/}));
-  expect(screen.getByRole("button",{name:"打开专家团 专家团40"})).toBeInTheDocument();
+it("超过首屏数量的专家团仍可全量搜索，并提供继续加载", () => {
+  records = Array.from({ length: 25 }, (_, index) => makeGroup(`专家团${index}`));
+  useGroupStore.setState({ groups: structuredClone(records) });
+  mount();
+
+  const list = within(screen.getByRole("list", { name: "专家团列表" }));
+  const search = screen.getByRole("textbox", { name: "搜索专家团" });
+  const nextPageGroup = { name: "打开专家团 专家团24" };
+  expect(list.queryByRole("button", nextPageGroup)).toBeNull();
+  fireEvent.change(search, { target: { value: "专家团24" } });
+  expect(list.getByRole("button", nextPageGroup)).toBeInTheDocument();
+  fireEvent.change(search, { target: { value: "" } });
+  fireEvent.click(screen.getByRole("button", { name: /加载更多专家团/ }));
+  expect(list.getByRole("button", nextPageGroup)).toBeInTheDocument();
 });
 
 it("菜单支持键盘导航，Escape 返回入口且不会触发全局快捷键", () => {

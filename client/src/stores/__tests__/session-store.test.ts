@@ -79,6 +79,23 @@ const userMessageTextForTest = (m: ReturnType<typeof useSessionStore.getState>["
 describe("session-store transcripts", () => {
   beforeEach(resetStore);
 
+  it.each(["agent_message_chunk", "agent_thought_chunk", "tool_call"] as const)(
+    "%s publishes a new snapshot without mutating the previous messages",
+    (sessionUpdate) => {
+      const store = useSessionStore.getState();
+      store.setSession("A");
+      store.startStreaming("A", "active-turn");
+      const previous = useSessionStore.getState().messages;
+      Object.freeze(previous);
+      const update = sessionUpdate === "tool_call"
+        ? { __sessionId: "A", sessionUpdate, toolCallId: "call", title: "读取测试文件" }
+        : { ...chunk("next", "A"), sessionUpdate };
+      expect(store.applyUpdate({ ...update, _meta: { promptId: "active-turn" } })).toBe(true);
+      expect(previous[0].parts).toEqual([]);
+      expect(useSessionStore.getState().messages[0].parts).toHaveLength(1);
+    },
+  );
+
   it("消息时间在切换会话和冷回放后保持一致", () => {
     const sentAt = Date.UTC(2026, 10, 9, 15, 59);
     const endedAt = Date.UTC(2026, 10, 9, 16, 1);
@@ -1170,6 +1187,32 @@ describe("session-store transcripts", () => {
         agentResult: "connection reset",
       }),
     ]);
+  });
+
+  it.each([
+    [false, "error decoding response body"],
+    [true, "error decoding response body"],
+    [false, "Messages API stream ended before message_stop"],
+    [true, "Messages API stream ended before message_stop"],
+  ] as const)("实时或重放的断流终态保留正文及中文错误提示（重放 %s，%s）", (isReplay, message) => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    store.startStreaming("A", "interrupted-prompt");
+    store.applyUpdate(chunk("已经收到的正文", "A"));
+    store.applyUpdate({
+      __sessionId: "A",
+      sessionUpdate: "turn_completed",
+      prompt_id: "interrupted-prompt",
+      stop_reason: "error",
+      agent_result: JSON.stringify({ error_kind: "chat_stream_interrupted", message }),
+      _meta: { isReplay },
+    });
+    expect(useSessionStore.getState().messages[0]).toMatchObject({
+      complete: true,
+      stopReason: "error",
+      agentResult: "模型回复中断。已有内容已保留，可在当前任务继续。",
+      parts: [{ kind: "text", text: "已经收到的正文" }],
+    });
   });
 
   it("持久终态与 prompt_complete 双轨到达时只保留一条记录", () => {

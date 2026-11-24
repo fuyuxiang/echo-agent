@@ -59,6 +59,7 @@ struct BlockState {
     text_acc: String,
     tool_name: String,
     tool_id: String,
+    initial_tool_args: String,
     args_acc: String,
     thinking_acc: String,
     signature: String,
@@ -75,9 +76,8 @@ enum BlockType {
 /// [`SamplingEvent`]s.
 ///
 /// Yields exactly one terminal event ([`SamplingEvent::Completed`] or
-/// [`SamplingEvent::Failed`]) per request. Server-side `Error` events
-/// translate to `SamplingError::Api { status: 500, .. }` so the actor's
-/// retry loop treats them as retryable transport-level errors.
+/// [`SamplingEvent::Failed`]) per request. The provider's `message_stop`
+/// completes the message. EOF before it is a stream interruption.
 pub fn stream_messages<'a>(
     raw_stream: BoxStream<'a, Result<MessageStreamEvent, SamplingError>>,
     model_metadata: Option<ResponseModelMetadata>,
@@ -146,7 +146,17 @@ pub fn stream_messages<'a>(
         loop {
             let event_result = match tokio::time::timeout(idle_timeout, stream.next()).await {
                 Ok(Some(event_result)) => event_result,
-                Ok(None) => break,
+                Ok(None) => {
+                    let err = SamplingError::ChatStreamInterrupted {
+                        detail: "Messages API stream ended before message_stop".into(),
+                        retryable: true,
+                    };
+                    yield SamplingEvent::Failed {
+                        request_id: request_id.clone(),
+                        error: SamplingErrorInfo::from(&err),
+                    };
+                    return;
+                }
                 Err(_elapsed) => {
                     let err = SamplingError::IdleTimeout {
                         elapsed_secs: idle_timeout.as_secs(),
@@ -211,6 +221,7 @@ pub fn stream_messages<'a>(
                                 text_acc: String::new(),
                                 tool_name: String::new(),
                                 tool_id: String::new(),
+                                initial_tool_args: String::new(),
                                 args_acc: String::new(),
                                 thinking_acc: thinking.clone(),
                                 signature: signature.clone(),
@@ -231,6 +242,7 @@ pub fn stream_messages<'a>(
                                 text_acc: text.clone(),
                                 tool_name: String::new(),
                                 tool_id: String::new(),
+                                initial_tool_args: String::new(),
                                 args_acc: String::new(),
                                 thinking_acc: String::new(),
                                 signature: String::new(),
@@ -242,8 +254,19 @@ pub fn stream_messages<'a>(
                                 request_id: request_id.clone(),
                             };
                         }
+                        if !text.is_empty() {
+                            chunk_timestamps.push(Instant::now());
+                            chunk_index += 1;
+                            message_chunk_count += 1;
+                            yield SamplingEvent::ChannelToken {
+                                request_id: request_id.clone(),
+                                channel: SamplingChannel::Text,
+                                text,
+                                chunk_index,
+                            };
+                        }
                     }
-                    ContentBlock::ToolUse { id, name, .. } => {
+                    ContentBlock::ToolUse { id, name, input, .. } => {
                         let tool_index = next_tool_index;
                         next_tool_index += 1;
                         block_to_tool_index.insert(index, tool_index);
@@ -255,10 +278,9 @@ pub fn stream_messages<'a>(
                                 text_acc: String::new(),
                                 tool_name: name.clone(),
                                 tool_id: id.clone(),
-                                // Anthropic Messages API streams arguments via
-                                // InputJsonDelta events; starting from
-                                // "{}" then appending fragments would
-                                // produce invalid JSON.
+                                // Keep the start snapshot independently of the
+                                // delta buffer, which replaces it when present.
+                                initial_tool_args: input.to_string(),
                                 args_acc: String::new(),
                                 thinking_acc: String::new(),
                                 signature: String::new(),
@@ -402,10 +424,25 @@ pub fn stream_messages<'a>(
                                 }
                             }
                             BlockType::ToolUse => {
+                                let tool_index = block_to_tool_index.remove(&index);
+                                let arguments = if state.args_acc.is_empty() {
+                                    if let Some(tool_index) = tool_index {
+                                        yield SamplingEvent::ToolCallDelta {
+                                            request_id: request_id.clone(),
+                                            tool_index,
+                                            id: None,
+                                            name: None,
+                                            arguments_delta: Some(state.initial_tool_args.clone()),
+                                        };
+                                    }
+                                    state.initial_tool_args
+                                } else {
+                                    state.args_acc
+                                };
                                 assistant_tool_calls.push(ToolCall {
                                     id: std::sync::Arc::<str>::from(state.tool_id),
                                     name: state.tool_name,
-                                    arguments: std::sync::Arc::<str>::from(state.args_acc),
+                                    arguments: std::sync::Arc::<str>::from(arguments),
                                 });
                             }
                         }
@@ -419,14 +456,16 @@ pub fn stream_messages<'a>(
                         final_stop_message = details.explanation;
                     }
                     // Keep the exact wire string so consumers can echo it.
-                    final_raw_stop_reason =
-                        delta.stop_reason.as_ref().map(messages_stop_reason_wire);
+                    if let Some(reason) = delta.stop_reason.as_ref() {
+                        final_raw_stop_reason = Some(messages_stop_reason_wire(reason));
+                    }
                     // The matched stop sequence rides the same terminal delta
                     // (present only on a `stop_sequence` stop); carry it verbatim.
                     if delta.stop_sequence.is_some() {
                         final_stop_sequence = delta.stop_sequence.clone();
                     }
-                    final_stop_reason = delta.stop_reason.map(|sr| match sr {
+                    if let Some(reason) = delta.stop_reason {
+                        final_stop_reason = Some(match reason {
                         messages::StopReason::EndTurn => StopReason::Stop,
                         messages::StopReason::MaxTokens => StopReason::Length,
                         messages::StopReason::StopSequence => StopReason::Stop,
@@ -461,7 +500,8 @@ pub fn stream_messages<'a>(
                             );
                             StopReason::Stop
                         }
-                    });
+                        });
+                    }
                     final_output_tokens = usage.output_tokens;
                     // Optional on the delta; preserve message_start values when omitted.
                     if let Some(input) = usage.input_tokens {
@@ -475,10 +515,7 @@ pub fn stream_messages<'a>(
                     }
                 }
 
-                MessageStreamEvent::MessageStop => {
-                    // Final message complete; the loop exits naturally
-                    // when the underlying stream ends.
-                }
+                MessageStreamEvent::MessageStop => break,
 
                 MessageStreamEvent::Ping => {
                     // Liveness only, no action; the inner timeout was
@@ -518,6 +555,17 @@ pub fn stream_messages<'a>(
             }
         }
 
+        if final_message_id.is_none() || final_stop_reason.is_none() || !blocks.is_empty() {
+            let err = SamplingError::ChatStreamInterrupted {
+                detail: "Messages API sent message_stop without a complete message (missing start, stop_reason, or content_block_stop)".into(),
+                retryable: false,
+            };
+            yield SamplingEvent::Failed {
+                request_id: request_id.clone(),
+                error: SamplingErrorInfo::from(&err),
+            };
+            return;
+        }
         if final_stop_reason == Some(StopReason::Length) {
             yield SamplingEvent::Failed {
                 request_id: request_id.clone(),

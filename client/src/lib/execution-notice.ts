@@ -1,7 +1,7 @@
 import type { ChatMessage, ToolCallView } from "@/stores/session-store";
 import { partitionAssistantParts } from "./execution-process";
 import { findToolRecoveries } from "./tool-recovery";
-import { isModelQuotaExhausted } from "./error-format";
+import { isModelQuotaExhausted, isModelStreamInterrupted } from "./error-format";
 import { executionToolStates } from "./tool-execution-state";
 
 export interface ExecutionNotice {
@@ -82,6 +82,8 @@ export function getExecutionNotice(message: ChatMessage, active = false, runtime
     // success state. Detailed native errors remain in the process disclosure.
     const detail = `${runtimeError ?? ""} ${message.agentResult ?? ""}`.toLowerCase();
     const quota = isModelQuotaExhausted(detail);
+    const interrupted = isModelStreamInterrupted(runtimeError ?? "")
+      || isModelStreamInterrupted(message.agentResult ?? "");
     const connection = /disconnect|connection|network|timeout|timed out|连接|网络|超时/.test(detail);
     const title = quota ? "模型额度已用尽" : ["rate_limit", "rate_limited"].includes(reason ?? "") ? "模型请求受限"
       : category === "HookDenied" ? "操作被安全规则阻止"
@@ -89,8 +91,10 @@ export function getExecutionNotice(message: ChatMessage, active = false, runtime
       : reason === "max_turns" || category === "max_turns_reached" ? "本轮已达到执行轮数上限"
       : category === "action_stationarity" ? "本轮因持续无进展而停止"
       : reason === "refusal" || reason === "content_filter" ? "模型未能处理本次请求"
+      : interrupted ? "模型回复中断"
       : connection ? "连接中断，本轮未能继续" : "本轮未能继续";
-    return { kind: "runtime", tone: "error", title, description: impact, tools: affected,
+    const description = interrupted && !affected.length ? `${impact}可在当前任务继续。` : impact;
+    return { kind: "runtime", tone: "error", title, description, tools: affected,
       ...(quota ? { modelSettings: true } : {}) };
   }
   if (affectedKinds.length) {

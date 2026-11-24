@@ -16,7 +16,8 @@ import { PanelRight, Settings2, Users, LockKeyhole, Check } from "lucide-react";
 import { useProjectWorkspace, type CheckedProjectSnapshot } from "@/lib/use-project-workspace";
 import { useSharedProjectId, projectSharingAccount } from "@/lib/project-sharing";
 import { useOrgSessionStore } from "@/stores/org-session-store";
-import { captureTeamProjectOperation, projectCollaborationCapabilities, PROJECT_DELETED_MESSAGE, teamProjectRequest, type TeamProjectSnapshot, type StartTeamWork, type OpenTeamExecution } from "@/lib/team-project-client";
+import { isPrivateMemoryLookup, privateMemoryInSharedProject } from "@/lib/private-memory-lookup";
+import { canEditTeamProject, captureTeamProjectOperation, projectRoleUnavailable, projectCollaborationCapabilities, PROJECT_DELETED_MESSAGE, teamProjectRequest, type TeamProjectSnapshot, type StartTeamWork, type OpenTeamExecution } from "@/lib/team-project-client";
 import { findModelDisplayName } from "@/lib/model-presentation";
 import { PageToolbar } from "./PageToolbar";
 import { useSessionsStore } from "@/stores/sessions-store";
@@ -41,7 +42,8 @@ import { useAppDialog } from "./AppDialog";
 import type { AgentEntry } from "@/lib/types";
 import type { SlashCommandInvocation } from "@/lib/slash-commands";
 import { useWorkspaceMentions } from "@/lib/use-workspace-mentions";
-import { projectAssetsUse, projectAssetsImport, filesystemAttachmentStats, filesystemPickDirectory, type WorkspaceInfo } from "@/lib/agent-client";
+import { agentFindSessionSummaries, projectAssetsUse, projectAssetsImport, filesystemAttachmentStats, filesystemPickDirectory, type WorkspaceInfo } from "@/lib/agent-client";
+import { reconcileSessionCatalog } from "@/lib/session-catalog";
 import { friendlyError, isTaskWorkspaceError } from "@/lib/error-format";
 import { draftAttachments } from "@/lib/draft-attachments";
 import { draftRevision, touchDraft } from "@/lib/draft-lifecycle";
@@ -158,10 +160,6 @@ export function ProjectDetailView({
   const scopeKey = `${live.id}:${sharingAccount}:${sharedId ?? ""}`;
   const currentScope = useRef(scopeKey); currentScope.current = scopeKey;
   useEffect(() => { setResource(undefined); setSettingsOpen(false); setDecisionsOpen(false); setAutomationsOpen(false); setQuestionsOpen(false); setSelectedTaskId(undefined); }, [scopeKey]);
-  const linkShared = async (id: string) => {
-    await useProjectsStore.getState().linkSharedProject(live.id, sharingAccount, id);
-    onTeamPublished?.(id);
-  };
   useEffect(() => {
     // Upgrade the old localStorage association without modifying any source data.
     if (sharedId && live.sharedProjects?.[sharingAccount] !== sharedId) {
@@ -179,6 +177,41 @@ export function ProjectDetailView({
   };
   const actorId = useOrgSessionStore(state => state.session?.user?.id);
   const rows = projectTaskRows(live, workspace.snapshot, sharingAccount, projectPublicationLinks(live.id, sharingAccount, sharedId).tasks, actorId, sharedId);
+  const projectSessionIds = JSON.stringify([...new Set([
+    ...live.conversations.map(item => item.sessionId),
+    ...live.plans.map(item => item.sessionId),
+    ...rows.map(item => item.sessionId),
+  ].filter((id): id is string => !!id))].sort());
+  const [sessionStatusAttempt, setSessionStatusAttempt] = useState(0);
+  const [sessionStatusRequest, setSessionStatusRequest] = useState<{ loading: boolean; error?: string }>();
+  useEffect(() => {
+    let active = true;
+    const store = useSessionsStore.getState();
+    const present = new Set(store.independent.filter(entry => entry.status).map(entry => entry.sessionId));
+    const ids = (JSON.parse(projectSessionIds) as string[])
+      .filter(id => !present.has(id) && !store.deletedSessionIds.includes(id));
+    if (!ids.length) {
+      setSessionStatusRequest(undefined);
+      return;
+    }
+    setSessionStatusRequest({ loading: true });
+    const load = async () => {
+      for (let offset = 0; offset < ids.length && active; offset += 200) {
+        const before = useSessionsStore.getState().independent;
+        const summaries = await agentFindSessionSummaries(ids.slice(offset, offset + 200));
+        if (!active) return;
+        const latest = useSessionsStore.getState();
+        const reconciled = reconcileSessionCatalog(summaries, before, latest.independent);
+        latest.mergeSessions(reconciled);
+        useProjectsStore.getState().reconcileSessionArchiveStates(reconciled);
+      }
+      if (active) setSessionStatusRequest(undefined);
+    };
+    void load().catch(error => {
+      if (active) setSessionStatusRequest({ loading: false, error: friendlyError(error) });
+    });
+    return () => { active = false; };
+  }, [projectSessionIds, scopeKey, sessionStatusAttempt]);
   const persisting = useProjectsStore(state => state.persisting);
   const persistError = useProjectsStore(state => state.persistError);
   const toggleContext = () => setContextOpen(value => { try { localStorage.setItem("echoagent.project-context-hidden", value ? "1" : "0"); } catch {} return !value; });
@@ -306,7 +339,9 @@ export function ProjectDetailView({
       let sessionId: string | undefined;
       if (fromDraft && sharedId) {
         const identity = captureTeamProjectOperation();
-        if (!onStartTeamWork || !workspace.snapshot || workspace.snapshot.role === "viewer") throw new Error("项目连接或编辑权限不可用，请刷新后重试");
+        if (!onStartTeamWork || !workspace.snapshot || !canEditTeamProject(workspace.snapshot.role)) throw new Error("项目连接或编辑权限不可用，请刷新后重试");
+        if (await isPrivateMemoryLookup(text)) throw new Error(privateMemoryInSharedProject);
+        identity.assertCurrent();
         const caps = await projectCollaborationCapabilities(identity);
         identity.assertCurrent();
         if (!caps.taskIdentity) throw new Error("组织服务需升级后才能新建协作任务");
@@ -390,7 +425,7 @@ export function ProjectDetailView({
           <span className="pd-crumb__sep">/</span>
           <span className="pd-crumb__name">{live.name}</span>
         </div>
-        <div className="project-detail-members">{members && <span className="project-members-avatars" aria-label={`${members.length} 位参与者`}>{members.slice(0, 3).map(m => <span key={m.userId}>{m.displayName.slice(-1)}</span>)}</span>}<ProjectParticipantsButton key={deletedSharedId} project={live} sharedId={sharedId} onLinked={linkShared} onOpenOrganization={onOpenOrganization} label="邀请" /><button type="button" className="pd-btn pd-btn--ghost" onClick={toggleContext} aria-label={contextOpen ? "收起项目上下文" : "展开项目上下文"} aria-pressed={contextOpen}><PanelRight size={17} /></button><button type="button" className="pd-btn pd-btn--ghost" aria-label="项目设置" disabled={!!sharedId && !workspace.snapshot} onClick={() => setSettingsOpen(true)}><Settings2 size={17} /></button></div>
+        <div className="project-detail-members">{members && <span className="project-members-avatars" aria-label={`${members.length} 位参与者`}>{members.slice(0, 3).map(m => <span key={m.userId}>{m.displayName.slice(-1)}</span>)}</span>}<ProjectParticipantsButton key={deletedSharedId} project={live} sharedId={sharedId} onLinked={onTeamPublished} onOpenOrganization={onOpenOrganization} label="邀请" /><button type="button" className="pd-btn pd-btn--ghost" onClick={toggleContext} aria-label={contextOpen ? "收起项目上下文" : "展开项目上下文"} aria-pressed={contextOpen}><PanelRight size={17} /></button><button type="button" className="pd-btn pd-btn--ghost" aria-label="项目设置" disabled={!!sharedId && !workspace.snapshot} onClick={() => setSettingsOpen(true)}><Settings2 size={17} /></button></div>
       </PageToolbar>
 
       <div className={`pd-body project-unified-body project-workspace-body${contextOpen ? "" : " project-workspace-body--wide"}`}>
@@ -405,8 +440,17 @@ export function ProjectDetailView({
           {sharingDeleted && <ProjectConnectionNotice error={PROJECT_DELETED_MESSAGE} localRecord />}
           {sharedId && workspace.error && <ProjectConnectionNotice error={workspace.error} loading={workspace.loading} localRecord openingProject onRetry={() => void workspace.refresh()} onOpenOrganization={onOpenOrganization} />}
           {workspace.snapshot?.syncWarning && <p className="project-inline-error" role="alert">{workspace.snapshot.syncWarning}</p>}
+          {workspace.snapshot && !canEditTeamProject(workspace.snapshot.role) && workspace.snapshot.role !== "viewer" && <p className="project-inline-error" role="status">{projectRoleUnavailable}</p>}
           {persistError && <p className="project-inline-error" role="alert">保存失败：{persistError}<button className="pd-btn" disabled={persisting} onClick={() => void useProjectsStore.getState().retryPersist().catch(() => {})}>重试保存</button></p>}
           <div className="pd-tab-content" id="project-content-panel" role="tabpanel" aria-labelledby={`project-tab-${tab}`}>
+            {(tab === "overview" || tab === "task") && sessionStatusRequest?.loading && (
+              <p className="project-workspace-hint" role="status">正在读取项目任务状态…</p>
+            )}
+            {(tab === "overview" || tab === "task") && sessionStatusRequest?.error && (
+              <p className="project-inline-error" role="alert">部分项目任务状态读取失败：{sessionStatusRequest.error}
+                <button type="button" className="pd-btn" onClick={() => setSessionStatusAttempt(attempt => attempt + 1)}>重试读取状态</button>
+              </p>
+            )}
             {tab === "overview" && <ProjectOverview project={live} rows={rows} outputs={outputs} onOpenTask={openTask} onOpenOutput={output => setResource({ output })} onTasks={() => setTab("task")} onFiles={() => showFiles("output")} onAddFiles={addFiles} />}
             {tab === "activity" && <ProjectActivity key={scopeKey} draftScope={scopeKey} project={live} sharedId={sharedId} workspace={workspace} onOpenTask={openTask} />}
             {tab === "task" && <ProjectTasks key={scopeKey} inlineDetails project={live} account={sharingAccount} sharedId={sharedId} workspace={workspace} models={models} defaultModelId={projectModelId} runDisabled={workItemPermissionMode === undefined} selectedTaskId={selectedTaskId} onSelectedTaskChange={setSelectedTaskId} outputs={outputs} onPreviewOutput={output => setResource({ output })}
@@ -463,7 +507,7 @@ export function ProjectDetailView({
               ) : null}
               streaming={false}
               onSend={async (text, attachments) => Boolean(await runProjectConversation(text, projectModelId!, attachments ?? [], true))}
-              sendDisabled={projectPermissionMode === undefined || !!sharedId && (!workspace.snapshot || workspace.snapshot.role === "viewer")}
+              sendDisabled={projectPermissionMode === undefined || !!sharedId && !canEditTeamProject(workspace.snapshot?.role)}
               onCancel={() => { /* 项目页 composer 不流式,onCancel 为 Composer prop 必传的占位。 */ }}
               placeholder="描述下一项工作"
               apiReady={!!projectModelId && models.length > 0}
@@ -497,7 +541,6 @@ export function ProjectDetailView({
               onOpenOrganization={onOpenOrganization}
               onClientSlashCommand={onClientSlashCommand}
               filePaths={mentionCandidates.filePaths}
-              workspaceSymbols={mentionCandidates.workspaceSymbols}
             />
             {(sendError || (!projectModelId && live.defaultModelId)) && (
               <div className="pd-composer-warning" role="alert">

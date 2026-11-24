@@ -9,11 +9,10 @@
 | Task UI | Conversations, plans, approvals, activity, deliverables | Desktop WebView |
 | Host | Workspaces, configuration, persistence, lifecycle, system access | Local application process |
 | Engine | Context, model calls, tool execution | Dedicated thread in the same process |
-| IDE | Editing, terminal, Git, previews | Host-managed local process |
 | Office and automation | Document generation, browser and computer actions | Local services or worker processes |
 | External dependencies | Models, retrieval, external MCP, business services | Local or remote, as configured |
 
-The host and engine use in-process ACP messaging. Browser and computer capabilities are exposed as task-bound local MCP tools. The host manages the IDE lifecycle; the IDE is not a separate reasoning engine.
+The host and engine use in-process ACP messaging. Browser and computer capabilities are exposed as task-bound local MCP tools.
 
 ## Data movement
 
@@ -25,7 +24,7 @@ Goals and selected files enter context. History, memory, and knowledge retrieval
 
 ## Local capability management
 
-The host starts the IDE for an authorized workspace and tracks edits, changes, and verification. Office services generate files locally and return actual paths and receipts. Automation translates page structures, native controls, or screen observations into operations while checking task identity, permission, and target validity.
+The host manages folder authorization, and the conversation displays file changes and diffs from tools. Office services generate files locally and return actual paths and receipts. Automation translates page structures, native controls, or screen observations into operations while checking task identity, permission, and target validity.
 
 Capabilities have different conditions. Browser Use needs a detected browser and side-effect confirmation. Computer Use needs explicit task authorization and OS permissions. Task scope, model permissions, and OS access jointly affect the result.
 

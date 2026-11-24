@@ -17,9 +17,9 @@ import uuid
 from urllib.parse import quote
 
 SEMVER = re.compile(
-    r"^(?P<major>0|[1-9]\d*)\."
-    r"(?P<minor>0|[1-9]\d*)\."
-    r"(?P<patch>0|[1-9]\d*)"
+    r"^(?P<major>0|[1-9][0-9]*)\."
+    r"(?P<minor>0|[1-9][0-9]*)\."
+    r"(?P<patch>0|[1-9][0-9]*)"
     r"(?:-(?P<pre>[0-9A-Za-z.-]+))?"
     r"(?:\+(?P<build>[0-9A-Za-z.-]+))?$"
 )
@@ -121,11 +121,12 @@ def artifact_name(version: str, target: str) -> str:
     return f"EchoAgent-v{version}-{target}{suffix}"
 
 
-def read_signature(path: Path) -> str:
-    signature = path.read_text(encoding="utf-8").strip()
+def read_signature(path: Path) -> tuple[str, str]:
+    content = path.read_bytes()
+    signature = content.decode("utf-8").strip()
     if len(signature) < 80 or any(char.isspace() for char in signature):
         raise ValueError(f"invalid Tauri updater signature: {path}")
-    return signature
+    return signature, hashlib.sha256(content).hexdigest()
 
 
 def current_manifests(stable: Path) -> dict[str, dict[str, object]]:
@@ -198,8 +199,7 @@ def main() -> int:
             if not artifact.is_file() or not signature_path.is_file():
                 raise ValueError(f"artifact and signature must both be regular files: {artifact}")
         for target, (_, signature_path) in requested.items():
-            signatures[target] = read_signature(signature_path)
-            signature_hashes[target] = sha256_file(signature_path)
+            signatures[target], signature_hashes[target] = read_signature(signature_path)
     except ValueError as error:
         print(error, file=sys.stderr)
         return 2

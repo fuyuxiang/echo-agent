@@ -3,7 +3,7 @@ import {spawn,execFileSync} from 'node:child_process';
 import {createHash,randomBytes} from 'node:crypto';
 import {chmodSync,existsSync,lstatSync,mkdirSync,mkdtempSync,readFileSync,realpathSync,readdirSync,renameSync,writeFileSync,unlinkSync} from 'node:fs';
 import {join,resolve} from 'node:path';
-import {fileURLToPath,pathToFileURL} from 'node:url';
+import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
 import {cleanNativeReviewEnvironment} from './lib/native-review-isolation.mjs';
 import {PRIVATE_REVIEW_MODEL_ID,seedReviewModel,captureReviewModelLogs,redactReviewModelSecrets} from './lib/native-review-model.mjs';
@@ -62,4 +62,4 @@ export async function runNativeLifecycleReview(executable){
  finally{if(!finished){write(join(home,'native-lifecycle-stop.private.json'),{nonce});await delay(8000);for(const h of result.hosts){if(alive(h.watcherPid))try{process.kill(h.watcherPid,'SIGKILL');}catch{}if(alive(h.pid))try{process.kill(h.pid,'SIGKILL');}catch{}}if(child&&alive(child.pid))try{process.kill(child.pid,'SIGKILL');}catch{}}process.removeListener('SIGINT',interrupted);process.removeListener('SIGTERM',interrupted);keepAwake.kill('SIGTERM');result.finishedAt=new Date().toISOString();save();}
  console.log(JSON.stringify({passed:result.passed,nativeVerified:result.nativeVerified,output,home,errors:result.errors}));return result;
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){assert.equal(process.argv.length,3);if(!(await runNativeLifecycleReview(process.argv[2])).passed)process.exitCode=1;}
+if (import.meta.main){assert.equal(process.argv.length,3);if(!(await runNativeLifecycleReview(process.argv[2])).passed)process.exitCode=1;}

@@ -1,7 +1,6 @@
 import { beforeEach, expect, it } from "vitest";
 import { useSessionStore } from "../session-store";
 import { useMessageQueueStore } from "../message-queue-store";
-import { codingQueueId } from "@/lib/queue-owner";
 
 beforeEach(() => {
   localStorage.clear();
@@ -94,8 +93,8 @@ it.each([false, true])("旧轮回显不消费立即发送的等待状态，已�
   expect(currentMessages[currentMessages.length - 1]?.promptId).toBe("replacement");
 });
 
-it("background coding admission uses the original workspace/task/session, preserving the focused conversation", () => {
-  const key = codingQueueId("/repo", "A", "background")!;
+it("background admission uses the original session, preserving the focused conversation", () => {
+  const key = "background";
   prepare("background", "p1", key);
   useSessionStore.getState().setSession("focused");
   useSessionStore.getState().applyUpdate({ __sessionId: "background", sessionUpdate: "user_message_chunk",

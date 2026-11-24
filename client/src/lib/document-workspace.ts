@@ -87,8 +87,11 @@ export class DocumentSession {
       const record=opened.document;
       // A read can return after a save or an exclusive operation started.
       // It must never roll the displayed source/revision back in time.
-      if (!discardLocal && this.state.operation
-        || record && this.state.record && record.revision<this.state.record.revision) return;
+      const current = this.state.record;
+      if ((!discardLocal && this.state.operation) || (record && current && (
+        record.revision < current.revision
+        || (record.revision === current.revision && record.exportedRevision < current.exportedRevision)
+      ))) return;
       if (opened.sourceMissing) {
         // Only the native saved revision is readable/exportable without the
         // original. Keep newer in-memory edits parked until it returns.

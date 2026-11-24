@@ -603,6 +603,7 @@ impl WorkspaceHandle {
             );
             (registry, errors)
         };
+        #[cfg(not(feature = "desktop"))]
         let lsp: Option<Arc<dyn echo_agent_tools::implementations::lsp::LspBackend>> = {
             let sourced =
                 echo_agent_tools::implementations::lsp::config::load_servers_with_plugins_sourced(
@@ -634,6 +635,8 @@ impl WorkspaceHandle {
                 Some(adapter)
             }
         };
+        #[cfg(feature = "desktop")]
+        let lsp = None;
         let session_event_writers: Arc<
             dashmap::DashMap<String, echo_agent_session_events::EventWriter>,
         > = Arc::new(dashmap::DashMap::new());

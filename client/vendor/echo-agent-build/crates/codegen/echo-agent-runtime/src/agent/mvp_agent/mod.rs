@@ -684,6 +684,7 @@ fn announcements_refresh_interval() -> std::time::Duration {
 /// gates fails.  Used in `echo.agent/code/status` responses and to generate
 /// clear error messages on code-nav requests from ineligible clients.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any(test, not(feature = "desktop")))]
 pub(crate) enum CodeNavEligibility {
     /// Client type is not web (web-only for initial rollout).
     ClientNotWeb,
@@ -2040,9 +2041,9 @@ impl MvpAgent {
         let arrived = self.cfg.borrow().remote_settings.is_some();
         arrived || !crate::util::config::resolve_remote_fetch_enabled()
     }
-    /// The two switches `initialize` defers, which share no precondition:
-    /// auto-GC guards itself, the index decides on whatever has arrived.
+    /// Start deferred background work when remote settings settle.
     pub(super) fn run_deferred_remote_work(&self) {
+        #[cfg(not(feature = "desktop"))]
         self.spawn_auto_worktree_gc();
         self.start_search_index_once();
     }
@@ -2078,6 +2079,7 @@ impl MvpAgent {
         self.search_index.clone()
     }
     /// Resolve current auto-GC policy and run it on the blocking pool.
+    #[cfg(not(feature = "desktop"))]
     pub(super) fn spawn_auto_worktree_gc(&self) {
         if !self.remote_settings_settled() {
             static DEFERRED_ONCE: std::sync::Once = std::sync::Once::new();
@@ -2100,6 +2102,7 @@ impl MvpAgent {
     }
     /// The caller resolves the home: read here, $ECHO_AGENT_HOME would be read when the
     /// blocking thread starts, and this deletes worktrees under what it finds.
+    #[cfg(not(feature = "desktop"))]
     pub(super) fn reclaim_worktrees(
         echo_agent_home: anyhow::Result<std::path::PathBuf>,
         policy: echo_agent_fast_worktree::ResolvedWorktreeAutoGc,

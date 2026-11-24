@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
 import { inspectRenderedColors } from "./ui-color-audit.mjs";
-import { inspectEditorPaint } from "./editor-paint-audit.mjs";
 
 const baseline = process.argv.includes("--baseline");
 const auditOnly = baseline || process.argv.includes("--audit-only");
@@ -86,12 +85,8 @@ try {
       for (const text of requiredText) assert([...colors.text, ...colors.manual].some(item => item.text.includes(text)), `${name}: expected visible text was not measured: ${text}`);
       assert.deepEqual(pageErrors, [], `${JSON.stringify(context)}: browser errors`);
       const file = `${name}-${geometry.theme}-${width}-${font}.png`;
-      const editorPaint = await page.locator(".monaco-diff-editor").count()
-        ? await inspectEditorPaint(page, page, join(output, file.replace(".png", "-backdrop.png")), { diffHighlights: true }) : null;
-      if (editorPaint) assert.deepEqual(editorPaint.highlightFailures, [], `${name}: character ranges must remain distinct from changed lines`);
       await page.screenshot({ path: join(output, file), timeout: 60000 });
-      if (editorPaint) colors.failures.push(...editorPaint.failures.map(sample => ({ ...sample, ratio: sample.minimum, source: "editor-raster" })));
-      evidence.push({ context, geometry, ...colors, ...(editorPaint ? { editorPaint } : {}) });
+      evidence.push({ context, geometry, ...colors,  });
       screenshots.push({ ...context, file });
       checkpoint();
     };
@@ -214,6 +209,7 @@ try {
     await page.locator(".groups-page").waitFor();
     await page.getByRole("button", { name: "创建专家团", exact: true }).click();
     await page.getByRole("textbox", { name: "专家团名称", exact: true }).fill("需求交付协作组");
+    await page.getByText("设置协作目标", { exact: true }).click();
     await page.getByRole("textbox", { name: "协作目标", exact: true }).fill("核对审批边界并整理可复核的交付资料");
     await page.getByRole("checkbox", { name: /代码专家/ }).check();
     await page.getByRole("checkbox", { name: /文档助手/ }).check();
@@ -239,35 +235,6 @@ try {
     await page.locator(".tool-side-panel").waitFor();
     await capture("document-workspace");
 
-    if (!baseline) {
-      const waitEditorTheme = async expectedTheme => page.waitForFunction(expected => {
-        if (document.documentElement.dataset.theme !== expected) return false;
-        // Monaco also gives its zero-size gutter the monaco-editor class.
-        const editors = [...document.querySelectorAll(".monaco-diff-editor .monaco-editor")].filter(element =>
-          element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0);
-        if (!editors.length || !editors.every(element => element.classList.contains(expected === "dark" ? "vs-dark" : "vs"))) return false;
-        const tokens = [...document.querySelectorAll(".view-lines span[class*=mtk]")].filter(element =>
-          !element.children.length && element.textContent.trim() && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0);
-        const comment = tokens.find(element => element.textContent.trim().startsWith("//"));
-        if (tokens.length < 8 || !comment) return false;
-        const probe = document.createElement("span");
-        probe.style.cssText = "position:absolute;visibility:hidden;color:var(--echo-code-comment)";
-        document.body.append(probe);
-        const expectedColor = getComputedStyle(probe).color;
-        probe.remove();
-        return getComputedStyle(comment).color === expectedColor;
-      }, expectedTheme);
-      await go(targeted, { surface: "monaco" });
-      await page.locator(".monaco-diff-editor").waitFor({ timeout: 90000 });
-      await waitEditorTheme(theme);
-      await capture("monaco-diff");
-      await page.evaluate(() => window.enterpriseThemeReview.setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
-      await page.waitForFunction(previous => document.documentElement.dataset.theme !== previous, theme);
-      // The root preference changes before Monaco retokenizes its live model.
-      // Observe the actual editor paint before taking syntax/raster samples.
-      await waitEditorTheme(theme === "dark" ? "light" : "dark");
-      await capture("monaco-live-switch");
-    }
     errors.push(...pageErrors);
     await page.close();
     console.log(`${baseline ? "Before" : "After"}: ${width}×${height}, ${font}px, ${theme}; ${evidence.length} states saved`);

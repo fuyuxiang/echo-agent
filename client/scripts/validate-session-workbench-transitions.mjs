@@ -52,15 +52,18 @@ export async function validateWorkbenchTransitions(page, base, output) {
   const address = page.getByRole("textbox", { name: "预览网址", exact: true });
   await address.waitFor();
   assert.ok((await address.boundingBox()).width >= 100, "browser address must have usable width in the default panel");
-  await page.route("https://example.com/workbench-review", route => route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Preview fixture</title><p>Isolated preview</p>" }));
-  await address.fill("https://example.com/workbench-review");
-  await page.getByRole("button", { name: "预览", exact: true }).click();
-  await page.locator(".browser-preview__frame").waitFor();
-  assert.equal(await page.locator(".browser-preview__frame").getAttribute("src"), "https://example.com/workbench-review");
+  const previewUrl = "https://example.com/workbench-review";
+  await address.fill(previewUrl);
+  await page.getByRole("button", { name: "打开网址", exact: true }).click();
+  await page.getByRole("button", { name: "网页验收样例", exact: true }).waitFor();
+  assert.equal(await page.locator(".browser-preview__surface img, .browser-preview__surface iframe").count(), 0);
+  assert.equal(await address.inputValue(), previewUrl);
+  assert.equal(await page.getByRole("button", { name: "网页验收样例", exact: true }).getAttribute("aria-pressed"), "true");
   await openView("文件");
   await page.locator(".task-details__list").waitFor();
   await openView("网页预览");
-  assert.equal(await page.locator(".browser-preview__frame").getAttribute("src"), "https://example.com/workbench-review", "view changes preserve the browser tab");
+  assert.equal(await address.inputValue(), previewUrl, "view changes preserve the browser tab");
+  assert.equal(await page.evaluate(() => window.workbenchCalls.filter(c => c.command === "browser_panel" && c.args?.action?.kind === "open").length), 1);
   await page.screenshot({ path: join(output, "empty-session-workspace.png") });
   console.log("Empty sessions retain directory and web browsing.");
 
@@ -101,7 +104,7 @@ export async function validateWorkbenchTransitions(page, base, output) {
   await page.getByRole("button",{name:"关闭标签 report.md",exact:true}).waitFor();
   await openView("网页预览");
   await address.fill("https://example.com/workbench-review");
-  await page.getByRole("button",{name:"预览",exact:true}).click();
+  await page.getByRole("button",{name:"打开网址",exact:true}).click();
   await reportTab.click();
   await page.getByRole("tab", { name: "成果", exact: true }).waitFor();
   await page.getByRole("button", { name: "查看关联工具", exact: true }).waitFor();
@@ -125,8 +128,6 @@ export async function validateWorkbenchTransitions(page, base, output) {
 
   for (const width of [900, 1536]) for (const theme of ["light", "dark"]) {
     const url = new URL(base);
-    url.searchParams.set("surface", "coding");
-    url.searchParams.set("codingShell", "1");
     url.searchParams.set("theme", theme);
     await page.setViewportSize({ width, height: 900 });
     await page.goto(url.href);
@@ -139,7 +140,7 @@ export async function validateWorkbenchTransitions(page, base, output) {
     assert.ok(await toggle.evaluate(e => e === document.activeElement));
     assert.equal(await toggle.getAttribute("aria-expanded"), "true");
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
-    await page.screenshot({ path: join(output, `coding-sidebar-${width}-${theme}.png`) });
+    await page.screenshot({ path: join(output, `session-sidebar-${width}-${theme}.png`) });
   }
-  console.log("Workbench transitions passed: live history invalidation, rewind boundary, empty-session resources, fresh reading snapshots, 8 unified tool-mode layouts and 4 coding sidebar layouts.");
+  console.log("Workbench transitions passed: live history invalidation, rewind boundary, empty-session resources, fresh reading snapshots, 8 unified tool-mode layouts and 4 session sidebar layouts.");
 }

@@ -420,6 +420,21 @@ export interface SessionSummary {
   continuation?: SessionContinuation;
 }
 
+export interface SessionHistoryPage {
+  sessions: SessionSummary[];
+  nextCursor: string | null;
+  nextArchiveCursor: string | null;
+  incomplete: boolean;
+}
+
+export interface SessionHistoryControls {
+  hasMore: boolean;
+  incomplete: boolean;
+  loading: boolean;
+  loadMore: () => void;
+  refresh: () => void;
+}
+
 export interface SessionContinuation {
   parentSessionId: string;
   parentTitle: string;
@@ -715,11 +730,13 @@ export interface AgentEntry {
 
 // ---------- permission rules (~/.echo-agent/config.toml [permission]) ----------
 
-/** One permission rule. `action` ∈ allow|deny|ask; `tool` ∈ bash|read|edit|grep|mcp|any. */
+/** User permission rule passed to the Runtime. */
 export interface PermissionRule {
   action: string;
   tool: string;
   pattern?: string;
+  patternMode?: "glob" | "domain";
+  unparsed?: { source: string; repairable: boolean };
 }
 
 // ---------- memory (资料库 — ~/.echo-agent/memory/) ----------
@@ -862,8 +879,7 @@ export interface TurnErrorEvent {
   sessionId: string;
   /** Exact failing turn, shared with the terminal completion event. */
   promptId?: string;
-  /** "rate_limit" | "error" (mirrors EchoAgent's `stop_reason_for_turn_error`). */
-  kind: "rate_limit" | "error";
+  kind: "rate_limit" | "rate_limited" | "error" | "refusal" | "content_filter" | "max_tokens" | "max_turns" | "cancelled";
   /** Server-provided detail (absent for rate_limit — EchoAgent omits it so the
    *  client shows its own message). */
   detail?: string;
@@ -965,8 +981,8 @@ export interface Automation {
   id: string;
   name: string;
   prompt: string;
-  /** Comma-separated workspace directories (first entry is the run cwd). */
-  cwds: string;
+  /** Workspace directories. The first entry is the execution directory. */
+  cwds: string[];
   status: AutomationStatus;
   modelId?: string;
   modelIsThinking?: boolean;

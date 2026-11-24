@@ -20,6 +20,7 @@ import type {
 } from "@/lib/types";
 import type { AgentEntry, SkillInfo } from "@/lib/types";
 import { ModelSelector } from "@/components/ModelSelector";
+import { AdditionalAutomationDirectories } from "./AdditionalAutomationDirectories";
 import { localTimeZoneLabel, workspaceName, taskNeedsModelSelection, REMOVED_TASK_MODEL_MESSAGE } from "./task-presentation";
 import {
   loadDesktopNotifyStatus,
@@ -349,7 +350,7 @@ function WorkspaceInput({
     setPickError("");
     setIsPicking(true);
     try {
-      const selected = await filesystemPickDirectory(value.trim() || undefined);
+      const selected = await filesystemPickDirectory(value || undefined);
       if (selected) {
         onChange(selected);
         onCommit?.(selected);
@@ -511,6 +512,9 @@ export function AutomationEditPage({
   const needsModel = taskNeedsModelSelection(draft);
   const modelRecovery = modelSelectionRequired || needsModel;
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  useEffect(() => {
+    if (validationError?.includes("附加目录")) setAdvancedOpen(true);
+  }, [validationError]);
   const [notificationRevision, setNotificationRevision] = useState(0);
   useEffect(() => {
     const update = () => setNotificationRevision((value) => value + 1);
@@ -655,7 +659,7 @@ export function AutomationEditPage({
   const yearlySelectedDay = draft.schedule.bymonthday[0] || 0;
   const yearlyMaxDay = getYearlyMaxDay(yearlySelectedMonth || 1);
 
-  const selectedCwd = draft.cwds;
+  const selectedCwd = draft.cwds[0] ?? "";
 
   return (
     <div className="atm-detail-page">
@@ -886,7 +890,7 @@ export function AutomationEditPage({
             <p>休眠、断网或完全退出会影响执行。周期任务恢复后最多合并补跑一次；一次性任务错过后可在任务详情中手动运行。</p>
           </details>
           <div className="atm-execution-summary">
-            <span title={draft.cwds}>
+            <span title={selectedCwd}>
               工作目录：{workspaceName(draft.cwds)}
             </span>
             <span>
@@ -950,8 +954,17 @@ export function AutomationEditPage({
                 value={selectedCwd}
                 onCommit={onWorkspaceCommit}
                 disabled={saving}
-                onChange={(cwd) => set({ cwds: cwd })}
+                onChange={(cwd) => set({ cwds: cwd || draft.cwds.length > 1 ? [cwd, ...draft.cwds.slice(1)] : [] })}
               />
+              <AdditionalAutomationDirectories paths={draft.cwds.slice(1)} disabled={saving}
+                onRemove={(index) => {
+                  const remaining = draft.cwds.filter((_, i) => i !== index + 1);
+                  set({ cwds: remaining.length === 1 && !remaining[0] ? [] : remaining });
+                }}
+              />
+              {!selectedCwd && draft.cwds.length > 1 && (
+                <p className="atm-workspace-input__hint">请选择主工作目录，或移除附加目录后使用默认目录。</p>
+              )}
 
               <div className="atm-prompt-toolbar">
                 {!modelRecovery && <ModelChip

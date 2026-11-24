@@ -1,5 +1,4 @@
-// Host tests do not run dependency library tests. Include Runtime and the
-// task-completion reminder contract owned by echo-agent-tools.
+// Include tests owned by the embedded Runtime, Tools and Sampler crates.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { lstatSync, mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
@@ -8,7 +7,7 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cleanNativeReviewEnvironment, withNativeReviewLoopbackBypass } from './lib/native-review-isolation.mjs';
 import { ownedTestExecutables } from './prepare-macos-test-signatures.mjs';
-import { runNativeTestProcess } from './lib/native-test-process.mjs';
+import { reportNativeTestFailure, runNativeTestProcess } from './lib/native-test-process.mjs';
 
 assert.equal(process.argv.length, 2, 'This entry runs the complete Runtime library suite');
 const root = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
@@ -31,9 +30,10 @@ if (process.platform === 'win32') {
   env.LOCALAPPDATA = join(home, 'AppData/Local');
 }
 console.log(`Isolated Runtime library test data: ${home}`);
-function buildLibraryHarness(packageName, directory) {
+function buildHarness(packageName, directory, integrationTest) {
+  const targetArgs = integrationTest ? ['--test', integrationTest] : ['--lib'];
   const build = spawnSync('cargo', ['test', '--locked', '--manifest-path', join(root, 'vendor/echo-agent-build/Cargo.toml'),
-    '-p', packageName, '--lib', '-j', '2', '--no-run', '--message-format=json'],
+    '-p', packageName, ...targetArgs, '-j', '2', '--no-run', '--message-format=json'],
   { cwd: root, env, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'inherit'] });
   const messages = (build.stdout ?? '').split('\n').filter(Boolean).map(line => {
     try { return JSON.parse(line); } catch { return {}; }
@@ -41,11 +41,18 @@ function buildLibraryHarness(packageName, directory) {
   for (const message of messages) {
     if (message.reason === 'compiler-message' && message.message?.rendered) process.stderr.write(message.message.rendered);
   }
-  assert.equal(build.status, 0, build.error?.message || `${packageName} library test compilation failed`);
+  const failureTitle = `${packageName} test compilation failed`;
+  if (build.status !== 0) {
+    const errors = messages.filter(message => message.reason === 'compiler-message' && message.message?.level === 'error');
+    const details = errors.map(({ message }) => message.rendered ?? message.message).join('\n');
+    reportNativeTestFailure(build.status ?? 1, ['', details || build.error?.message || failureTitle], env, failureTitle);
+  }
+  assert.equal(build.status, 0, build.error?.message || failureTitle);
   const programs = ownedTestExecutables(messages, directory, realpathSync(target));
-  assert.equal(programs.length, 1, `Expected exactly the ${packageName} library harness`);
+  assert.equal(programs.length, 1, `Expected exactly one ${packageName} test harness`);
   const program = programs[0];
-  assert.match(basename(program), new RegExp(`^${packageName.replaceAll('-', '_')}-[a-f0-9]{16}(?:\\.exe)?$`));
+  const binaryName = integrationTest ?? packageName.replaceAll('-', '_');
+  assert.match(basename(program), new RegExp(`^${binaryName}-[a-f0-9]{16}(?:\\.exe)?$`));
   const stat = lstatSync(program);
   assert(stat.isFile() && !stat.isSymbolicLink());
   if (process.getuid) assert.equal(stat.uid, process.getuid());
@@ -58,7 +65,7 @@ function buildLibraryHarness(packageName, directory) {
   }
   return program;
 }
-const program = buildLibraryHarness('echo-agent-runtime', workspace);
+const program = buildHarness('echo-agent-runtime', workspace);
 const options = { cwd: workspace, env };
 const discoveryOptions = { ...options, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 };
 const listed = spawnSync(program, ['--list'], discoveryOptions);
@@ -82,12 +89,14 @@ function groupEnvironment(label) {
     ...(process.platform === 'win32' ? { APPDATA: join(groupHome, 'AppData/Roaming'), LOCALAPPDATA: join(groupHome, 'AppData/Local') } : {}) };
 }
 const groups = [
-  { name: 'Runtime library/default test stack', args: ['--skip', actorFilter], env: groupEnvironment('library') },
+  // Some Runtime tests temporarily mutate process-wide config inputs. A
+  // separate libtest worker could read those values before they are restored.
+  { name: 'Runtime library/default test stack', args: ['--skip', actorFilter], threads: 1, env: groupEnvironment('library') },
   // spawn_session_on_thread in acp_session_impl/spawn.rs uses 8 MiB for
   // SessionActor and its sampler. Keep all other tests on their default stack.
   // This child-process setting also affects unspecified worker-thread stacks;
   // native host tests separately retain the ordinary worker environment.
-  { name: 'SessionActor/production session stack', args: [actorFilter], env: { ...groupEnvironment('actor'), RUST_MIN_STACK: String(8 * 1024 * 1024) } },
+  { name: 'SessionActor/production session stack', args: [actorFilter], threads: 2, env: { ...groupEnvironment('actor'), RUST_MIN_STACK: String(8 * 1024 * 1024) } },
 ];
 const covered = new Set();
 for (const group of groups) {
@@ -105,11 +114,23 @@ assert.equal(covered.size, allTests.size, 'Every discovered Runtime test must be
 let status = 0;
 for (const group of groups) {
   console.log(`Running ${group.name}`);
-  const result = await runNativeTestProcess(program, [...group.args, '--test-threads=2'], { ...options, env: group.env });
+  const result = await runNativeTestProcess(program, [...group.args, `--test-threads=${group.threads}`], { ...options, env: group.env });
   if (result !== 0) status = result;
 }
+const coreWorkspace = realpathSync(join(root, 'vendor/echo-agent-build/crates/codegen/echo-agent-core'));
+const coreProgram = buildHarness('echo-agent-core', coreWorkspace);
+const templateFilter = 'prompt::template::tests::';
+const coreOptions = { cwd: coreWorkspace, env: groupEnvironment('prompt-templates') };
+const templates = spawnSync(coreProgram, [templateFilter, '--list'], { ...coreOptions, encoding: 'utf8' });
+assert.equal(templates.status, 0, templates.error?.message || templates.stderr);
+for (const name of ['test_encrypted_templates_not_stale', 'test_base_template_renders',
+    'test_apply_patch_template_renders', 'test_subagent_template_deterministic_across_renders']) {
+  assert(templates.stdout.includes(`${templateFilter}${name}: test`), `Missing real prompt template test: ${name}`);
+}
+const coreStatus = await runNativeTestProcess(coreProgram, [templateFilter, '--test-threads=2'], coreOptions);
+if (coreStatus !== 0) status = coreStatus;
 const toolsWorkspace = realpathSync(join(root, 'vendor/echo-agent-build/crates/codegen/echo-agent-tools'));
-const toolsProgram = buildLibraryHarness('echo-agent-tools', toolsWorkspace);
+const toolsProgram = buildHarness('echo-agent-tools', toolsWorkspace);
 const reminderFilter = 'reminders::task_completion::tests::';
 const toolsEnv = groupEnvironment('tool-reminders');
 const toolsOptions = { cwd: toolsWorkspace, env: toolsEnv };
@@ -126,4 +147,11 @@ for (const name of ['format_bash_completion_pointer_form_is_small', 'format_betw
 console.log(`Running tool reminder contracts: ${testNames(reminderTests.stdout).length} discovered`);
 const toolsStatus = await runNativeTestProcess(toolsProgram, [reminderFilter, '--test-threads=2'], toolsOptions);
 if (toolsStatus !== 0) status = toolsStatus;
+const samplerWorkspace = realpathSync(join(root, 'vendor/echo-agent-build/crates/codegen/echo-agent-sampler'));
+const samplerProgram = buildHarness('echo-agent-sampler', samplerWorkspace, 'chat_stream_termination');
+console.log('Running Chat Completions, Messages and Responses stream contracts');
+const samplerStatus = await runNativeTestProcess(samplerProgram, ['--test-threads=1'], {
+  cwd: samplerWorkspace, env: groupEnvironment('sampler-stream'),
+});
+if (samplerStatus !== 0) status = samplerStatus;
 process.exitCode = status;

@@ -21,11 +21,16 @@ export function parseMemoryImport(text: string): PersonalMemoryInput[] {
     if ("status" in item && item.status !== "active") return [];
     const content = item.content.trim();
     if (content.length > 4000) throw new Error("单条记忆最多 4000 字，请拆分后导入");
-    if (seen.has(content)) return [];
-    seen.add(content);
+    const scope = "scope" in item && item.scope === "workspace" ? "workspace" : "global";
     const kind = "kind" in item && ["user", "feedback", "project", "reference", "task"].includes(String(item.kind)) ? item.kind as PersonalMemoryInput["kind"] : "user";
-    return [{ scope: "scope" in item && item.scope === "workspace" ? "workspace" : "global", kind,
-      key: "key" in item && typeof item.key === "string" ? [...item.key.trim()].slice(0, 160).join("") || memoryTitleFromContent(content) : memoryTitleFromContent(content), content,
-      pinned: true, validUntil: "validUntil" in item && typeof item.validUntil === "number" && Number.isFinite(item.validUntil) ? item.validUntil : null }];
+    const key = "key" in item && typeof item.key === "string" ? [...item.key.trim()].slice(0, 160).join("") || memoryTitleFromContent(content) : memoryTitleFromContent(content);
+    const pinned = "pinned" in item && typeof item.pinned === "boolean" ? item.pinned : true;
+    const validUntil = "validUntil" in item && typeof item.validUntil === "number" && Number.isFinite(item.validUntil) ? item.validUntil : null;
+    const keyIsCustom = "keyIsCustom" in item && typeof item.keyIsCustom === "boolean" ? item.keyIsCustom : undefined;
+    const entry = { scope, kind, key, content, pinned, validUntil, ...(keyIsCustom !== undefined && { keyIsCustom }) } satisfies PersonalMemoryInput;
+    const identity = JSON.stringify(entry);
+    if (seen.has(identity)) return [];
+    seen.add(identity);
+    return [entry];
   });
 }

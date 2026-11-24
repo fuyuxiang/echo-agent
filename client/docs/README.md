@@ -7,7 +7,6 @@
 | 主题 | 文档 |
 | --- | --- |
 | 任务、搜索、资料来源与失败恢复 | [产品体验约定](product-experience.md) |
-| 代码编辑、Git、终端与工作区 | [Echo Code 与 Theia](echo-code-theia.md) |
 | 浏览器和电脑操作的平台与权限 | [自动化平台说明](automation-platform-support.md) |
 | 原生桌面工具、引用及读取限制 | [桌面控件](desktop-control/README.md) |
 | 电脑任务的交互与暂停续做 | [桌面任务体验](desktop-control/task-experience-design.md) |
@@ -35,7 +34,7 @@
 | 测试层级、回归入口及证据要求 | [开发与验收](testing.md) |
 | 原生桌面任务的准备和独立核验 | [桌面控制验收](desktop-control/validation.md) |
 | 桌面调用统计与性能比较 | [性能验证](desktop-control/performance.md) |
-| Windows 文件切换、输入与通知 | [Windows 桌面验收](windows-desktop-feedback-acceptance.md) |
+| Windows 安装、升级与启动 | [桌面发行验收](desktop-release.md#构建与验收) |
 | 依赖图、补丁来源和安全审计 | [依赖维护](dependency-security.md) |
 | 三平台构建、签名、更新与回滚 | [桌面发行](desktop-release.md)（[English](desktop-release.en.md)） |
 

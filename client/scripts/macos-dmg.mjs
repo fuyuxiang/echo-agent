@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, linkSync, lstatSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -69,13 +69,63 @@ export function detachImage(image, target, {
   return 1;
 }
 
+function stagingImagePath(path, sourceDir, dmgName) {
+  if (!path || !sourceDir || !dmgName) return;
+  const name = basename(path);
+  const prefix = name.match(/^rw\.\d+\.(.+)$/);
+  const source = canonical(sourceDir);
+  if (prefix?.[1] === dmgName && canonical(dirname(path)) === source) return join(source, name);
+}
+
+function captureCreate(args, log) {
+  // File-backed output lets hdiutil's helper processes finish independently of
+  // Node's pipes while retaining the error text used to classify retries.
+  const fd = openSync(log, 'w');
+  try {
+    const result = command(args, { stdio: ['inherit', fd, fd] });
+    return { ...result, output: readFileSync(log, 'utf8') };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function createStagingImage(args, image, {
+  run = captureCreate, sleep = pause,
+  report = text => process.stderr.write(`${text}\n`),
+} = {}) {
+  if (lstatSync(image, { throwIfNoEntry: false })) throw new Error(`Disk image already exists: ${image}`);
+  const temporary = mkdtempSync(join(dirname(image), '.echo-dmg-create-'));
+  const scratch = join(temporary, 'image.dmg');
+  const retryDelays = [2_000, 4_000, 8_000, 16_000];
+  try {
+    for (let attempt = 0; ; attempt++) {
+      const result = run([...args.slice(0, -1), scratch], join(temporary, 'hdiutil.log'));
+      if (result.output) report(result.output.trimEnd());
+      if (result.error) report(result.error.message);
+      if (result.status === 0) {
+        if (!lstatSync(scratch, { throwIfNoEntry: false })?.isFile()) {
+          throw new Error('hdiutil did not create a regular disk image');
+        }
+        // Publish on the same filesystem without replacing a concurrent file.
+        linkSync(scratch, image);
+        return 0;
+      }
+      const delay = retryDelays[attempt];
+      const busy = result.status === 16 || /^hdiutil: create failed - Resource busy\b/im.test(result.output || '');
+      if (!delay || !busy) return statusOf(result);
+      rmSync(scratch, { force: true });
+      report(`Retrying disk image creation after Resource busy (${attempt + 1}/${retryDelays.length})`);
+      sleep(delay);
+    }
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
 export function rememberAttachment(args, output, state, sourceDir, dmgName) {
   // Only create-dmg's newly created writable staging image is eligible.
-  const path = args.at(-1);
-  if (!path || !existsSync(path) || !lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()) return;
-  const image = realpathSync(path);
-  const prefix = basename(image).match(/^rw\.(\d+)\.(.+)$/);
-  if (!prefix || prefix[2] !== dmgName || dirname(image) !== realpathSync(sourceDir)) return;
+  const image = stagingImagePath(args.at(-1), sourceDir, dmgName);
+  if (!image || !lstatSync(image, { throwIfNoEntry: false })?.isFile()) return;
   for (const match of output.matchAll(/^(\/dev\/disk\d+(?:s\d+)*)\s/gm)) state[match[1]] = image;
 }
 
@@ -83,6 +133,10 @@ function forwardHdiutil(args) {
   const statePath = process.env.ECHO_DMG_STATE;
   if (!statePath) throw new Error('Missing isolated DMG build state');
   const state = JSON.parse(readFileSync(statePath, 'utf8'));
+  if (args[0] === 'create') {
+    const image = stagingImagePath(args.at(-1), process.env.ECHO_DMG_SOURCE, process.env.ECHO_DMG_NAME);
+    if (image) return createStagingImage(args, image);
+  }
   if (args[0] === 'detach') {
     const target = args[1];
     if (args.length !== 2 || !Object.hasOwn(state.devices, target)) {

@@ -47,9 +47,17 @@ vi.mock("../ChatView", () => ({ ChatView: (props: ComponentProps<typeof import("
 vi.mock("@/lib/agent-client", async (original) => ({
   ...await original<object>(), agentInit: vi.fn(), agentAuthStatus: vi.fn(), providersList: vi.fn(),
   agentListAllSessions: vi.fn(), agentListWorkspaces: vi.fn(async () => []),
+  agentListSessionHistory: vi.fn(async () => ({
+    sessions: await (await import("@/lib/agent-client")).agentListAllSessions(true),
+    nextCursor: null,
+    nextArchiveCursor: null,
+    incomplete: false,
+  })),
+  agentFindSessionSummary: vi.fn(async (sessionId: string) =>
+    (await (await import("@/lib/agent-client")).agentListAllSessions(true)).find(entry => entry.sessionId === sessionId) ?? null),
   agentsValidateReferences: vi.fn(async () => {}),
   agentPrepareSend: vi.fn(async () => {}),
-  agentLoadSession: vi.fn(async () => "model-a"), agentSend: vi.fn(async () => {}), projectsSave: vi.fn(async () => {}),
+  agentRecoverSession: vi.fn(async () => ({ modelId: "model-a" })), agentSend: vi.fn(async () => {}), projectsSave: vi.fn(async () => {}),
   agentRenameSession: vi.fn(async () => {}),
   agentDeleteSession: vi.fn(async () => ({ memorySummariesDeleted: 1, memoryCleanupWarning: null })),
   memoryFlush: vi.fn(async () => true), memoryDream: vi.fn(async () => true),
@@ -98,7 +106,7 @@ beforeEach(() => {
   vi.mocked(client.agentAuthStatus).mockResolvedValue(auth);
   vi.mocked(client.providersList).mockResolvedValue({ providers: [], models: [{ modelId: "model-a", name: "模型 A", providerId: "p" }] } as never);
   vi.mocked(client.agentListAllSessions).mockResolvedValue(catalog);
-  vi.mocked(client.agentLoadSession).mockReset().mockResolvedValue("model-a");
+  vi.mocked(client.agentRecoverSession).mockReset().mockResolvedValue({ modelId: "model-a" });
   vi.mocked(client.projectsSave).mockReset().mockResolvedValue(undefined);
   vi.mocked(client.agentSend).mockReset().mockResolvedValue(undefined);
   vi.mocked(client.agentPrepareSend).mockReset().mockResolvedValue(undefined);
@@ -271,11 +279,11 @@ describe("project fork continuation", () => {
     let finish!: (model: string) => void;
     const replay = new Promise<string>(resolve => { finish = resolve; });
     // The native client coalesces concurrent loads of the same session.
-    vi.mocked(client.agentLoadSession).mockImplementation(() => replay);
+    vi.mocked(client.agentRecoverSession).mockImplementation(async () => ({ modelId: await replay }));
     completeFork();
-    await waitFor(() => expect(client.agentLoadSession).toHaveBeenCalledWith("fork", "/workspace"));
+    await waitFor(() => expect(client.agentRecoverSession).toHaveBeenCalledWith("fork", "/workspace"));
     fireEvent.click(screen.getByRole("button", { name: "再次打开接续会话" }));
-    await waitFor(() => expect(vi.mocked(client.agentLoadSession).mock.calls.filter(([id]) => id === "fork")).toHaveLength(2));
+    await waitFor(() => expect(vi.mocked(client.agentRecoverSession).mock.calls.filter(([id]) => id === "fork")).toHaveLength(2));
     await act(async () => {
       useSessionStore.getState().setMessages([{ id: "inherited-user", role: "user", complete: true, parts: [{ kind: "text", text: "完整继承历史" }] }]);
       finish("model-a");
@@ -299,7 +307,7 @@ describe("project fork continuation", () => {
   });
   it("已创建但首次加载失败时保留会话，清理半截回放后重新打开", async () => {
     await start();
-    vi.mocked(client.agentLoadSession).mockImplementationOnce(async () => {
+    vi.mocked(client.agentRecoverSession).mockImplementationOnce(async () => {
       useSessionStore.getState().setMessages([{id:"partial",role:"user",complete:true,parts:[{kind:"text",text:"半截回放"}]}]);
       throw new Error("暂时断开");
     });
@@ -308,7 +316,7 @@ describe("project fork continuation", () => {
     expect(useSessionsStore.getState().independent.filter(row=>row.sessionId === "fork")).toHaveLength(1);
     expect(useSessionStore.getState().transcripts.fork?.messages ?? []).toHaveLength(0);
     fireEvent.click(reopen);
-    await waitFor(()=>expect(vi.mocked(client.agentLoadSession).mock.calls.filter(([id])=>id === "fork")).toHaveLength(2));
+    await waitFor(()=>expect(vi.mocked(client.agentRecoverSession).mock.calls.filter(([id])=>id === "fork")).toHaveLength(2));
     expect(useSessionStore.getState().transcripts.fork?.suppressReplay).toBe(false);
   });
   it("回复预检失败后刷新目录状态，并保留已有历史", async () => {
@@ -350,7 +358,7 @@ describe("project fork continuation", () => {
     expect(useSessionsStore.getState().independent.some((item) => item.sessionId === "fork")).toBe(true);
     expect(useProjectsStore.getState().projects[0].conversations.map((item) => item.sessionId)).toEqual(["source"]);
     expect(await screen.findByText(/接续对话已创建.*独立会话.*移入项目/)).toBeInTheDocument();
-    expect(client.agentLoadSession).toHaveBeenCalledWith("fork", "/workspace");
+    expect(client.agentRecoverSession).toHaveBeenCalledWith("fork", "/workspace");
   });
 
   it("awaits real project-save ACK and a slow association cannot steal another selected session", async () => {
@@ -362,7 +370,7 @@ describe("project fork continuation", () => {
     await waitFor(() => expect(useSessionsStore.getState().currentSessionId).toBe("other"));
     await act(async () => { release(); });
     expect(useSessionsStore.getState().currentSessionId).toBe("other");
-    expect(vi.mocked(client.agentLoadSession).mock.calls.some(([id]) => id === "fork")).toBe(false);
+    expect(vi.mocked(client.agentRecoverSession).mock.calls.some(([id]) => id === "fork")).toBe(false);
     expect(useProjectsStore.getState().projects[0].conversations.some((item) => item.sessionId === "fork")).toBe(true);
   });
 });

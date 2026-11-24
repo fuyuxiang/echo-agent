@@ -43,22 +43,25 @@ it("超时请求的迟到保存和错误不影响下一次退出请求", async (
   const failed = vi.fn();
   const exit = createExitPreparationController({ preparing, failed });
   exit.prepare({ requestId: "old" });
+  await vi.waitFor(() => expect(meetingRecorder.stop).toHaveBeenCalledTimes(1));
   exit.fail({ requestId: "old", message: "timeout" });
   exit.prepare({ requestId: "new" });
+  await vi.waitFor(() => expect(meetingRecorder.stop).toHaveBeenCalledTimes(2));
   resolveFirst({} as never);
   await Promise.resolve();
   await Promise.resolve();
   expect(invoke).not.toHaveBeenCalled();
   exit.fail({ requestId: "old", message: "late failure" });
-  expect(preparing).toHaveBeenLastCalledWith(true);
+  expect(preparing).toHaveBeenLastCalledWith("recording");
   exit.prepare({ requestId: "old" }, true);
   resolveSecond({} as never);
   await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_exit_prepared", { requestId: "new", error: null }));
+  expect(preparing).toHaveBeenLastCalledWith("tasks");
 });
 it("已保存阶段的重挂载快照不重复停止录音", () => {
   const preparing = vi.fn();
   const exit = createExitPreparationController({ preparing, failed: vi.fn() });
   exit.prepare({ requestId: "prepared", recordingSaved: true }, true);
-  expect(preparing).toHaveBeenCalledWith(true);
+  expect(preparing).toHaveBeenCalledWith("tasks");
   expect(meetingRecorder.stop).not.toHaveBeenCalled();
 });

@@ -8,12 +8,13 @@ import { useEffect, useState, type RefObject } from "react";
 export function useElementSize(
   ref: RefObject<HTMLElement | null>,
   dimension: "height" | "width" = "height",
+  enabled = true,
 ): number | null {
   const [size, setSize] = useState<number | null>(null);
 
   useEffect(() => {
     const node = ref.current;
-    if (!node || typeof ResizeObserver === "undefined") return;
+    if (!enabled || !node || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const next = dimension === "height" ? entry.contentRect.height : entry.contentRect.width;
@@ -22,7 +23,7 @@ export function useElementSize(
     });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [ref, dimension]);
+  }, [ref, dimension, enabled]);
 
   return size;
 }

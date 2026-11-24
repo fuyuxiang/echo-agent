@@ -48,13 +48,16 @@ let tasks: Automation[] = [
 if (params.get("retired") === "1") {
   tasks[0] = {...tasks[0], modelId: "echoagent-ojlab/Echo Reed", status: "PAUSED", nextRunAt: undefined};
 }
+if (params.get("legacy-directories") === "1") {
+  tasks[0].cwds = ["/review/Reports,2026", "/review/旧目录/已移除的定时任务附加目录"];
+}
 if (params.get("many") === "1") {
   tasks.push(...tasks.map((task, index) => ({
     ...task,
     id: `${task.id}-extra`,
     name: index === 0 ? "跟进每周产品需求评审并整理待办事项、负责人和截止时间" : `${task.name} · 第二组`,
     prompt: `${task.prompt} 汇总各项工作的进度、风险与负责人，给出下一步可执行的建议，并在报告中保留相关文档的引用来源。`,
-    cwds: index === 0 ? "/review/一段很长的中文工作目录名称-验证卡片在窄窗口下仍然完整可用" : task.cwds,
+    cwds: index === 0 ? ["/review/一段很长的中文工作目录名称-验证卡片在窄窗口下仍然完整可用"] : task.cwds,
   })));
 }
 let records: AutomationRunRecord[] = [

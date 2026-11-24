@@ -23,7 +23,7 @@ Keys are stored in local configuration. Remove credentials and personal or busin
 
 ## Back up and restore
 
-Use **Settings → Data management**. Backups include registered sessions, memory, groups, projects, meetings, coding state, and selected UI state. **Back up business files in working directories separately.** Preserve model credentials and external-account settings separately as well.
+Use the backup and recovery options in Settings. Backups include registered sessions, memory, groups, projects, meetings, legacy workspace archives, and selected UI state. **Back up business files in working directories separately.** Preserve model credentials and external-account settings separately as well.
 
 Inspect the restore preview before applying it. Restoration runs before services start and includes interruption recovery. Restoring history does not replay interrupted external operations. Periodically verify backup readability.
 
@@ -33,7 +33,7 @@ Inspect the restore preview before applying it. Restoration runs before services
 | --- | --- | --- |
 | No model response | Connection test, network, key, model ID | Retry a simple message on a verified connection |
 | Text works but tools fail | Tool support, parameters, permissions | Inspect the specific tool error |
-| IDE will not open | Workspace authorization, backend, project dependencies | Preserve unsaved work before reconnecting |
+| Workspace file will not open | Folder authorization and whether the file is still present | Check the folder and file path in the conversation |
 | Browser unavailable | Installed Chromium-family browser | Inspect capability detection |
 | Computer task will not start | OS permissions, interactive desktop | Check permissions for the actual running application |
 | Document missing | Output path and tool receipt | Inspect the file before retrying |
@@ -43,6 +43,6 @@ Inspect the restore preview before applying it. Restoration runs before services
 
 ## Logs and updates
 
-For IDE failures, inspect `theia.log`. Defaults use the OS application-data directory; a custom `ECHO_AGENT_HOME` stores IDE configuration and logs under `theia/`.
+For local diagnostics, check `EchoAgent/logs/echoagent.log*` in the OS local application-data directory. With `ECHO_AGENT_HOME` set, logs are under its `logs/` directory.
 
 Check updates under **Settings → Help and updates**. Save edits, finish or stop tasks, and back up important data first. Desktop and Python Runtime have independent releases.

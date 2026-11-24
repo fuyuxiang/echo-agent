@@ -718,6 +718,7 @@ impl SessionRegistry {
         }
         events
     }
+    #[cfg(not(feature = "desktop"))]
     pub(super) fn set_codebase_index(
         &self,
         id: &acp::SessionId,

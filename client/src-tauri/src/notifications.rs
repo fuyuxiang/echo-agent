@@ -1291,9 +1291,17 @@ pub async fn dispatch_external(
             }];
         }
     };
+    dispatch_channels(app, channels, &message).await
+}
+
+async fn dispatch_channels(
+    app: &AppHandle,
+    channels: Vec<NotifyChannel>,
+    message: &NotifyMessage,
+) -> Vec<DeliveryResult> {
     let mut results = Vec::with_capacity(channels.len());
     for channel in channels {
-        match send_one(app, &channel, &message).await {
+        match send_one(app, &channel, message).await {
             Ok(()) => results.push(DeliveryResult {
                 id: channel.id,
                 ok: true,
@@ -1336,6 +1344,14 @@ fn eligible_channels(store: ChannelStore, only_id: Option<&str>) -> Vec<NotifyCh
         .collect::<Vec<_>>()
 }
 
+fn channels_with_desktop_fallback(store: ChannelStore) -> (Vec<NotifyChannel>, bool) {
+    let use_builtin = !store
+        .channels
+        .iter()
+        .any(|channel| channel.kind == ChannelKind::Desktop);
+    (eligible_channels(store, None), use_builtin)
+}
+
 /// Deliver an actionable event with a built-in desktop fallback. An explicit
 /// desktop channel replaces that fallback; disabling it opts out of desktop delivery.
 pub async fn dispatch_with_desktop_fallback(
@@ -1350,14 +1366,8 @@ pub async fn dispatch_with_desktop_fallback(
         }];
     }
     let message = normalize_message(message);
-    let desktop_configured = read_channels().map(|store| {
-        store
-            .channels
-            .iter()
-            .any(|channel| channel.kind == ChannelKind::Desktop)
-    });
-    let desktop_configured = match desktop_configured {
-        Ok(configured) => configured,
+    let (channels, use_builtin) = match read_channels().map(channels_with_desktop_fallback) {
+        Ok(plan) => plan,
         Err(error) => {
             let _ = append(
                 NotificationKind::Error,
@@ -1373,8 +1383,8 @@ pub async fn dispatch_with_desktop_fallback(
             }];
         }
     };
-    let mut results = dispatch_external(app, message.clone(), None).await;
-    if !desktop_configured {
+    let mut results = dispatch_channels(app, channels, &message).await;
+    if use_builtin {
         match show_desktop_notification(app, &message).await {
             Ok(()) => results.push(DeliveryResult {
                 id: "builtin-desktop".into(),
@@ -1470,6 +1480,22 @@ pub async fn notify_channel_test(app: AppHandle, id: String) -> Result<DeliveryR
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_fallback_and_channels_use_one_settings_snapshot() {
+        let mut store = ChannelStore::default();
+        let (before, builtin_before) = channels_with_desktop_fallback(store.clone());
+        set_desktop_enabled(&mut store, true).unwrap();
+        let (after, builtin_after) = channels_with_desktop_fallback(store.clone());
+        set_desktop_enabled(&mut store, false).unwrap();
+        let (disabled, builtin_disabled) = channels_with_desktop_fallback(store);
+
+        assert!(before.is_empty() && builtin_before);
+        assert!(!builtin_after);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].kind, ChannelKind::Desktop);
+        assert!(disabled.is_empty() && !builtin_disabled);
+    }
 
     #[test]
     fn desktop_default_opt_out_survives_reload_and_cannot_be_deleted_into_fallback() {

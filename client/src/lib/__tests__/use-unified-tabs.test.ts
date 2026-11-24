@@ -38,6 +38,7 @@ const change = (path: string): FileChange => ({
   name: path.split(/[\\/]/).pop() ?? path,
   added: 1,
   removed: 0,
+  approximate: false,
   ext: "ts",
   edits: 1,
 });

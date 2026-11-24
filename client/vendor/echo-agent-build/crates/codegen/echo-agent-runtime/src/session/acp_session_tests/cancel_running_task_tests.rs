@@ -150,7 +150,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 )),
                 current_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
-                desktop_document_turn: std::cell::Cell::new(false),
+
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 supports_backend_search: std::cell::Cell::new(false),
@@ -645,7 +645,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 )),
                 current_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
-                desktop_document_turn: std::cell::Cell::new(false),
+
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 supports_backend_search: std::cell::Cell::new(false),
@@ -958,7 +958,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                     parking_lot::Mutex::new(PromptMode::Agent),
                 ),
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
-                desktop_document_turn: std::cell::Cell::new(false),
+
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 supports_backend_search: std::cell::Cell::new(false),
@@ -2500,7 +2500,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                     parking_lot::Mutex::new(PromptMode::Agent),
                 ),
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
-                desktop_document_turn: std::cell::Cell::new(false),
+
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 supports_backend_search: std::cell::Cell::new(false),

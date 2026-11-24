@@ -8,6 +8,7 @@ export interface DocumentExportReceipt {
   format: OfficeFormat;
   byteSize: number;
   sha256: string;
+  editableSourceWarning?: string;
 }
 
 const OFFICE_CREATE_TOOL = "echoagent-office__office_create";
@@ -32,13 +33,18 @@ export function officeInputFromToolCall(toolCall: ToolCallView): Record<string, 
 }
 
 function validReceipt(value: unknown): DocumentExportReceipt | null {
-  if (!value || typeof value !== "object") return null;
-  const receipt = value as Record<string, unknown>;
-  if (typeof receipt.path !== "string"
-    || !["docx", "pdf", "xlsx", "pptx"].includes(String(receipt.format))
-    || typeof receipt.byteSize !== "number" || receipt.byteSize <= 0
-    || !/^[a-f0-9]{64}$/i.test(String(receipt.sha256))) return null;
-  return receipt as unknown as DocumentExportReceipt;
+  const receipt = recordInput(value);
+  if (!receipt) return null;
+  const { path, format, byteSize, sha256, editableSourceWarning } = receipt;
+  if (typeof path !== "string"
+    || (format !== "docx" && format !== "pdf" && format !== "xlsx" && format !== "pptx")
+    || typeof byteSize !== "number" || byteSize <= 0
+    || typeof sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(sha256)) return null;
+  return {
+    path, format, byteSize, sha256,
+    ...(format === "docx" && typeof editableSourceWarning === "string" && editableSourceWarning.trim()
+      ? { editableSourceWarning } : {}),
+  };
 }
 
 /** UI and artifact catalog use only receipts validated from Runtime rawOutput. */

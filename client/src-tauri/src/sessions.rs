@@ -6,7 +6,10 @@
 //! hash fallback for long paths); rather than reproduce that exactly we scan
 //! ALL session directories and filter by the matching cwd inside summary.json.
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -388,9 +391,17 @@ fn apply_metadata_and_sort(out: &mut Vec<SessionSummary>, include_archived: bool
     // Merge EchoAgent-only pinned/archived state (sidecar file, since EchoAgent's
     // Summary has no such fields and would clobber any we tried to add).
     let state = crate::meta::read_state();
-    apply_metadata_from_state(out, include_archived, &state);
+    apply_catalog_metadata(out, include_archived, &state);
+}
+
+fn apply_catalog_metadata(
+    out: &mut Vec<SessionSummary>,
+    include_archived: bool,
+    state: &crate::meta::EchoAgentState,
+) {
+    apply_metadata_from_state(out, include_archived, state);
     match crate::projects::session_project_ids(
-        &state,
+        state,
         out.iter().map(|entry| entry.session_id.as_str()),
     ) {
         Ok(project_ids) => {
@@ -413,6 +424,7 @@ fn apply_metadata_from_state(
     let archived = state.archived_set();
     let experts = state.expert_map();
     let statuses = state.session_status_map();
+    let permissions = state.permission_mode_map();
     let existing_ids: std::collections::HashSet<_> =
         out.iter().map(|entry| entry.session_id.clone()).collect();
     // Keep the historical default (hide archived), while allowing the archive
@@ -441,8 +453,7 @@ fn apply_metadata_from_state(
                 .clone()
                 .map(|value| bounded_text(value, MAX_EXPERT_AVATAR_CHARS));
         }
-        entry.permission_mode = state
-            .permission_mode_map()
+        entry.permission_mode = permissions
             .get(&entry.session_id)
             .cloned()
             .unwrap_or_else(|| "ask".into());
@@ -573,15 +584,307 @@ fn persisted_session_exists_from_root(
     sessions_root: &Path,
     session_id: &str,
 ) -> Result<bool, String> {
-    if session_id.trim().is_empty()
-        || session_id.chars().count() > MAX_SESSION_ID_CHARS
-        || session_id.chars().any(char::is_control)
-    {
-        return Ok(false);
+    Ok(find_persisted_summary(sessions_root, session_id)?.is_some())
+}
+
+fn valid_history_id(session_id: &str) -> bool {
+    safe_session_id(session_id.to_owned()).as_deref() == Some(session_id)
+        && !session_id.contains(['/', '\\'])
+        && matches!(
+            Path::new(session_id).components().next(),
+            Some(std::path::Component::Normal(_))
+        )
+}
+
+type CatalogSummary = (PathBuf, SummaryFile, String);
+
+fn find_persisted_summary(root: &Path, session_id: &str) -> Result<Option<CatalogSummary>, String> {
+    if !valid_history_id(session_id) {
+        return Ok(None);
     }
-    Ok(list_all_sessions_from_root(sessions_root)?
-        .iter()
-        .any(|summary| summary.session_id == session_id))
+    let directories = match std::fs::read_dir(root) {
+        Ok(directories) => directories,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("读取历史任务目录失败：{error}")),
+    };
+    let mut first_error = None;
+    let mut found = None;
+    for directory in directories {
+        let candidate = (|| {
+            let directory = directory?;
+            if !directory.file_type()?.is_dir() {
+                return Ok(None);
+            }
+            let path = directory.path().join(session_id);
+            if !is_history_directory(&path)? {
+                return Ok(None);
+            }
+            read_catalog_summary_result(&path)
+        })();
+        match candidate {
+            Ok(Some(candidate)) if found.is_none() => found = Some(candidate),
+            Ok(Some(_)) => {
+                // A relocation can briefly leave two valid copies. Use the
+                // Runtime's relocation journal to select the authoritative one.
+                let path = echo_agent_runtime::session::persistence::find_persisted_session_dir_by_id_in_root_result(session_id, root)
+                    .map_err(|error| format!("定位历史会话失败：{error}"))?;
+                return Ok(path.as_deref().and_then(read_catalog_summary));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    if let (None, Some(error)) = (&found, first_error) {
+        return Err(format!("无法核实历史会话：{error}"));
+    }
+    Ok(found)
+}
+
+fn is_history_directory(path: &Path) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn read_catalog_summary(path: &Path) -> Option<CatalogSummary> {
+    read_catalog_summary_result(path).ok().flatten()
+}
+
+fn read_catalog_candidate(path: &Path) -> Option<CatalogSummary> {
+    if !is_history_directory(path.parent()?).ok()? || !is_history_directory(path).ok()? {
+        return None;
+    }
+    read_catalog_summary(path)
+}
+
+fn session_path_hint(root: &Path, id: &str, cwd: &str) -> Option<PathBuf> {
+    if !Path::new(cwd).is_absolute() || cwd.chars().count() > MAX_CWD_CHARS {
+        return None;
+    }
+    Some(
+        root.join(echo_agent_runtime::util::echo_agent_home::encode_cwd_dirname(cwd))
+            .join(id),
+    )
+}
+
+fn read_catalog_summary_result(path: &Path) -> std::io::Result<Option<CatalogSummary>> {
+    read_catalog_entry(path, true)
+}
+
+fn read_catalog_entry(
+    path: &Path,
+    resolve_workspace: bool,
+) -> std::io::Result<Option<CatalogSummary>> {
+    let summary_path = path.join("summary.json");
+    let bytes =
+        match crate::shell_fs::read_regular_file_bounded_io(&summary_path, MAX_SUMMARY_BYTES) {
+            Ok(bytes) => bytes,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound
+                        | std::io::ErrorKind::InvalidData
+                        | std::io::ErrorKind::InvalidInput
+                ) =>
+            {
+                return Ok(None)
+            }
+            Err(error) => return Err(error),
+        };
+    let Ok(summary) = serde_json::from_slice::<SummaryFile>(&bytes) else {
+        return Ok(None);
+    };
+    let candidate = (|| {
+        authoritative_session_id(path, &summary)?;
+        let parent = path.parent()?;
+        let cwd = match summary_cwd(&summary) {
+            cwd if !cwd.is_empty() => cwd,
+            _ => cwd_from_directory(parent)?,
+        };
+        if cwd.chars().count() > MAX_CWD_CHARS || !Path::new(&cwd).is_absolute() {
+            return None;
+        }
+        let matches_recorded = workspace_dir_matches_request(parent, &cwd, None);
+        let canonical = if resolve_workspace || !matches_recorded {
+            canonical_workspace(&cwd)
+        } else {
+            None
+        };
+        if !matches_recorded && !workspace_dir_matches_request(parent, &cwd, canonical.as_deref()) {
+            return None;
+        }
+        let cwd = canonical.map_or(cwd, |path| path.to_string_lossy().into_owned());
+        Some((path.to_path_buf(), summary, cwd))
+    })();
+    Ok(candidate)
+}
+
+/// Hydrate one session without pulling the rest of the catalog into the renderer.
+pub fn find_session_summary(session_id: &str) -> Result<Option<SessionSummary>, String> {
+    let Some((path, summary, cwd)) = find_persisted_summary(&agent_sessions_root(), session_id)?
+    else {
+        return Ok(None);
+    };
+    let continuations = crate::meta::read_state().session_continuations;
+    let mut result: Vec<_> = to_session_summary(&path, summary, cwd, &continuations)
+        .into_iter()
+        .collect();
+    apply_metadata_and_sort(&mut result, true);
+    if let Some(entry) = result.first_mut() {
+        entry.parent_missing = entry.continuation.as_ref().is_some_and(|origin| {
+            !persisted_session_exists(&origin.parent_session_id).unwrap_or(true)
+        });
+    }
+    Ok(result.pop())
+}
+
+/// Load the status and archive state of the sessions referenced by a project.
+/// The index supplies path hints only. Each returned row is read from disk.
+pub fn find_session_summaries(session_ids: &[String]) -> Result<Vec<SessionSummary>, String> {
+    let root = agent_sessions_root();
+    let index = latest_history_index(&root);
+    let state = crate::meta::read_state();
+    let mut seen = HashSet::new();
+    let mut unresolved = HashSet::new();
+    let mut candidates = Vec::new();
+    for id in session_ids {
+        if !valid_history_id(id) || !seen.insert(id) {
+            continue;
+        }
+        let cached = state
+            .session_workspaces
+            .get(id)
+            .and_then(|cwd| session_path_hint(&root, id, cwd))
+            .as_deref()
+            .and_then(read_catalog_candidate)
+            .or_else(|| {
+                index
+                    .as_ref()
+                    .and_then(|index| index.paths.get(id))
+                    .and_then(|path| read_catalog_candidate(path))
+            });
+        if let Some(row) = cached {
+            candidates.push(row);
+        } else {
+            unresolved.insert(id.as_str());
+        }
+    }
+    if !unresolved.is_empty() {
+        // A few IDs are cheaper to probe directly, while a larger set of
+        // legacy IDs can share a single scan of the directory entries.
+        if unresolved.len() <= 8 {
+            for id in unresolved {
+                candidates.extend(find_persisted_summary(&root, id)?);
+            }
+        } else {
+            candidates.extend(find_persisted_summary_batch(&root, &unresolved)?);
+        }
+    }
+    let mut result = candidates
+        .into_iter()
+        .filter_map(|(path, summary, cwd)| {
+            to_session_summary(&path, summary, cwd, &state.session_continuations)
+        })
+        .collect();
+    apply_catalog_metadata(&mut result, true, &state);
+    for entry in &mut result {
+        entry.parent_missing = entry.continuation.as_ref().is_some_and(|origin| {
+            !index
+                .as_ref()
+                .is_some_and(|index| index.paths.contains_key(&origin.parent_session_id))
+                && !persisted_session_exists(&origin.parent_session_id).unwrap_or(true)
+        });
+    }
+    Ok(result)
+}
+
+fn find_persisted_summary_batch(
+    root: &Path,
+    ids: &HashSet<&str>,
+) -> Result<Vec<CatalogSummary>, String> {
+    let directories = match std::fs::read_dir(root) {
+        Ok(directories) => directories,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("读取历史任务目录失败：{error}")),
+    };
+    let mut found = HashMap::new();
+    let mut duplicates = HashSet::new();
+    let mut first_error = None;
+    for directory in directories {
+        let rows = directory.and_then(|directory| {
+            if directory.file_type()?.is_dir() {
+                std::fs::read_dir(directory.path()).map(Some)
+            } else {
+                Ok(None)
+            }
+        });
+        let rows = match rows {
+            Ok(Some(rows)) => rows,
+            Ok(None) => continue,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                continue;
+            }
+        };
+        for row in rows {
+            let candidate = (|| {
+                let row = row?;
+                let name = row.file_name();
+                let Some(id) = name.to_str().filter(|id| ids.contains(*id)) else {
+                    return Ok(None);
+                };
+                if !row.file_type()?.is_dir() {
+                    return Ok(None);
+                }
+                Ok(read_catalog_summary_result(&row.path())?
+                    .map(|summary| (id.to_owned(), summary)))
+            })();
+            match candidate {
+                Ok(Some((id, summary))) => {
+                    if found.insert(id.clone(), summary).is_some() {
+                        duplicates.insert(id);
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+    }
+    if let Some(error) = first_error.filter(|_| found.len() < ids.len()) {
+        return Err(format!("无法核实部分项目会话：{error}"));
+    }
+    for id in duplicates {
+        found.remove(&id);
+        if let Some(authoritative) = find_persisted_summary(root, &id)? {
+            found.insert(id, authoritative);
+        }
+    }
+    Ok(found.into_values().collect())
+}
+
+/// Search results can outlive the summary or use a workspace before relocation.
+/// Check the on-disk summary and its visibility before disclosing index text.
+pub(crate) fn session_is_searchable(root: &Path, id: &str, cwd: Option<&str>) -> bool {
+    if !valid_history_id(id) || crate::groups::is_member_session(id) {
+        return false;
+    }
+    if let Some((_, summary, _)) = cwd
+        .and_then(|cwd| session_path_hint(root, id, cwd))
+        .as_deref()
+        .and_then(read_catalog_candidate)
+    {
+        return !summary_is_hidden(&summary);
+    }
+    find_persisted_summary(root, id)
+        .ok()
+        .flatten()
+        .is_some_and(|(_, summary, _)| !summary_is_hidden(&summary))
 }
 
 pub(crate) fn list_all_sessions_from_root(
@@ -613,34 +916,10 @@ pub(crate) fn list_all_sessions_from_root(
             if !session_entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 continue;
             }
-            let Some(summary) = read_summary_file(&session_path.join("summary.json")) else {
+            let Some((path, summary, cwd)) = read_catalog_summary(&session_path) else {
                 continue;
             };
-            // Early summaries may omit cwd. Recover it only from the
-            // authoritative encoded directory (and its bounded `.cwd` sidecar).
-            let raw_cwd = match summary_cwd(&summary) {
-                value if !value.is_empty() => value,
-                _ => match cwd_from_directory(&cwd_path) {
-                    Some(value) => value,
-                    None => continue,
-                },
-            };
-            if raw_cwd.is_empty()
-                || raw_cwd.chars().count() > MAX_CWD_CHARS
-                || !Path::new(&raw_cwd).is_absolute()
-            {
-                continue;
-            }
-            let canonical = canonical_workspace(&raw_cwd);
-            if !workspace_dir_matches_request(&cwd_path, &raw_cwd, canonical.as_deref()) {
-                continue;
-            }
-            let output_cwd = canonical
-                .map(|path| path.to_string_lossy().into_owned())
-                .unwrap_or_else(|| bounded_text(raw_cwd, MAX_CWD_CHARS));
-            if let Some(summary) =
-                to_session_summary(&session_path, summary, output_cwd, &continuations)
-            {
+            if let Some(summary) = to_session_summary(&path, summary, cwd, &continuations) {
                 out.push(summary);
             }
         }
@@ -650,6 +929,323 @@ pub(crate) fn list_all_sessions_from_root(
     }
 
     Ok(out)
+}
+
+const HISTORY_PAGE_SIZE: usize = 100;
+// Bound one in-memory snapshot independently of legacy list budgets.
+const HISTORY_INDEX_LIMIT: usize = 100_000;
+const HISTORY_SNAPSHOTS: usize = 2;
+const HISTORY_INDEX_MAX_AGE: Duration = Duration::from_secs(30);
+
+struct HistoryEntry {
+    id: String,
+    path: PathBuf,
+    pinned: bool,
+    updated_at: Option<String>,
+    hidden: bool,
+}
+
+struct HistoryIndex {
+    id: uuid::Uuid,
+    root: PathBuf,
+    built_at: Instant,
+    entries: Vec<HistoryEntry>,
+    archived: Vec<HistoryEntry>,
+    paths: HashMap<String, PathBuf>,
+    incomplete: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHistoryPage {
+    sessions: Vec<SessionSummary>,
+    next_cursor: Option<String>,
+    next_archive_cursor: Option<String>,
+    incomplete: bool,
+}
+
+static HISTORY_INDEXES: LazyLock<Mutex<VecDeque<Arc<HistoryIndex>>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::with_capacity(HISTORY_SNAPSHOTS)));
+static HISTORY_INDEX_BUILD: Mutex<()> = Mutex::new(());
+
+fn latest_history_index(root: &Path) -> Option<Arc<HistoryIndex>> {
+    HISTORY_INDEXES
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|index| index.root == root)
+        .cloned()
+}
+
+fn history_index(root: &Path, refresh: bool) -> Result<Arc<HistoryIndex>, String> {
+    let requested_at = Instant::now();
+    let reusable = || {
+        latest_history_index(root).filter(|index| {
+            index.built_at >= requested_at
+                || (!refresh && index.built_at.elapsed() < HISTORY_INDEX_MAX_AGE)
+        })
+    };
+    if let Some(index) = reusable() {
+        return Ok(index);
+    }
+    let _build = HISTORY_INDEX_BUILD.lock().unwrap();
+    if let Some(index) = reusable() {
+        return Ok(index);
+    }
+    let mut index = build_history_index(root, &crate::meta::read_state(), HISTORY_INDEX_LIMIT)?;
+    index.built_at = Instant::now();
+    let index = Arc::new(index);
+    let mut indexes = HISTORY_INDEXES.lock().unwrap();
+    indexes.push_back(index.clone());
+    if indexes.len() > HISTORY_SNAPSHOTS {
+        indexes.pop_front();
+    }
+    Ok(index)
+}
+
+fn build_history_index(
+    root: &Path,
+    state: &crate::meta::EchoAgentState,
+    limit: usize,
+) -> Result<HistoryIndex, String> {
+    let mut index = HistoryIndex {
+        id: uuid::Uuid::now_v7(),
+        root: root.to_path_buf(),
+        built_at: Instant::now(),
+        entries: Vec::new(),
+        archived: Vec::new(),
+        paths: HashMap::new(),
+        incomplete: false,
+    };
+    let directories = match std::fs::read_dir(root) {
+        Ok(directories) => directories,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(index),
+        Err(error) => return Err(format!("读取历史任务目录失败：{error}")),
+    };
+    let pinned = state.pinned_set();
+    let statuses = state.session_status_map();
+    let archived = state.archived_set();
+    let mut visited = 0;
+    'directories: for directory in directories {
+        if visited == limit {
+            index.incomplete = true;
+            break;
+        }
+        visited += 1;
+        let rows = match directory.and_then(|directory| {
+            if directory.file_type()?.is_dir() {
+                std::fs::read_dir(directory.path()).map(Some)
+            } else {
+                Ok(None)
+            }
+        }) {
+            Ok(Some(rows)) => rows,
+            Ok(None) => continue,
+            Err(_) => {
+                index.incomplete = true;
+                continue;
+            }
+        };
+        for row in rows {
+            if visited == limit {
+                index.incomplete = true;
+                break 'directories;
+            }
+            visited += 1;
+            let path = match row.and_then(|row| Ok((row.path(), row.file_type()?))) {
+                Ok((path, kind)) if kind.is_dir() => path,
+                Ok(_) => continue,
+                Err(_) => {
+                    index.incomplete = true;
+                    continue;
+                }
+            };
+            // Matching encoded workspaces need no filesystem canonicalization
+            // until their records are actually hydrated for a page.
+            let (path, summary, _) = match read_catalog_entry(&path, false) {
+                Ok(Some(row)) => row,
+                Ok(None) => continue,
+                Err(_) => {
+                    index.incomplete = true;
+                    continue;
+                }
+            };
+            let Some(id) = authoritative_session_id(&path, &summary) else {
+                continue;
+            };
+            let hidden = summary_is_hidden(&summary);
+            let mut updated_at = summary
+                .last_active_at
+                .or(summary.updated_at)
+                .map(|value| bounded_text(value, MAX_UPDATED_AT_CHARS));
+            if let Some(lifecycle) = statuses
+                .get(&id)
+                .filter(|lifecycle| later_timestamp(updated_at.as_deref(), &lifecycle.updated_at))
+            {
+                updated_at = Some(lifecycle.updated_at.clone());
+            }
+            index.entries.push(HistoryEntry {
+                pinned: pinned.contains(&id),
+                id,
+                path,
+                updated_at,
+                hidden,
+            });
+        }
+    }
+    index.entries.sort_unstable_by(|a, b| {
+        b.pinned
+            .cmp(&a.pinned)
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+            .then_with(|| b.id.cmp(&a.id))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    let mut duplicates = HashMap::new();
+    let mut seen = HashSet::new();
+    for entry in &index.entries {
+        if !seen.insert(entry.id.as_str()) && !duplicates.contains_key(&entry.id) {
+            let path = match find_persisted_summary(root, &entry.id) {
+                Ok(Some((path, _, _))) => Some(path),
+                Ok(None) => None,
+                Err(_) => {
+                    index.incomplete = true;
+                    None
+                }
+            };
+            duplicates.insert(entry.id.clone(), path);
+        }
+    }
+    drop(seen);
+    index.entries.retain(|entry| {
+        duplicates
+            .get(&entry.id)
+            .is_none_or(|path| path.as_ref() == Some(&entry.path))
+    });
+    index.paths = index
+        .entries
+        .iter()
+        .map(|entry| (entry.id.clone(), entry.path.clone()))
+        .collect();
+    (index.entries, index.archived) = index
+        .entries
+        .into_iter()
+        .filter(|entry| !entry.hidden)
+        .partition(|entry| !archived.contains(&entry.id));
+    Ok(index)
+}
+
+impl HistoryIndex {
+    fn page(
+        &self,
+        offset: usize,
+        size: usize,
+        archived: bool,
+    ) -> Result<SessionHistoryPage, String> {
+        let entries = if archived {
+            &self.archived
+        } else {
+            &self.entries
+        };
+        if offset > entries.len() {
+            return Err("历史分页位置无效，请刷新历史任务".into());
+        }
+        let end = offset.saturating_add(size).min(entries.len());
+        let state = crate::meta::read_state();
+        let mut sessions = Vec::new();
+        let mut incomplete = self.incomplete;
+        for entry in &entries[offset..end] {
+            let hydrated = (|| {
+                let Some(parent) = entry.path.parent() else {
+                    return Ok(None);
+                };
+                // The directory may have been removed or replaced since the index was built.
+                if !is_history_directory(parent)? || !is_history_directory(&entry.path)? {
+                    return Ok(None);
+                }
+                read_catalog_summary_result(&entry.path)
+            })();
+            let (path, summary, cwd) = match hydrated {
+                Ok(Some(row)) => row,
+                Ok(None) => continue,
+                Err(_) => {
+                    incomplete = true;
+                    continue;
+                }
+            };
+            sessions.extend(to_session_summary(
+                &path,
+                summary,
+                cwd,
+                &state.session_continuations,
+            ));
+        }
+        apply_catalog_metadata(&mut sessions, true, &state);
+        for entry in &mut sessions {
+            entry.parent_missing = entry.continuation.as_ref().is_some_and(|origin| {
+                !self.paths.contains_key(&origin.parent_session_id)
+                    && !persisted_session_exists(&origin.parent_session_id).unwrap_or(true)
+            });
+        }
+        let cursor = (end < entries.len()).then(|| {
+            format!(
+                "{}:{}:{end}",
+                self.id,
+                if archived { "archive" } else { "task" }
+            )
+        });
+        let (next_cursor, next_archive_cursor) = if archived {
+            (None, cursor)
+        } else {
+            (cursor, None)
+        };
+        Ok(SessionHistoryPage {
+            sessions,
+            next_cursor,
+            next_archive_cursor,
+            incomplete,
+        })
+    }
+}
+
+pub fn list_session_history_page(
+    cursor: Option<&str>,
+    refresh: bool,
+) -> Result<SessionHistoryPage, String> {
+    if let Some(cursor) = cursor {
+        let (id, archived, offset) = (|| {
+            let (id, page) = cursor.split_once(':')?;
+            let (scope, offset) = page.split_once(':')?;
+            let archived = match scope {
+                "archive" => true,
+                "task" => false,
+                _ => return None,
+            };
+            Some((
+                uuid::Uuid::parse_str(id).ok()?,
+                archived,
+                offset.parse().ok()?,
+            ))
+        })()
+        .ok_or("历史分页位置无效，请刷新历史任务")?;
+        let index = HISTORY_INDEXES
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|index| index.id == id)
+            .cloned()
+            .ok_or("历史列表已更新，请刷新后继续加载")?;
+        return index.page(offset, HISTORY_PAGE_SIZE, archived);
+    }
+    let index = history_index(&agent_sessions_root(), refresh)?;
+    let mut page = index.page(0, HISTORY_PAGE_SIZE, false)?;
+    if !index.archived.is_empty() {
+        let archived = index.page(0, HISTORY_PAGE_SIZE, true)?;
+        page.sessions.extend(archived.sessions);
+        page.next_archive_cursor = archived.next_archive_cursor;
+        page.incomplete |= archived.incomplete;
+    }
+    Ok(page)
 }
 
 fn apply_archive_visibility(
@@ -788,7 +1384,7 @@ fn list_workspaces_from_root_with_default(
     out
 }
 
-fn agent_sessions_root() -> PathBuf {
+pub(crate) fn agent_sessions_root() -> PathBuf {
     crate::paths::echo_agent_home_dir().join("sessions")
 }
 
@@ -809,16 +1405,13 @@ fn require_migrated_model_from_root(
     session_id: &str,
     cwd: &Path,
 ) -> Result<(), String> {
-    if list_sessions_from_root(root, &cwd.to_string_lossy(), true)
-        .iter()
-        .any(|summary| {
-            summary.session_id == session_id
-                && summary
-                    .current_model_id
-                    .as_deref()
-                    .is_some_and(crate::providers::is_removed_model_id)
-        })
-    {
+    if find_persisted_summary(root, session_id)?.is_some_and(|(_, summary, workspace)| {
+        Path::new(&workspace) == cwd
+            && summary
+                .current_model_id
+                .as_deref()
+                .is_some_and(crate::providers::is_removed_model_id)
+    }) {
         return Err(
             "此任务的旧模型配置尚未完成升级，请重启 EchoAgent 后重新打开；已有对话和文件会保留。"
                 .into(),
@@ -1145,6 +1738,86 @@ mod tests {
         assert!(rows[0].hidden);
         assert!(persisted_session_exists_from_root(&sessions_root, "child-session").unwrap());
         assert!(!persisted_session_exists_from_root(&sessions_root, "missing").unwrap());
+    }
+
+    #[test]
+    fn exact_lookup_and_index_reach_past_legacy_scan_budgets() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("sessions");
+        let cwd = temp.path().canonicalize().unwrap();
+        let directory = root.join(
+            echo_agent_runtime::util::echo_agent_home::encode_cwd_dirname(&cwd.to_string_lossy()),
+        );
+        std::fs::create_dir_all(&directory).unwrap();
+        let valid = super::MAX_SESSION_RESULTS + 1;
+        let written = serde_json::json!({"cwd": cwd, "session_summary": "历史任务"}).to_string();
+        for number in 0..valid {
+            let session = directory.join(format!("old-{number:05}"));
+            std::fs::create_dir(&session).unwrap();
+            std::fs::write(session.join("summary.json"), &written).unwrap();
+        }
+        for number in 0..=super::MAX_SESSION_DIRECTORIES - valid {
+            std::fs::create_dir(directory.join(format!("empty-{number:05}"))).unwrap();
+        }
+
+        let bounded = list_all_sessions_from_root(&root).unwrap();
+        let bounded_ids: std::collections::HashSet<_> =
+            bounded.iter().map(|row| row.session_id.as_str()).collect();
+        let omitted = (0..valid)
+            .map(|n| format!("old-{n:05}"))
+            .find(|id| !bounded_ids.contains(id.as_str()))
+            .expect("legacy scan must omit some valid records");
+        assert!(persisted_session_exists_from_root(&root, &omitted).unwrap());
+        assert!(!persisted_session_exists_from_root(&root, "does-not-exist").unwrap());
+        assert!(!persisted_session_exists_from_root(&root, "../old-00000").unwrap());
+
+        let state = crate::meta::EchoAgentState {
+            archived_sessions: vec!["old-00001".into(), "old-00002".into()],
+            ..Default::default()
+        };
+        let indexed =
+            super::build_history_index(&root, &state, super::HISTORY_INDEX_LIMIT).unwrap();
+        assert!(!indexed.incomplete);
+        assert_eq!(indexed.entries.len() + indexed.archived.len(), valid);
+        assert!(indexed.paths.contains_key(&omitted));
+
+        let first = indexed.page(0, 3, false).unwrap();
+        assert_eq!(
+            first.next_cursor.as_deref(),
+            Some(format!("{}:task:3", indexed.id).as_str())
+        );
+        assert_eq!(
+            first.sessions[0].session_id,
+            format!("old-{:05}", valid - 1)
+        );
+        let last = indexed.page(indexed.entries.len() - 1, 3, false).unwrap();
+        assert_eq!(last.sessions[0].session_id, "old-00000");
+        assert!(last.next_cursor.is_none());
+        let archived = indexed.page(0, 1, true).unwrap();
+        assert_eq!(archived.sessions[0].session_id, "old-00002");
+        assert!(archived.next_cursor.is_none());
+        assert!(archived
+            .next_archive_cursor
+            .unwrap()
+            .ends_with(":archive:1"));
+        assert!(
+            super::build_history_index(&root, &state, 4)
+                .unwrap()
+                .incomplete
+        );
+    }
+
+    #[test]
+    fn history_refresh_keeps_the_previous_cursor_and_reuses_the_new_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = super::history_index(dir.path(), false).unwrap();
+        let reused = super::history_index(dir.path(), false).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &reused));
+        let refreshed = super::history_index(dir.path(), true).unwrap();
+        assert_ne!(first.id, refreshed.id);
+        let snapshots = super::HISTORY_INDEXES.lock().unwrap();
+        assert!(snapshots.iter().any(|entry| entry.id == first.id));
+        assert!(snapshots.iter().any(|entry| entry.id == refreshed.id));
     }
 
     #[test]

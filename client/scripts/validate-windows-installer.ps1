@@ -54,8 +54,11 @@ function Invoke-Installer([string]$Arguments, [bool]$ShouldSucceed = $true) {
 
 function Assert-Install([string]$Directory) {
     Write-Host "Checking installed payload, registration and shortcuts: $Directory"
-    foreach ($leaf in @('echoagent.exe', 'uninstall.exe', 'theia', 'office')) {
+    foreach ($leaf in @('echoagent.exe', 'uninstall.exe', 'office\node\node.exe', 'office\worker.mjs')) {
         Assert-True (Test-Path -LiteralPath (Join-Path $Directory $leaf)) "Missing installed payload: $Directory\$leaf"
+    }
+    foreach ($leaf in @('theia\parent-guard.cjs', 'theia\node\node.exe', 'theia\browser\lib\backend\main.js')) {
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $Directory $leaf))) "Retired IDE payload survived the install: $leaf"
     }
     $record = (Get-Item -LiteralPath $productKey).GetValue('')
     Assert-True ($record -eq $Directory) "Wrong installation record: $record"
@@ -69,6 +72,15 @@ function Assert-Install([string]$Directory) {
         $expected = Join-Path $Directory 'echoagent.exe'
         Write-Host "Shortcut (IShellLinkW): $link; target: $target; expected: $expected"
         Assert-True ($target -eq $expected) "Stale shortcut during ${script:phase}: $link; expected '$expected', actual '$target'"
+    }
+}
+
+# Mimic the paths produced by the previous installer without launching old code.
+function Add-RetiredPayload([string]$Directory) {
+    foreach ($leaf in @('theia\parent-guard.cjs', 'theia\node\node.exe', 'theia\browser\lib\backend\main.js', 'licenses\theia\NOTICE.md')) {
+        $path = Join-Path $Directory $leaf
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
+        Set-Content -LiteralPath $path -Value "retired installation fixture"
     }
 }
 
@@ -86,8 +98,51 @@ try {
     $phase = 'move to custom directory'
     Invoke-Installer "/S /UPDATE /ARGS --acceptance /D=$customDir"
     Assert-Install $customDir
-    $phase = 'update custom directory'
+    Add-RetiredPayload $customDir
+    $phase = 'reject a junction inside the retired payload'
+    $outside = Join-Path $scratch 'outside-retired-payload'
+    New-Item -ItemType Directory -Path $outside | Out-Null
+    $retiredMarker = Join-Path $customDir 'theia\parent-guard.cjs'
+    $outsideMarker = Join-Path $outside 'keep.txt'
+    Set-Content -LiteralPath $outsideMarker -Value 'outside legacy resources'
+    $retiredLink = Join-Path $customDir 'theia\external'
+    New-Item -ItemType Junction -Path $retiredLink -Target $outside | Out-Null
+    try {
+        Invoke-Installer '/S /UPDATE' $false
+        Assert-True (Test-Path -LiteralPath $retiredMarker) 'Unsafe cleanup changed the retired payload'
+        Assert-True (Test-Path -LiteralPath $outsideMarker) 'Unsafe cleanup removed a file outside the installation'
+    } finally {
+        [System.IO.Directory]::Delete($retiredLink)
+    }
+
+    $phase = 'upgrade an existing installation with retired IDE files'
+    $customMarkers = @('theia\user-notes\keep.txt', 'theia\browser\plugins\keep.txt', 'theia\browser\lib\backend\keep.txt') | ForEach-Object {
+        $marker = Join-Path $customDir $_
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $marker) | Out-Null
+        Set-Content -LiteralPath $marker -Value 'keep user notes'
+        $marker
+    }
     Invoke-Installer '/S /UPDATE'
+    Assert-Install $customDir
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $customDir 'licenses\theia'))) 'Retired IDE licenses survived upgrading'
+    foreach ($marker in $customMarkers) {
+        Assert-True ((Get-Content -LiteralPath $marker -Raw).Trim() -eq 'keep user notes') "Upgrade changed a user file: $marker"
+    }
+
+    $phase = 'overwrite an existing installation with retired IDE files'
+    Add-RetiredPayload $customDir
+    Invoke-Installer '/S'
+    Assert-Install $customDir
+
+    $phase = 'uninstall after upgrade'
+    Add-RetiredPayload $customDir
+    $uninstall = Start-Process -FilePath (Join-Path $customDir 'uninstall.exe') -ArgumentList '/S' -Wait -PassThru
+    Assert-True ($uninstall.ExitCode -eq 0) 'Uninstall failed'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $customDir 'theia\node\node.exe'))) 'Retired resources survived uninstall'
+    foreach ($marker in $customMarkers) {
+        Assert-True ((Get-Content -LiteralPath $marker -Raw).Trim() -eq 'keep user notes') "Uninstall changed a user file: $marker"
+    }
+    Invoke-Installer "/S /D=$customDir"
     Assert-Install $customDir
 
     # A durable custom location remains authoritative after its entire payload
@@ -170,7 +225,7 @@ try {
     node (Join-Path $PSScriptRoot 'prepare-meeting-speech.mjs') --installed-app (Join-Path $defaultDir 'echoagent.exe')
     if ($LASTEXITCODE -ne 0) { throw 'Installed meeting speech verification failed.' }
     node (Join-Path $PSScriptRoot 'validate-packaged-desktop.mjs') (Join-Path $defaultDir 'echoagent.exe')
-    if ($LASTEXITCODE -ne 0) { throw 'Repaired desktop WebView/IPC/IDE validation failed' }
+    if ($LASTEXITCODE -ne 0) { throw 'Repaired desktop WebView/IPC/Office validation failed' }
     Write-Host "Windows installation acceptance passed ($assertions assertions)."
 } catch {
     $message = "Phase: $phase; assertions passed: $assertions; $($_.Exception.Message)"

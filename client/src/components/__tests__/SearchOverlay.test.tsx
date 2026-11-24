@@ -10,10 +10,10 @@ import userEvent from "@testing-library/user-event";
 
 vi.mock("@/lib/agent-client", () => ({
   sessionSearchPage: vi.fn(),
-  agentListSessions: vi.fn(),
+  agentFindSessionSummary: vi.fn(),
 }));
 
-const { sessionSearchPage, agentListSessions } = await import("@/lib/agent-client");
+const { sessionSearchPage, agentFindSessionSummary } = await import("@/lib/agent-client");
 
 const page = (results: SearchHit[] = [], nextOffset: number | null = null, bootstrapping = false): SessionSearchPage => ({
   results, nextOffset, bootstrapping,
@@ -23,7 +23,7 @@ describe("SearchOverlay", () => {
   beforeEach(() => {
     useGroupStore.setState({ groups: [] });
     vi.mocked(sessionSearchPage).mockReset().mockResolvedValue(page([]));
-    vi.mocked(agentListSessions).mockReset().mockResolvedValue([]);
+    vi.mocked(agentFindSessionSummary).mockReset().mockResolvedValue(null);
     useSessionsStore.setState({ deletedSessionIds: [],
       independent: [],
       workspaces: [],
@@ -59,12 +59,12 @@ describe("SearchOverlay", () => {
       cwd: "/workspace",
       snippet: "命中内容",
     }]));
-    vi.mocked(agentListSessions).mockResolvedValue([{
+    vi.mocked(agentFindSessionSummary).mockResolvedValue({
       sessionId: "remote",
       title: "完整标题",
       cwd: "/workspace",
       currentModelId: "model-a",
-    }]);
+    });
     const onSelect = vi.fn();
     const onClose = vi.fn();
     render(<SearchOverlay open onClose={onClose} onSelect={onSelect} />);
@@ -74,7 +74,7 @@ describe("SearchOverlay", () => {
     });
     fireEvent.click(await screen.findByRole("button", { name: /\u8fdc\u7a0b\u547d\u4e2d/ }));
 
-    await waitFor(() => expect(agentListSessions).toHaveBeenCalledWith("/workspace", true));
+    await waitFor(() => expect(agentFindSessionSummary).toHaveBeenCalledWith("remote"));
     expect(onSelect).toHaveBeenCalledWith("remote", "/workspace");
     expect(useSessionsStore.getState().independent[0]).toMatchObject({
       title: "完整标题",
@@ -295,7 +295,7 @@ describe("SearchOverlay", () => {
     const active = { sessionId: "active", title: "仍在进行的任务", cwd: "/home" };
     useSessionsStore.getState().setIndependent([...archived, active]);
     vi.mocked(sessionSearchPage)
-      .mockResolvedValueOnce(page(archived, 30))
+      .mockResolvedValueOnce(page([], 30))
       .mockResolvedValueOnce(page([{ ...active, snippet: "正文包含验收" }]));
     const onSelect = vi.fn();
     render(<SearchOverlay open onClose={vi.fn()} onSelect={onSelect} />);
@@ -325,13 +325,13 @@ describe("SearchOverlay", () => {
       cwd: "/workspace",
       snippet: "内部执行记录",
     }]));
-    vi.mocked(agentListSessions).mockResolvedValue([{
+    vi.mocked(agentFindSessionSummary).mockResolvedValue({
       sessionId: "late-child",
       title: "迟到的子代理",
       cwd: "/workspace",
       hidden: true,
       sessionKind: "subagent",
-    }]);
+    });
     const onSelect = vi.fn();
     const onClose = vi.fn();
     render(<SearchOverlay open onClose={onClose} onSelect={onSelect} />);

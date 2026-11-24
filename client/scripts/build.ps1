@@ -57,7 +57,7 @@ try {
 
     $nodeArch = Invoke-PackagingCommand node @("-p", "process.arch")
     if ($nodeArch -ne "x64") {
-        Log-Err "Windows installer target is x86_64-pc-windows-msvc, but Node.js architecture is $nodeArch. Use x64 Node.js so the bundled Echo Code IDE runtime matches the installer."
+        Log-Err "Windows installer target is x86_64-pc-windows-msvc, but Node.js architecture is $nodeArch. Use x64 Node.js so the bundled Office Node.js runtime matches the installer."
         exit 1
     }
     Log-Ok "Node.js architecture matches windows-x86_64"
@@ -105,7 +105,7 @@ try {
     Log-Ok "protoc available: $protocVersion ($protoc)"
 
     # ---------------------------------------------------------------------------
-    # 3. Use the same supported MSVC toolchain for Cargo and native IDE addons.
+    # 3. Use the supported MSVC toolchain for the native application.
     # ---------------------------------------------------------------------------
     Log-Step "Locating MSVC environment"
     $vcvars = Initialize-PackagingMsvc
@@ -119,26 +119,6 @@ try {
     Log-Step "Checking vendored Runtime source"
     Invoke-PackagingCommand node @((Join-Path $ProjectRoot "scripts\verify-vendored-runtime.mjs"))
     Log-Ok "Vendored Runtime source is complete"
-
-    Log-Step "Building and staging Echo Code IDE"
-    Invoke-PackagingCommand pnpm @("ide:build")
-    Invoke-PackagingCommand pnpm @("ide:stage")
-    $stagedTheiaEntry = Join-Path $ProjectRoot "src-tauri\resources\theia\browser\lib\backend\main.js"
-    $stagedNode = Join-Path $ProjectRoot "src-tauri\resources\theia\node\node.exe"
-    if (-not (Test-Path -LiteralPath $stagedTheiaEntry -PathType Leaf) -or -not (Test-Path -LiteralPath $stagedNode -PathType Leaf)) {
-        Log-Err "Echo Code IDE or its Node.js runtime is missing from the staged Windows resources."
-        exit 1
-    }
-    $stagedNodeArch = Invoke-PackagingCommand $stagedNode @("-p", "process.arch")
-    if ($stagedNodeArch -ne "x64") {
-        Log-Err "Staged Node.js architecture is $stagedNodeArch; the Windows installer requires x64."
-        exit 1
-    }
-    Invoke-PackagingCommand $stagedNode @((Join-Path $ProjectRoot "scripts\validate-theia-git-runtime.mjs"))
-    Log-Ok "Vendored Theia IDE and Node runtime staged"
-    Log-Step "Checking Windows IDE terminal lifecycle"
-    Invoke-PackagingCommand $stagedNode @((Join-Path $ProjectRoot "scripts\validate-theia-pty.mjs"), (Join-Path $ProjectRoot "src-tauri\resources\theia\browser"))
-    Log-Ok "Windows IDE terminal lifecycle passed"
 
     # ---------------------------------------------------------------------------
     # 5. NSIS tool cache (work around GitHub download timeouts in CN).

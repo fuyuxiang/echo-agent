@@ -1,6 +1,7 @@
 //! Turn-execution concern for `SessionActor` (`handle_prompt`, turn-end,
 //! sampling loop).
 use super::*;
+use super::scoped_memory_lookup::ExactMemoryQuery;
 use crate::util::dual_clock::DualClock;
 use echo_agent_tools::implementations::echo_agent_build::LoopFireMode;
 use echo_agent_tools::types::tool::ToolKind;
@@ -608,35 +609,15 @@ impl SessionActor {
         } else {
             AutomationTurnMode::Ordinary
         };
-        let desktop_document_tools = self
-            .startup_hints
-            .inherited_turn_authority
-            .as_ref()
-            .is_some_and(|authority| authority.document_tools)
-            || self.client_identifier.as_deref() == Some("echo-agent-desktop")
-                && prompt_blocks.iter().any(|block| match block {
-                    acp::ContentBlock::Text(text) => {
-                        text.meta
-                            .as_ref()
-                            .and_then(|meta| meta.get("desktopDocumentTools"))
-                            .and_then(serde_json::Value::as_bool)
-                            == Some(true)
-                    }
-                    _ => false,
-                });
-        self.tool_bridge_handle()
-            .update_resource(DesktopDocumentTools(desktop_document_tools))
-            .await;
         self.tool_bridge_handle()
             .update_resource(echo_agent_tools::types::resources::DesktopMcpNoReplay(
-                desktop_document_tools,
+                cfg!(feature = "desktop") || self.client_identifier.as_deref() == Some("echo-agent-desktop"),
             ))
             .await;
-        self.desktop_document_turn.set(desktop_document_tools);
         self.tool_bridge_handle()
             .update_resource(
                 echo_agent_tools::implementations::echo_agent_build::task::BoundSubagentToTurn(
-                    desktop_document_tools || prompt_mode.is_read_only(),
+                    prompt_mode.is_read_only(),
                 ),
             )
             .await;
@@ -678,8 +659,8 @@ impl SessionActor {
             *context = host_project_context.as_deref().map(Arc::from);
         }
         if let Some(bash_command) = Self::extract_bash_command(&prompt_blocks) {
-            if self.is_readonly_turn() || desktop_document_tools {
-                return Err(acp::Error::invalid_params().data("Direct shell input is unavailable for this run; use an authorized Agent tool so editor state can be checked"));
+            if self.is_readonly_turn() {
+                return Err(acp::Error::invalid_params().data("Direct shell input is unavailable in read-only mode"));
             }
             return self
                 .handle_direct_bash_command(prompt_id, bash_command, &prompt_blocks)
@@ -771,9 +752,9 @@ impl SessionActor {
                         }
                     }
                     BuiltinAction::WorkflowLaunch { name, input } => {
-                        if self.is_readonly_turn() || desktop_document_tools {
+                        if self.is_readonly_turn() {
                             return Err(acp::Error::invalid_params()
-                                .data("Readonly or editor-coordinated runs cannot launch executable workflows"));
+                                .data("Read-only runs cannot launch executable workflows"));
                         }
                         self.persist_host_turn_user_echo(&original_prompt_text, prompt_id);
                         self.mark_front_message_committed().await;
@@ -1170,6 +1151,29 @@ impl SessionActor {
                     .map(str::to_owned)
             })
             .next();
+        let exact_memory_query = if automation_mode == AutomationTurnMode::Ordinary
+            && !self.startup_hints.is_subagent
+            && matches!(input_origin.as_prompt_origin(), crate::session::PromptOrigin::User)
+            && json_schema.is_none()
+        {
+            let query = original_user_query.as_deref().unwrap_or(&original_prompt_text);
+            let parsed = ExactMemoryQuery::parse(query)
+                .map_err(|message| acp::Error::invalid_params().data(message))?;
+            let has_attachments = !user_images.is_empty() || !extra_images.is_empty()
+                || prompt_blocks.iter().any(|block| match block {
+                    acp::ContentBlock::Text(text) => text.meta.as_ref()
+                        .and_then(|meta| meta.get("echoAgentAttachments"))
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|files| !files.is_empty()),
+                    _ => true,
+                });
+            if parsed.is_some() && has_attachments {
+                return Err(acp::Error::invalid_params().data("请单独发送记忆查询，并在下一条消息中处理附件"));
+            }
+            parsed
+        } else {
+            None
+        };
         let prompt_text_for_hook = Some(user_message.clone());
         {
             if trace_gcs_config.is_some() {
@@ -1309,9 +1313,11 @@ impl SessionActor {
                         round_trace.take(),
                         round_artifact.take(),
                         json_schema.clone(),
+                        exact_memory_query.as_ref(),
                     )
                     .await;
-                if automation_mode == AutomationTurnMode::Finish
+                if exact_memory_query.is_some()
+                    || automation_mode == AutomationTurnMode::Finish
                     || !matches!(round, Ok(TurnOutcome::Completed { .. }))
                 {
                     break round;
@@ -2007,6 +2013,7 @@ impl SessionActor {
         trace_gcs_config: Option<crate::session::repo_changes::TraceExportConfig>,
         artifact_tracker: Option<&'turn crate::upload::manifest::ArtifactTracker>,
         json_schema: Option<serde_json::Value>,
+        exact_memory_query: Option<&'turn ExactMemoryQuery>,
     ) -> std::pin::Pin<
         Box<impl std::future::Future<Output = Result<TurnOutcome, acp::Error>> + 'turn>,
     > {
@@ -2016,6 +2023,7 @@ impl SessionActor {
             trace_gcs_config,
             artifact_tracker,
             json_schema,
+            exact_memory_query,
         ))
     }
 
@@ -2041,6 +2049,7 @@ impl SessionActor {
             trace_gcs_config,
             artifact_tracker,
             json_schema,
+            None,
         )
         .await
     }
@@ -2058,6 +2067,7 @@ impl SessionActor {
         trace_gcs_config: Option<crate::session::repo_changes::TraceExportConfig>,
         artifact_tracker: Option<crate::upload::manifest::ArtifactTracker>,
         json_schema: Option<serde_json::Value>,
+        exact_memory_query: Option<&ExactMemoryQuery>,
     ) -> Result<TurnOutcome, acp::Error> {
         let _ = self.compaction.auto_compact_suppressed.compare_exchange(
             crate::session::compaction_config::SUPPRESS_TURN,
@@ -2065,7 +2075,7 @@ impl SessionActor {
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
         );
-        if automation_mode == AutomationTurnMode::Finish {
+        if exact_memory_query.is_some() || automation_mode == AutomationTurnMode::Finish {
             return self
                 .boxed_conversation_turn(
                     automation_mode,
@@ -2073,6 +2083,7 @@ impl SessionActor {
                     trace_gcs_config,
                     artifact_tracker.as_ref(),
                     json_schema,
+                    exact_memory_query,
                 )
                 .await;
         }
@@ -2087,6 +2098,7 @@ impl SessionActor {
                         trace_gcs_config,
                         artifact_tracker.as_ref(),
                         json_schema,
+                        None,
                     )
                     .await;
             }
@@ -2101,6 +2113,7 @@ impl SessionActor {
                         trace_gcs_config,
                         artifact_tracker.as_ref(),
                         json_schema,
+                        None,
                     )
                     .await;
             }
@@ -2114,6 +2127,7 @@ impl SessionActor {
                 trace_gcs_config.clone(),
                 artifact_tracker.as_ref(),
                 json_schema.clone(),
+                None,
             )
             .await;
         if matches!(
@@ -2181,6 +2195,7 @@ impl SessionActor {
                     req_id,
                     trace_gcs_config.clone(),
                     artifact_tracker.as_ref(),
+                    None,
                     None,
                 )
                 .await;
@@ -2550,11 +2565,48 @@ impl SessionActor {
         trace_gcs_config: Option<crate::session::repo_changes::TraceExportConfig>,
         artifact_tracker: Option<&crate::upload::manifest::ArtifactTracker>,
         json_schema: Option<serde_json::Value>,
+        mut exact_memory_query: Option<&ExactMemoryQuery>,
     ) -> Result<TurnOutcome, acp::Error> {
         let conv_turn_start = std::time::Instant::now();
         let conv_turn_clock = DualClock::now();
+        let mut exact_lookup = if let Some(query) = exact_memory_query {
+            let storage = self.memory.storage().ok_or_else(|| {
+                acp::Error::invalid_params().data("当前会话没有可用的记忆存储")
+            })?;
+            Some(Arc::new(query.resolve(storage)
+                .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?))
+        } else {
+            None
+        };
+        if let (Some(query), Some(lookup)) = (exact_memory_query, exact_lookup.as_ref())
+            && let Some(answer) = query.local_answer(lookup)
+        {
+            self.chat_state_handle
+                .record_turn_start(chrono::Utc::now().timestamp_millis());
+            self.publish_scoped_memory_answer(lookup, answer).await?;
+            if let Some(id) = lookup.record_id() {
+                self.report_memory_sources(vec![id.to_owned()], &[]).await;
+            }
+            if !self.drain_interjections_at_safe_point().await {
+                let snapshot = self.finalize_turn_bookkeeping(
+                    req_id, conv_turn_start, &TurnSpanTotals::default(), None,
+                ).await;
+                if !self.drain_pending_interjections().await {
+                    return Ok(TurnOutcome::Completed {
+                        snapshot: Box::new(snapshot),
+                        tools_called: Vec::new(),
+                        structured_output: None,
+                        refusal: None,
+                    });
+                }
+            }
+            exact_memory_query = None;
+            exact_lookup = None;
+        }
         self.maybe_refresh_model_metadata_on_resume().await;
-        self.maybe_compact_on_model_switch().await?;
+        if exact_memory_query.is_none() {
+            self.maybe_compact_on_model_switch().await?;
+        }
         self.chat_state_handle
             .record_turn_start(chrono::Utc::now().timestamp_millis());
         {
@@ -2601,7 +2653,7 @@ impl SessionActor {
                 "elapsed_since_turn_start_ms": conv_turn_start.elapsed().as_millis() as u64,
             })),
         );
-        if let Some(ref gcs_config) = trace_gcs_config {
+        if exact_memory_query.is_none() && let Some(ref gcs_config) = trace_gcs_config {
             let gcs_cfg = gcs_config.clone();
             let tool_defs = tool_definitions.clone();
             let manifest_clone = artifact_tracker.cloned();
@@ -2632,11 +2684,14 @@ impl SessionActor {
         let mut turn_span_totals = TurnSpanTotals::default();
         let mut model_fingerprint: Option<String> = None;
         let mut structured_output_retries: u32 = 0;
-        let desktop_json = self
-            .tool_bridge_handle()
-            .read_resource::<super::desktop_delivery::DesktopDelivery>()
-            .await
-            .and_then(|d| d.json_shape);
+        let desktop_json = if exact_memory_query.is_none() {
+            self.tool_bridge_handle()
+                .read_resource::<super::desktop_delivery::DesktopDelivery>()
+                .await
+                .and_then(|d| d.json_shape)
+        } else {
+            None
+        };
         let mut media_gen_resamples: u32 = 0;
         let structured_output_validator = json_schema.as_ref().map(|schema| {
             jsonschema::validator_for(schema).map_err(|e| format!("invalid output schema: {e}"))
@@ -2753,8 +2808,11 @@ impl SessionActor {
             self.drain_interjections_at_safe_point().await;
             self.flush_pending_skill_reminders().await;
             self.inject_pending_monitor_events().await;
-            self.maybe_inject_mcp_reminder().await;
-            if self.tool_context.task_output_token_budget.is_none()
+            if exact_memory_query.is_none() {
+                self.maybe_inject_mcp_reminder().await;
+            }
+            if exact_memory_query.is_none()
+                && self.tool_context.task_output_token_budget.is_none()
                 && self.two_pass_active()
                 && !self.compaction.prefire.has_cache()
                 && self.should_prefire_two_pass().await
@@ -2769,7 +2827,8 @@ impl SessionActor {
             if self.tool_context.task_output_token_budget.is_none() {
                 self.refresh_token_if_expired().await;
             }
-            if self.tool_context.task_output_token_budget.is_none()
+            if exact_memory_query.is_none()
+                && self.tool_context.task_output_token_budget.is_none()
                 && let Some(trigger_info) = self.check_auto_compact_needed().await
                 && let Err(e) = self.run_compact_only(trigger_info, false).await
             {
@@ -2778,7 +2837,11 @@ impl SessionActor {
                     return Err(self.surface_compact_auth_failure(e).await);
                 }
             }
-            let memory_reminder = self.first_turn_memory_reminder().await;
+            let memory_reminder = if exact_memory_query.is_none() {
+                self.first_turn_memory_reminder().await
+            } else {
+                None
+            };
             if memory_reminder.is_some() {
                 self.memory
                     .injection_count
@@ -2874,6 +2937,10 @@ impl SessionActor {
                 request.tools.clear();
                 request.tool_choice = None;
             }
+            let active_lookup = exact_lookup.clone();
+            if let (Some(query), Some(lookup)) = (exact_memory_query, active_lookup.as_ref()) {
+                query.isolate_request(&mut request, lookup.clone());
+            }
             request.max_output_tokens = self
                 .tool_context
                 .clamp_task_model_request(request.max_output_tokens)
@@ -2914,13 +2981,20 @@ impl SessionActor {
             }
             let model_timer = std::time::Instant::now();
             let (mut response, latency) = match self
-                .run_turn_via_sampler(request.clone(), &mut rate_limit_waits)
+                .run_turn_via_sampler(
+                    request.clone(),
+                    &mut rate_limit_waits,
+                    active_lookup.is_some(),
+                )
                 .await
             {
                 Ok(SamplerTurnOutcome::Response(r, latency)) => (r, latency),
                 Err(error) => {
                     self.tool_context.fail_task_output_usage_closed();
                     return Err(error);
+                }
+                Ok(SamplerTurnOutcome::CompactAndResubmit) if active_lookup.is_some() => {
+                    return Err(acp::Error::internal_error().data("当前模型无法处理这次记忆摘录，请更换模型或在记忆管理中查看原文"));
                 }
                 Ok(SamplerTurnOutcome::CompactAndResubmit) => {
                     auth_retry_schedule.reset_on_success();
@@ -3054,6 +3128,13 @@ impl SessionActor {
                     }
                 }
             };
+            if let Some(lookup) = &active_lookup {
+                lookup.validate_response(&mut response);
+                // If an interjection is admitted after this response, its
+                // next sampling pass is a regular conversation request.
+                exact_memory_query = None;
+                exact_lookup = None;
+            }
             self.repair_provider_tool_calls(&mut response, &tool_definitions)
                 .await;
             auth_retry_schedule.reset_on_success();
@@ -3239,9 +3320,15 @@ impl SessionActor {
             let final_answer_text = (json_schema.is_some() || desktop_json.is_some())
                 .then(|| response.assistant_text());
             let usage_reported = response.usage.is_some();
-            self.record_response_items(response.items, usage_reported)
-                .await;
-            if let Some(text) = fallback_text {
+            if let (Some(lookup), Some(text)) = (active_lookup.as_ref(), fallback_text.as_deref()) {
+                self.publish_scoped_memory_answer(lookup, text).await?;
+                if let Some(id) = lookup.record_id() {
+                    self.report_memory_sources(vec![id.to_owned()], &[]).await;
+                }
+            } else {
+                self.record_response_items(response.items, usage_reported);
+            }
+            if let Some(text) = fallback_text.filter(|_| active_lookup.is_none()) {
                 tracing::warn!(
                     text_len = text.len(),
                     "emitting fallback AgentMessageChunk — no text chunks were streamed"
@@ -3292,7 +3379,8 @@ impl SessionActor {
                     self.push_system_reminder(&format!("The user explicitly requires JSON-only final output with root type {shape}. Your last final response was not valid for that requirement. Return only the requested JSON, with no Markdown fences, introduction or explanation. Preserve the requested schema and source facts. Do not repeat completed tools."));
                     continue;
                 }
-                if !schema_ok
+                if active_lookup.is_none()
+                    && !schema_ok
                     && !turn_refused
                     && let Some(gate_cfg) = self.todo_gate_policy()
                 {

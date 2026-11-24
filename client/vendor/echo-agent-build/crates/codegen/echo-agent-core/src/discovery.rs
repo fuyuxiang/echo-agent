@@ -339,7 +339,7 @@ fn by_name_in_cwd_with_home(
 ///
 /// The list covers the core built-in agents:
 /// - `general-purpose` — all tools, autonomous research & multi-step tasks
-/// - `explore` — fast read-only codebase exploration (fast model hint)
+/// - `explore` — fast read-only workspace research (fast model hint)
 /// - `plan` — read-only architecture & implementation planning
 pub fn builtin_subagents() -> Vec<AgentDefinition> {
     BuiltinAgentName::subagent_variants()

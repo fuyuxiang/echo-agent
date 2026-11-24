@@ -3,10 +3,6 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const appCss = readFileSync(resolve(process.cwd(), "src/styles/app.css"), "utf8");
-const workbenchCss = readFileSync(
-  resolve(process.cwd(), "src/styles/coding-workbench.css"),
-  "utf8",
-);
 
 describe("inline question scrolling contract", () => {
   it("lays out the card as a bounded column so its body can shrink", () => {
@@ -20,9 +16,6 @@ describe("inline question scrolling contract", () => {
   it("owns vertical scrolling in the question body instead of clipping it", () => {
     expect(appCss).toMatch(
       /\.question-inline__body\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior:\s*contain;/s,
-    );
-    expect(workbenchCss).toMatch(
-      /\.coding-agent__interaction\s*\{[^}]*max-height:\s*min\(56%, 440px\);[^}]*overflow:\s*auto;/s,
     );
   });
 });

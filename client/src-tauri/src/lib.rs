@@ -15,15 +15,6 @@ mod automation;
 mod automations;
 mod backup;
 mod bridge;
-mod coding;
-mod coding_closed_documents;
-mod coding_completion;
-mod coding_document_bridge;
-mod coding_external_tools;
-mod coding_patch;
-mod coding_plan;
-mod coding_review_runtime;
-mod coding_workspace;
 mod commands;
 #[cfg(test)]
 #[path = "../../vendor/echo-agent-build/crates/codegen/echo-agent-runtime/src/session/acp_session_impl/desktop_delivery.rs"]
@@ -44,6 +35,7 @@ mod groups;
 mod host_watchdog;
 mod knowledge_documents;
 mod knowledge_traces;
+mod legacy_workspace;
 mod live_info_mcp;
 mod logging;
 mod mcp;
@@ -51,12 +43,10 @@ mod meeting_capture;
 mod meeting_minutes;
 mod meta;
 mod native_browser_validation;
-mod native_coding_validation;
 mod native_collaboration_validation;
 mod native_core_validation;
 mod native_exit_validation;
 mod native_extensions_validation;
-mod native_ide_validation;
 mod native_knowledge_validation;
 mod native_lifecycle_validation;
 mod native_memoryauto_validation;
@@ -65,6 +55,7 @@ mod native_review_model;
 mod native_review_scope;
 mod notifications;
 mod office_mcp;
+mod office_node;
 mod org;
 mod org_mcp;
 mod paths;
@@ -93,11 +84,11 @@ mod skills;
 mod storage;
 mod team_mcp;
 mod team_orchestration;
-mod theia;
 mod webview_recovery;
 mod weixin;
 #[cfg(any(windows, test))]
 mod windows_install;
+mod workspace_ignore;
 
 use bridge::{FolderTrusts, Permissions, PlanApprovals, Questions};
 use commands::AppState;
@@ -130,8 +121,6 @@ static EXIT_PREPARATION: std::sync::Mutex<
     Option<(String, tokio::sync::oneshot::Sender<ExitPreparationResult>)>,
 > = std::sync::Mutex::new(None);
 const SHUTDOWN_STEP_TIMEOUT: Duration = Duration::from_secs(2);
-#[cfg(windows)]
-const THEIA_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(7);
 
 async fn bounded_shutdown<F: std::future::Future<Output = ()>>(step: F, name: &'static str) {
     if tokio::time::timeout(SHUTDOWN_STEP_TIMEOUT, step)
@@ -140,23 +129,6 @@ async fn bounded_shutdown<F: std::future::Future<Output = ()>>(step: F, name: &'
     {
         tracing::warn!(subsystem = name, "shutdown timed out");
     }
-}
-
-async fn stop_theia_for_exit(app: &tauri::AppHandle) -> Result<(), String> {
-    app.state::<theia::TheiaServer>().begin_shutdown();
-    let handle = app.clone();
-    let stop = tauri::async_runtime::spawn_blocking(move || {
-        handle.state::<theia::TheiaServer>().stop();
-    });
-    #[cfg(windows)]
-    match tokio::time::timeout(THEIA_SHUTDOWN_TIMEOUT, stop).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(format!("IDE 关闭任务失败：{error}")),
-        Err(_) => Err("IDE 进程清理超时，应用已保留，请稍候重试".into()),
-    }
-    #[cfg(not(windows))]
-    stop.await
-        .map_err(|error| format!("IDE 关闭任务失败：{error}"))
 }
 
 async fn required_shutdown<F: std::future::Future<Output = Result<(), String>>>(
@@ -174,13 +146,12 @@ async fn shutdown_before_exit(app: &tauri::AppHandle) -> Result<(), String> {
     tracing::info!("application shutdown started");
     // Start the runtime's session flush immediately. It has its own bounded
     // bound; a second two-second timeout would cancel it before persistence.
-    let (theia, automation, _, runtime) = tokio::join!(
-        stop_theia_for_exit(app),
+    let (automation, _, runtime) = tokio::join!(
         required_shutdown(automation::shutdown_all(), "Browser/Computer Use"),
         bounded_shutdown(weixin::shutdown(app), "weixin"),
         commands::stop_agent_runtime(&state),
     );
-    let errors = [theia.err(), automation.err(), runtime.err()]
+    let errors = [automation.err(), runtime.err()]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
@@ -335,7 +306,6 @@ pub(crate) fn abort_prepared_exit(app: &tauri::AppHandle, error: String, runtime
         .map(|notice| notice.request_id);
     EXIT_READY.store(false, Ordering::Release);
     if runtime_stopped {
-        app.state::<theia::TheiaServer>().cancel_shutdown();
         let _ = app.emit("desktop://runtime-restart-required", ());
     }
     EXIT_IN_PROGRESS.store(false, Ordering::Release);
@@ -939,9 +909,6 @@ pub fn run() {
         .manage(PlanApprovals::new())
         .manage(FolderTrusts::new())
         .manage(shell_fs::FilesystemAccess::new())
-        .manage(coding_workspace::CodingProcesses::new())
-        .manage(theia::TheiaServer::default())
-        .manage(coding::watcher::WatcherRegistry::default())
         .manage(org::shared_state())
         .manage(weixin::WeixinState::default())
         .invoke_handler(tauri::generate_handler![
@@ -964,7 +931,6 @@ pub fn run() {
             native_core_validation::desktop_review_core_manifest,
             native_core_validation::desktop_review_model_connection,
             native_exit_validation::native_exit_review_context,
-            native_ide_validation::desktop_review_ide_manifest,
             desktop_exit_prepared,
             desktop_exit_listener_ready,
             desktop_preferences::desktop_notification_preview_save,
@@ -975,6 +941,10 @@ pub fn run() {
             backup::backup_restore,
             backup::backup_restored_ui,
             backup::backup_acknowledge_ui,
+            backup::backup_archive_legacy_ui,
+            backup::backup_defer_restored_ui,
+            backup::backup_has_deferred_ui,
+            backup::backup_export_ui_archive,
             backup::backup_last_error,
             // session lifecycle
             commands::agent_init,
@@ -986,9 +956,13 @@ pub fn run() {
             commands::agent_recover_session,
             commands::agent_list_sessions,
             commands::agent_list_all_sessions,
+            commands::agent_list_session_history,
+            commands::agent_find_session_summary,
+            commands::agent_find_session_summaries,
             commands::agent_set_model,
             commands::agent_list_workspaces,
             commands::agent_set_knowledge_sources,
+            commands::agent_is_private_memory_query,
             commands::agent_send,
             commands::agent_cancel,
             commands::agent_shutdown,
@@ -1199,7 +1173,7 @@ pub fn run() {
             agent_admin::tasks_list,
             agent_admin::task_kill,
             agent_admin::folder_trust_respond,
-            agent_admin::set_coding_mode,
+            agent_admin::set_agent_mode,
             agent_admin::set_plan_mode,
             agent_admin::toggle_plan_mode,
             agent_admin::internal_reload,
@@ -1208,6 +1182,8 @@ pub fn run() {
             // first-party Browser Use / Computer Use runtime and safety UI
             automation::automation_capabilities,
             automation::automation_status,
+            automation::automation_focus_browser,
+            automation::native_panel::browser_panel,
             automation::automation_targets,
             automation::automation_select_target,
             automation::automation_preview,
@@ -1289,115 +1265,9 @@ pub fn run() {
             shell_fs::browse_directory,
             shell_fs::echo_agent_data_dir,
             shell_fs::open_echo_agent_data_dir,
-            // dedicated Coding Workspace: bounded repository analysis and
-            // user-initiated validation commands inside an authorized root
-            coding::task::coding_task_list,
-            coding::task::coding_task_create,
-            coding::task::coding_task_get,
-            coding::task::coding_task_delete,
-            coding::task::coding_task_rename,
-            coding::task::coding_task_bind_runtime,
-            coding::task::coding_task_set_context,
-            coding::task::coding_task_confirm_acceptance,
-            coding::changeset::coding_changeset_get,
-            coding::changeset::coding_changeset_capture_baseline,
-            coding::changeset::coding_changeset_diff,
-            coding::changeset::coding_changeset_mark_reviewed,
-            coding::changeset::coding_changeset_record_change,
-            coding::changeset::coding_changeset_discard_file,
-            coding::changeset::coding_changeset_sync,
-            coding::changeset::coding_task_rollback,
-            coding::verification::coding_verification_detect,
-            coding::verification::coding_verification_list,
-            coding::verification::coding_verification_approve_plan_command,
-            coding::verification::coding_verification_run,
-            coding::verification::coding_verification_cancel,
-            coding::diagnostics::coding_diagnostics_list,
-            // phase 2 cross-file symbol index (Task 17)
-            coding::symbols::coding_index_status,
-            coding::symbols::coding_index_rebuild,
-            coding::symbols::coding_symbol_query,
-            coding::symbols::coding_symbol_at,
-            coding::watcher::coding_index_bootstrap,
-            coding::watcher::coding_index_release,
-            // phase 2 reference search (Task 19)
-            coding::refs::coding_refs_find,
-            coding::refs::coding_refs_definition,
-            // phase 2 impact analysis (Task 20)
-            coding::impact::coding_impact_analyze,
-            coding::orchestrator::coding_task_submit_requirement,
-            coding::orchestrator::coding_task_sync_plan,
-            coding::orchestrator::coding_task_execution_ledger,
-            coding::orchestrator::coding_task_report_start_failed,
-            coding::orchestrator::coding_task_begin_followup,
-            coding::orchestrator::coding_task_report_interrupted,
-            coding::orchestrator::coding_task_resume,
-            coding::orchestrator::coding_task_begin_verification,
-            coding::orchestrator::coding_orchestrator_report_implementation,
-            coding::orchestrator::coding_orchestrator_report_verification,
-            coding::orchestrator::coding_orchestrator_state,
-            coding::delivery::coding_delivery_report,
-            coding::delivery::coding_delivery_commit_input,
-            coding::delivery::coding_delivery_pr_input,
-            coding::delivery::coding_git_commit,
-            coding::delivery::coding_delivery_commit_hunks,
-            coding::isolation::coding_isolation_create,
-            coding::isolation::coding_isolation_info,
-            coding::isolation::coding_isolation_integration_preview,
-            coding::isolation::coding_isolation_integrate,
-            coding::review::coding_review_confirm,
-            coding::tdd::coding_tdd_status,
-            coding::tdd::coding_tdd_record_red,
-            coding::tdd::coding_tdd_waive,
-            coding::verification::coding_verification_config_get,
-            coding::verification::coding_verification_config_save,
-            coding::changeset::coding_changeset_revert_hunk_preview,
-            coding::changeset::coding_checkpoint_start,
-            coding::changeset::coding_checkpoint_preserve_buffer,
-            coding::task::coding_task_for_session,
-            coding::changeset::coding_checkpoint_finish,
-            coding::changeset::coding_checkpoint_list,
-            coding::changeset::coding_checkpoint_restore,
-            coding::delivery::coding_git_commit_history,
-            coding::isolation::coding_isolation_list,
-            coding::isolation::coding_isolation_cleanup,
-            coding_closed_documents::coding_closed_document_snapshot,
-            coding_closed_documents::coding_closed_document_apply,
-            coding_document_bridge::coding_document_tool_respond,
-            coding_document_bridge::coding_document_tool_is_active,
-            coding_document_bridge::coding_document_cancel_ack,
-            coding_document_bridge::coding_document_cancellation_state,
-            coding_external_tools::coding_external_tools_pending,
-            coding_external_tools::coding_external_tool_recover,
-            coding_document_bridge::coding_document_editor_attach,
-            coding_document_bridge::coding_document_editor_present,
-            coding_document_bridge::coding_document_editor_detach,
-            coding_completion::coding_inline_observe,
-            coding::verification::coding_verification_freshness,
-            coding::review::coding_review_list,
-            coding_plan::coding_plan_save,
-            coding_patch::coding_document_patch_preview,
-            coding_completion::coding_inline_complete,
-            coding_completion::coding_inline_consent,
-            coding_completion::coding_inline_cancel,
-            coding_workspace::coding_analyze_workspace,
-            coding_workspace::coding_git_snapshot,
-            coding_workspace::coding_git_diff,
-            coding_workspace::coding_git_set_staged,
-            coding_workspace::coding_read_document,
-            coding_workspace::coding_write_document,
-            coding_workspace::coding_create_entry,
-            coding_workspace::coding_delete_entries,
-            coding_workspace::coding_rename_entry,
-            coding_workspace::coding_copy_entries,
-            coding_workspace::coding_move_entries,
-            coding_workspace::coding_restore_from_trash,
-            coding_workspace::coding_search_workspace,
-            coding_workspace::coding_terminal_create,
-            coding_workspace::coding_terminal_write,
-            coding_workspace::coding_terminal_resize,
-            coding_workspace::coding_terminal_close,
-            theia::coding_theia_start,
+            legacy_workspace::pending_external_operations,
+            legacy_workspace::confirm_external_operation_stopped,
+            legacy_workspace::legacy_workspace_sessions,
             // durable local project metadata (renderer localStorage is only a cache)
             projects::projects_load,
             projects::projects_save,
@@ -1414,6 +1284,7 @@ pub fn run() {
             storage::storage_list,
             storage::storage_read_text,
             storage::storage_write_text,
+            storage::storage_create_text,
             storage::storage_upload_file,
             storage::storage_download_file,
             storage::storage_delete,

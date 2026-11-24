@@ -13,7 +13,7 @@ import { useContinuationStore } from "@/stores/continuation-store";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
 import { restoreKnowledgeTraces } from "@/lib/knowledge-traces-client";
 import { createMarkdownHostConfig, openLocalPath } from "@/lib/markdown-host";
-import { rewindExecute, rewindPoints, rewindUndoPreview, setCodingMode, sessionContinue, type ContinuationRequest } from "@/lib/agent-client";
+import { rewindExecute, rewindPoints, rewindUndoPreview, setAgentMode, sessionContinue, type ContinuationRequest } from "@/lib/agent-client";
 import { continuationTargets, inheritedMessageIds, continuationAnchor, latestContinuationTarget } from "@/lib/session-continuation";
 import { ConversationOrigin, ContinuationLinks } from "./ConversationContinuation";
 import {
@@ -29,6 +29,7 @@ import { PlanPanel } from "./PlanPanel";
 import { RewindBar } from "./RewindBar";
 import { PermissionInlineCard } from "./PermissionDialog";
 import { QuestionInlineCard } from "./QuestionInlineCard";
+import { SessionInteractionNotice } from "./SessionInteractionNotice";
 import { ToolSidePanel, type ToolSidePanelMode } from "./ToolSidePanel";
 import { FindBar, isFindHit, type FindOccurrence } from "./FindBar";
 import { buildQuestionHistory, QuestionHistoryPopover } from "./QuestionHistoryPopover";
@@ -58,9 +59,10 @@ import { useStickToBottom } from "./use-stick-to-bottom";
 import { isGlobalShortcutBlocked } from "@/lib/keyboard-scope";
 import { stripAttachmentTransportContext } from "@/lib/user-message";
 import { automationStatusForMessage, computerTaskRunning } from "@/lib/computer-task";
+import type { BrowserOpenRequest } from "./BrowserPreview";
 import { AutomationApprovalCard } from "./AutomationControls";
 import { useSessionAutomation } from "@/lib/use-session-automation";
-import { type AutomationMode } from "@/lib/automation-client";
+import { automationCapabilities, type AutomationMode, type BrowserPanelCapabilities } from "@/lib/automation-client";
 import { useAppDialog } from "./AppDialog";
 import type {
   MessageRetryKind,
@@ -223,6 +225,16 @@ export function ChatView({
   const [attentionChoice, setAttentionChoice] = useState<{ sessionId: string | null; kind: "permission" | "question" | "plan" }>();
   const handledAttentionRef = useRef<number | undefined>(undefined);
   const automation = useSessionAutomation(sessionId);
+  const [detectedBrowserPanel, setDetectedBrowserPanel] = useState<BrowserPanelCapabilities>();
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let active = true;
+    void automationCapabilities().then(value => {
+      if (active && value?.browserPanel) setDetectedBrowserPanel(value.browserPanel);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+  const browserPanel = automation.status?.browserPanel ?? detectedBrowserPanel;
   const taskRunning = streaming || computerTaskRunning(automation.status);
   const runtimeErrorContext = useSessionStore(s => s.runtimeErrorContext);
   const workspaceRefreshSignal = useMemo(() => ({error, revision:taskRefreshSignal}), [error, taskRefreshSignal]);
@@ -360,7 +372,7 @@ export function ChatView({
         const stopped = await onCancel("pause");
         if (stopped === false) throw new Error("暂停尚未确认，请稍后重试");
       }
-      await setCodingMode(sessionId, nextMode === "default" ? "agent" : nextMode);
+      await setAgentMode(sessionId, nextMode === "default" ? "agent" : nextMode);
       // Native automation status owns tool mode; this local projection also
       // covers the initial status load and asynchronous acknowledgements.
       useSessionStore.getState().setAgentMode(nextMode, sessionId);
@@ -705,6 +717,10 @@ export function ChatView({
   const workspaceSelectionRef = useRef({tool: activeTool, preview: previewRequest});
   workspaceSelectionRef.current = {tool: activeTool, preview: previewRequest};
   const previewSequence = useRef(0);
+  const [browserRequest, setBrowserRequest] = useState<BrowserOpenRequest & { sessionId: string }>();
+  const consumeBrowserRequest = useCallback((sequence: number) => {
+    setBrowserRequest(current => current?.sequence === sequence ? undefined : current);
+  }, []);
   const [workspaceNavigationId, setWorkspaceNavigationId] = useState(0);
   const previewPath = previewRequest?.sessionId === sessionId ? previewRequest?.path ?? null : null;
 
@@ -713,7 +729,7 @@ export function ChatView({
     let active = true;
     let generation = 0;
     const load = (event?: Event) => {
-      // History focus changes before agent_load_session binds the native cwd.
+      // History focus changes before agent_recover_session binds the native cwd.
       // The existing model/loading guard turns false only after load settles.
       if (!sessionId || modelLoading) return;
       if (event && ((event as CustomEvent).detail?.source !== "document-export"
@@ -722,7 +738,7 @@ export function ChatView({
       void loadSessionDocumentArtifacts(sessionId).then(items => {
         if (active && request === generation) setExportArtifacts({ sessionId, items });
       }).catch(error => {
-        if (active) onToast?.(`无法加载会话成果：${String(error).replace(/^Error:\s*/, "")}`);
+        if (active && request === generation) onToast?.(`无法加载会话成果：${String(error).replace(/^Error:\s*/, "")}`);
       });
     };
     load();
@@ -797,16 +813,6 @@ export function ChatView({
   const inlineRuntimeError = errorBelongsToTurn && terminalMessage
     && ["runtime", "environment"].includes(getExecutionNotice(terminalMessage, streaming, error ?? undefined)?.kind ?? "") ? error ?? undefined : undefined;
 
-  const markdownConfig = useMemo(
-    () =>
-      createMarkdownHostConfig({
-        cwd,
-        sessionId,
-        onToast,
-      }),
-    [cwd, sessionId, onToast],
-  );
-
   const {
     scrollRef,
     contentRef,
@@ -831,6 +837,27 @@ export function ChatView({
     setWorkspaceView(next);
   }, [closeQuestionHistory, sessionId]);
 
+  const markdownConfig = useMemo(() => createMarkdownHostConfig({
+    cwd,
+    sessionId,
+    onToast,
+    onOpenWeb: sessionId && browserPanel?.web !== false && typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? url => {
+      setBrowserRequest({ sessionId, kind: "open", url, sequence: ++previewSequence.current });
+      transitionWorkspace("browser");
+    } : undefined,
+  }), [browserPanel?.web, cwd, sessionId, onToast, transitionWorkspace]);
+
+  const lastBrowserRun = useRef<string | null>(null);
+  useEffect(() => {
+    const status = automation.status;
+    if (!sessionId || status?.sessionId !== sessionId || !status.browserRunning || !computerTaskRunning(status)) return;
+    if (status.mode !== "browser_use" && !status.task?.currentTool?.startsWith("browser_")) return;
+    const run = `${sessionId}:${status.task?.runId ?? status.task?.promptId ?? status.task?.generation}`;
+    if (lastBrowserRun.current === run) return;
+    lastBrowserRun.current = run;
+    transitionWorkspace("browser");
+  }, [automation.status, sessionId, transitionWorkspace]);
+
   type WorkspaceFrame = { view: WorkspaceView; tool: ToolCallView | null; path?: string; artifact?: SessionArtifact };
   const workspaceTrail = useRef<WorkspaceFrame[]>([]);
   const [workspaceTrailDepth, setWorkspaceTrailDepth] = useState(0);
@@ -849,13 +876,18 @@ export function ChatView({
     setPreviewRequest(null);
     transitionWorkspace("tool");
   }, [pushWorkspaceFrame, transitionWorkspace]);
-  const handleSelectArtifact = useCallback((artifact: SessionArtifact) => {
+  const handleSelectArtifact = useCallback((artifact: SessionArtifact, sourceOnly = false) => {
     const current = workspaceViewRef.current;
     if (current === "tool") pushWorkspaceFrame();
+    if (!sourceOnly && sessionId && browserPanel?.artifacts !== false && /\.html?$/i.test(artifact.path) && "__TAURI_INTERNALS__" in window) {
+      setBrowserRequest({ sessionId, kind: "artifact", path: artifact.path, sequence: ++previewSequence.current });
+      transitionWorkspace("browser");
+      return;
+    }
     setPreviewRequest({ path: artifact.path, artifact, sessionId, sequence: ++previewSequence.current });
     const catalogued = artifact.verifiedOutput || artifactCatalogRef.current.some(item => artifactFileKey(item.path, cwd) === artifactFileKey(artifact.path, cwd));
     transitionWorkspace(current === "fileTree" ? "fileTree" : catalogued ? "artifacts" : "fileTree");
-  }, [cwd, pushWorkspaceFrame, sessionId, transitionWorkspace]);
+  }, [browserPanel?.artifacts, cwd, pushWorkspaceFrame, sessionId, transitionWorkspace]);
   const handleWorkspaceBack = () => {
     const previous = workspaceTrail.current.pop();
     setWorkspaceTrailDepth(workspaceTrail.current.length);
@@ -1282,6 +1314,7 @@ export function ChatView({
           )}
         </div>
         <div className="chatview__footer" ref={trayAttentionRef}>
+          {sessionId && <SessionInteractionNotice sessionId={sessionId} />}
           {/* Inline permission / question cards: session-scoped, never block sidebar. */}
           {attentionItems.length > 1 && <div className="chatview__attention-tabs" role="group" aria-label="待处理事项">
             {attentionItems.map(item => <button type="button" key={item.kind}
@@ -1343,10 +1376,10 @@ export function ChatView({
                       if (latest.sessionId !== sessionId || cancelRequests.current.has(sessionId)
                         || latest.control || latest.error) return false;
                       if (!latest.streaming) return sendDocumentMessage(text, attachments);
-                      useMessageQueueStore.getState().enqueue(sessionId, text, attachments, undefined, activeDocumentEdit);
+                      useMessageQueueStore.getState().enqueue(sessionId, text, attachments, activeDocumentEdit);
                       setDocumentEdit(null);
                     })();
-                    useMessageQueueStore.getState().enqueue(sessionId, text, attachments, undefined, activeDocumentEdit ?? undefined);
+                    useMessageQueueStore.getState().enqueue(sessionId, text, attachments, activeDocumentEdit ?? undefined);
                     if (activeDocumentEdit) setDocumentEdit(null);
                   }
                 : undefined
@@ -1359,9 +1392,6 @@ export function ChatView({
             models={models}
             onModelChange={onModelChange}
             cwd={workspace.cwd}
-            managedTaskWorkspace={managedTaskWorkspace}
-            onOpenWorkspace={openWorkspaceDirectory}
-            openWorkspaceDisabled={draftOnly || !workspace.available || workspace.busy}
             showDisclaimer
             showMeta
             compact
@@ -1453,6 +1483,24 @@ export function ChatView({
         artifacts={artifacts}
         previewPath={previewPath}
         previewRequestId={previewRequest?.sequence}
+        browserRequest={browserRequest?.sessionId === sessionId ? browserRequest : undefined}
+        browserPanel={browserPanel}
+        onBrowserRequestHandled={consumeBrowserRequest}
+        onBrowserTakeOver={() => cancelTask("pause")}
+        onShowBrowserArtifactSource={path => handleSelectArtifact({ id: path, path, kind: "file", title: path,
+          toolCallId: "", status: "completed" }, true)}
+        onEditBrowserArtifact={({ path, tag, id, label }) => {
+          if (!sessionId) return;
+          const target = `<${tag}>${id ? `（id 为 ${JSON.stringify(id)}）` : ""}${label ? `，内容为 ${JSON.stringify(label)}` : ""}`;
+          const prompt = `请修改 HTML 产物 ${JSON.stringify(path)} 中的元素 ${target}。\n具体修改要求：`;
+          setDraft(sessionId, draft.trim() ? `${draft}\n\n${prompt}` : prompt);
+          closeWorkspace();
+          requestAnimationFrame(() => {
+            const input = document.querySelector<HTMLTextAreaElement>(".chatview .echo-composer__input");
+            input?.focus();
+            if (input) input.setSelectionRange(input.value.length, input.value.length);
+          });
+        }}
         navigationRequestId={workspaceNavigationId}
         workspaceInfo={<SessionWorkspaceDirectory workspace={workspace} managedTaskWorkspace={managedTaskWorkspace} onOpen={openWorkspaceDirectory} />}
         workspaceAvailable={workspace.available}

@@ -4,7 +4,6 @@ import {
   hasActiveItems,
   queueTerminalPolicy,
 } from "../message-queue-store";
-import { codingQueueId } from "@/lib/queue-owner";
 
 const resetStore = () => useMessageQueueStore.setState({ queues: {} });
 
@@ -54,11 +53,11 @@ describe("message-queue-store — 入队与读取", () => {
   it("文档修改指令保留当前文档上下文并拒绝跨任务入队", () => {
     const documentEdit = {sessionId:"s1",path:"/work/作息表.docx",title:"作息表",revision:3,selectedText:"6:30 起床"};
     const s = useMessageQueueStore.getState();
-    const id = s.enqueue("s1", "改成七点半", [], undefined, documentEdit);
+    const id = s.enqueue("s1", "改成七点半", [], documentEdit);
     s.update("s1", id, "改成八点");
     expect(s.claimById("s1", id, "turn")?.documentEdit).toEqual(documentEdit);
     expect(JSON.parse(localStorage.getItem("echoagent.outbox.v1")!).data.s1[0].documentEdit).toEqual(documentEdit);
-    expect(() => s.enqueue("s2", "修改", [], undefined, documentEdit)).toThrow("任务不一致");
+    expect(() => s.enqueue("s2", "修改", [], documentEdit)).toThrow("任务不一致");
     expect(s.getQueue("s2")).toEqual([]);
   });
 });
@@ -167,49 +166,6 @@ describe("message-queue-store — 暂停/恢复", () => {
   });
 });
 
-describe("message-queue-store — shiftNext", () => {
-  beforeEach(resetStore);
-
-  it("取第一条 active 并从队列移除", () => {
-    const s = useMessageQueueStore.getState();
-    s.enqueue("s1", "a");
-    s.enqueue("s1", "b");
-    const item = s.shiftNext("s1");
-    expect(item?.text).toBe("a");
-    expect(store().getQueue("s1").map((i) => i.text)).toEqual(["b"]);
-  });
-
-  it("跳过 paused 项取下一条 active", () => {
-    const s = useMessageQueueStore.getState();
-    const id1 = s.enqueue("s1", "a");
-    s.enqueue("s1", "b");
-    s.setStatus("s1", id1, "paused");
-    const item = s.shiftNext("s1");
-    expect(item?.text).toBe("b");
-    // paused 项保留
-    expect(store().getQueue("s1").map((i) => i.text)).toEqual(["a"]);
-  });
-
-  it("无 active 项返回 null", () => {
-    const s = useMessageQueueStore.getState();
-    const id = s.enqueue("s1", "a");
-    s.setStatus("s1", id, "paused");
-    expect(s.shiftNext("s1")).toBeNull();
-    expect(store().getQueue("s1")).toHaveLength(1);
-  });
-
-  it("空队列返回 null", () => {
-    expect(useMessageQueueStore.getState().shiftNext("s1")).toBeNull();
-  });
-
-  it("取走最后一条 active 后会话键被清理", () => {
-    const s = useMessageQueueStore.getState();
-    s.enqueue("s1", "a");
-    s.shiftNext("s1");
-    expect(store().queues["s1"]).toBeUndefined();
-  });
-});
-
 describe("message-queue-store — claimNext", () => {
   beforeEach(resetStore);
 
@@ -233,6 +189,24 @@ describe("message-queue-store — claimNext", () => {
     s.settleSending("s1", "retry");
 
     expect(s.claimNext("s1")?.id).toBe(id);
+  });
+
+  it("跳过暂停项，最后一条消息完成后清理队列", () => {
+    const queue = store();
+    const paused = queue.enqueue("s1", "稍后发送");
+    const next = queue.enqueue("s1", "先发送");
+    queue.setStatus("s1", paused, "paused");
+
+    expect(queue.claimNext("s1", "p1")?.id).toBe(next);
+    expect(queue.settleSending("s1", "consume", "p1")?.id).toBe(next);
+    expect(queue.claimNext("s1", "p2")).toBeNull();
+    expect(queue.getQueue("s1")).toMatchObject([{ id: paused, status: "paused" }]);
+
+    queue.setStatus("s1", paused, "queued");
+    expect(queue.claimNext("s1", "p3")?.id).toBe(paused);
+    expect(queue.settleSending("s1", "consume", "p3")?.id).toBe(paused);
+    expect(store().queues["s1"]).toBeUndefined();
+    expect(queue.claimNext("s1", "p4")).toBeNull();
   });
 
   it("按 id 认领用户选择的条目并绑定 promptId", () => {
@@ -317,9 +291,9 @@ describe("message-queue-store — settleSending", () => {
 describe("message-queue-store — 原生接收确认", () => {
   beforeEach(resetStore);
 
-  it("仅确认同一会话和 prompt，重复确认不改状态，编码队列沿用相同身份边界", () => {
+  it("仅确认同一会话和 prompt，重复确认不改状态", () => {
     const queue = store();
-    const key = codingQueueId("/repo", "A", "s1")!;
+    const key = "s1";
     for (const owner of ["s1", "s2", key]) {
       const id = queue.enqueue(owner, "重复文本");
       queue.claimById(owner, id, "same-prompt");

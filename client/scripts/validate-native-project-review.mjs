@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join, resolve, basename } from 'node:path';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join, resolve, basename, dirname } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { pathToFileURL } from 'node:url';
 import { seedReviewModel, captureReviewModelLogs, redactReviewModelSecrets } from './lib/native-review-model.mjs';
 import { cleanNativeReviewEnvironment } from './lib/native-review-isolation.mjs';
 import { nativeReviewOutput } from './lib/native-review-output.mjs';
@@ -99,24 +98,46 @@ function physicalProof(home,scope,e,sourceMarker) {
     runtimeFiles:transcripts.map(t=>({name:basename(t.path),sha256:sha(t.text)})),automation:{id:schedule.id,status:schedule.status,recordId:r.id,scheduledFor:r.scheduledFor,startedAt:r.startedAt,sessionId:r.sessionId}};
 }
 
+export function readPreparedProjectReviewProfile(accountProfile) {
+  const path = resolve(accountProfile);
+  const home = realpathSync(dirname(path));
+  assert(/^\/private\/tmp\/echo-native-review-project-[A-Za-z0-9_-]+$/.test(home));
+  assert.equal(join(home, 'organization-profile.json'), path);
+  const directory = lstatSync(home), profile = lstatSync(path);
+  assert(directory.isDirectory() && directory.uid === process.getuid() && (directory.mode & 0o777) === 0o700);
+  assert(profile.isFile() && profile.uid === process.getuid() && (profile.mode & 0o777) === 0o600 && profile.size <= 65536);
+  assert.equal(realpathSync(path), path);
+  for (const name of ['echoagent-projects.json', 'echoagent-automations.json', 'native-project-manifest.private.json']) {
+    assert(!existsSync(join(home, name)), 'Use a fresh dedicated data home with only organization sign-in completed');
+  }
+  const original=JSON.parse(readFileSync(path));
+  assert(original.serverUrl?.startsWith('https://') && original.userId && original.username && original.deviceId,'Provide the explicitly selected real account profile');
+  return { home, original };
+}
+
 export async function runNativeProjectReview(executable,accountProfile) {
   assert.equal(process.platform,'darwin'); assertNativeReviewSessionUnlocked();
-  executable=realpathSync(resolve(executable));accountProfile=realpathSync(resolve(accountProfile));
-  const original=JSON.parse(readFileSync(accountProfile));
-  assert(original.serverUrl?.startsWith('https://') && original.userId && original.username && original.deviceId,'Provide the explicitly selected real account profile');
+  executable=realpathSync(resolve(executable));
+  const { home, original } = readPreparedProjectReviewProfile(accountProfile);
   const fixture=readFileSync(new URL('./fixtures/native-project-review.js',import.meta.url));const binary=readFileSync(executable);
   assert(binary.includes(fixture),'Rebuild native app with the current fixed project journey');
   const output=nativeReviewOutput('native-project','NATIVE_PROJECT_REVIEW_OUTPUT');
-  const home=realpathSync(mkdtempSync('/private/tmp/echo-native-review-project-'));chmodSync(home,0o700);
   const cwd=join(home,'workspaces/default'),legacy=join(home,'empty-legacy');mkdirSync(cwd,{recursive:true,mode:0o700});mkdirSync(legacy,{mode:0o700});
+  for (const path of [join(home, 'workspaces'), cwd, legacy]) {
+    const stat = lstatSync(path);
+    assert(stat.isDirectory() && stat.uid === process.getuid() && realpathSync(path) === path);
+  }
   chmodSync(join(home,'workspaces'),0o700);chmodSync(cwd,0o700);
-  writeFileSync(join(home,'config.toml'),`[marketplace]\nofficial_marketplace_auto_installed = true\ndisabled_sources = [${readonlyCompatibilitySourceRevocations().map(JSON.stringify).join(', ')}]\n[claude_compat]\nimported = true\n`,{mode:0o600});
+  const config = join(home, 'config.toml');
+  if (!existsSync(config)) {
+    writeFileSync(config,`[marketplace]\nofficial_marketplace_auto_installed = true\ndisabled_sources = [${readonlyCompatibilitySourceRevocations().map(JSON.stringify).join(', ')}]\n[claude_compat]\nimported = true\n`,{mode:0o600,flag:'wx'});
+  }
+  assert(lstatSync(config).isFile() && realpathSync(config) === config);
   seedReviewModel(home);
-  copyFileSync(accountProfile,join(home,'organization-profile.json'));chmodSync(join(home,'organization-profile.json'),0o600);
-  // Reuse only this selected account through production Keychain + refresh;
-  // no token is fabricated, injected into the renderer, or written to evidence.
+  // The test account signed in to this exact home through the production UI.
+  // Keeping the directory preserves its own Keychain service across restarts.
   const nonce=randomBytes(16).toString('hex'),sourceMarker=`SOURCE-${randomBytes(16).toString('hex')}`;
-  writeFileSync(join(cwd,'source.csv'),`item,amount\nalpha,7\nbeta,11\nsource_marker,${sourceMarker}\n`,{mode:0o600});
+  writeFileSync(join(cwd,'source.csv'),`item,amount\nalpha,7\nbeta,11\nsource_marker,${sourceMarker}\n`,{mode:0o600,flag:'wx'});
   const result={version:1,kind:'real-native-project-driver',home,cwd,output,passed:false,nativeVerified:false,
     binarySha256:sha(binary),fixtureSha256:sha(fixture),modelId:PROJECT_MODEL_ID,serverUrl:original.serverUrl,username:original.username,phases:[],errors:[]};
   let active,logs,expected,interrupted=false;
@@ -170,7 +191,7 @@ export async function runNativeProjectReview(executable,accountProfile) {
   }
   console.log(JSON.stringify({passed:result.passed,nativeVerified:result.nativeVerified,home,output,errors:result.errors}));return result;
 }
-if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
-  assert.equal(process.argv.length,4,'Pass the freshly built binary and the explicitly selected real organization profile; set NATIVE_REVIEW_MODEL_CONFIG');
+if (import.meta.main){
+  assert.equal(process.argv.length,4,'Pass the freshly built binary and the profile signed in to its dedicated project review home, with NATIVE_REVIEW_MODEL_CONFIG set');
   if(!(await runNativeProjectReview(process.argv[2],process.argv[3])).passed)process.exitCode=1;
 }

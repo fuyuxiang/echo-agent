@@ -149,12 +149,6 @@ log_step "Checking vendored Runtime source"
 node "$PROJECT_ROOT/scripts/verify-vendored-runtime.mjs"
 log_ok "Vendored Runtime source is complete"
 
-log_step "Building and staging Echo Code IDE"
-pnpm ide:build
-pnpm ide:stage
-node scripts/validate-theia-git-runtime.mjs
-log_ok "Vendored Theia IDE and Node runtime staged"
-
 # ---------------------------------------------------------------------------
 # 5. Build the application, then package it separately. Tauri only exposes
 #    bundle_dmg.sh output at verbose level; keep that enabled for packaging
@@ -255,10 +249,9 @@ if [[ $BUILD_RC -eq 0 ]]; then
         log_err "Bundled meeting transcription executable is missing or has the wrong architecture: $ARCH"
         exit 1
     fi
-    THEIA_ENTRY="$APP_BUNDLE/Contents/Resources/theia/browser/lib/backend/main.js"
-    NODE_EXECUTABLE="$APP_BUNDLE/Contents/Resources/theia/node/bin/node"
-    if [[ ! -f "$THEIA_ENTRY" || ! -x "$NODE_EXECUTABLE" ]]; then
-        log_err "Echo Code IDE or its Node.js runtime is missing from the app bundle"
+    NODE_EXECUTABLE="$APP_BUNDLE/Contents/Resources/office/node/bin/node"
+    if [[ ! -x "$NODE_EXECUTABLE" ]]; then
+        log_err "The Office Node.js runtime is missing from the app bundle"
         exit 1
     fi
     if ! lipo -archs "$NODE_EXECUTABLE" | tr ' ' '\n' | grep -Fxq "$ARCH"; then

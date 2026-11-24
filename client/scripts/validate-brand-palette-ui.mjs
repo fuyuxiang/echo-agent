@@ -45,7 +45,7 @@ async function inspectPalette(page) {
       return (light + .05) / (dark + .05);
     };
     const controls = [...document.querySelectorAll("button,[role=button],.echo-checkbox--checked .echo-checkbox-box")]
-      .filter(el => el.checkVisibility() && !el.matches(":disabled,[aria-disabled=true]") && !el.closest(".monaco-editor,.xterm,.markdown-body,.md-content,[class*=avatar]"))
+      .filter(el => el.checkVisibility() && !el.matches(":disabled,[aria-disabled=true]") && !el.closest(".markdown-body,.md-content,[class*=avatar]"))
       .map(el => {
         const style = getComputedStyle(el);
         const selectedKind = el.matches(".pd-pill--on") ? "project"
@@ -113,7 +113,7 @@ try {
     executablePath: process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
   const routes = `http://127.0.0.1:${server.httpServer.address().port}/__ui-review`;
   const base = `${routes}/ui-surfaces`;
-  const surfaces = ["controls", "home", "projects", "management-schedules", "management-experts", "management-knowledge", "organization-shell", "organization-login", "conversation", "coding", "meeting", "general", "personal-memory", "notify-channels", "model", "archived"];
+  const surfaces = ["controls", "home", "projects", "management-schedules", "management-experts", "management-knowledge", "organization-shell", "organization-login", "conversation", "meeting", "general", "personal-memory", "notify-channels", "model", "archived"];
   for (const theme of ["light", "dark"]) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, colorScheme: theme });
     page.setDefaultNavigationTimeout(60000);

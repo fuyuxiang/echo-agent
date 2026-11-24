@@ -1,6 +1,4 @@
 import type { OpenTeamExecution, StartTeamWork } from "@/lib/team-project-client";
-import type { ConfirmAction } from "./AppDialog";
-import type { CodingTurnOptions } from "@/lib/agent-client";
 import { lazy, Suspense, type ComponentProps, type ReactNode } from "react";
 import { AgentToolIcon } from "@/foundation/components/Icon/icons";
 import type { StartProjectConversation } from "@/lib/project-context";
@@ -40,12 +38,6 @@ const CloudStoragePanel = lazy(() =>
 const OrganizationMemoryPanel = lazy(() =>
   import("./OrganizationMemoryPanel").then((module) => ({ default: module.OrganizationMemoryPanel })),
 );
-const CodingWorkbench = lazy(() =>
-  import("@/features/coding/CodingWorkbench").then((module) => ({
-    default: module.CodingWorkbench,
-  })),
-);
-
 function DeferredPanel({ children }: { children: ReactNode }) {
   return (
     <Suspense
@@ -86,42 +78,9 @@ interface PlaceholderPageProps {
   cwd?: string;
   /** Switch the active workspace (projects panel). */
   onSelectWorkspace?: (cwd: string) => void;
-  /** Known working directories for the Coding Workspace picker. */
+  /** Known working directories for the project picker. */
   workspaces?: WorkspaceInfo[];
-  /** Recently opened coding projects. */
-  codingWorkspaces?: WorkspaceInfo[];
-  /** Currently active coding project (forwarded to CodingWorkbench). */
-  activeCodingWorkspaceCwd?: string;
-  /** Close the current project or remove a path from recent projects. */
-  onCloseCodingWorkspace?: (cwd: string) => void;
-  /** Coding Workspace Agent/runtime integration. */
-  codingApiReady?: boolean;
-  /** Retained Code surfaces stop transient interactions while another page is active. */
-  codingActive?: boolean;
-  codingModels?: ModelOption[];
-  codingModelId?: string;
   onOpenModelSettings?: () => void;
-  onExitCodingWorkspace?: () => void;
-  onRegisterCodingLeaveGuard?: (guard: ((confirm?: ConfirmAction) => Promise<boolean>) | null) => void;
-  /** Start an Agent session for a coding task. Returns the new session id. */
-  onStartCodingRun?: (
-    root: string,
-    requirement: string,
-    modelId: string | undefined,
-    contextPaths: string[],
-    onSessionReady: (sessionId: string) => Promise<void>,
-    promptTextOverride?: string,
-    coding?: CodingTurnOptions,
-  ) => Promise<string | undefined>;
-  onActivateCodingSession?: (sessionId: string, cwd: string) => Promise<void>;
-  onChangeCodingModel?: (modelId: string) => void | Promise<void>;
-  onSendCodingMessage?: (
-    text: string,
-    promptTextOverride?: string,
-    coding?: CodingTurnOptions,
-  ) => boolean | void | Promise<boolean | void>;
-  onCorrectCodingRun?: (text: string) => boolean | Promise<boolean>;
-  onCancelCodingRun?: () => boolean | void | Promise<boolean | void>;
   /** Current session id (for plugin actions that need a session). */
   sessionId?: string;
   /** 项目页：进入项目（新建会话并注入说明）。 */
@@ -159,22 +118,7 @@ export function PlaceholderPage({
   cwd,
   onSelectWorkspace,
   workspaces,
-  codingWorkspaces,
-  activeCodingWorkspaceCwd,
-  onCloseCodingWorkspace,
-  codingApiReady,
-  codingActive,
-  codingModels,
-  codingModelId,
   onOpenModelSettings,
-  onExitCodingWorkspace,
-  onRegisterCodingLeaveGuard,
-  onStartCodingRun,
-  onActivateCodingSession,
-  onChangeCodingModel,
-  onSendCodingMessage,
-  onCancelCodingRun,
-  onCorrectCodingRun,
   sessionId,
   onStartProject,
   onProjectNavigate,
@@ -255,36 +199,6 @@ export function PlaceholderPage({
           refreshSignal={automationRefreshSignal}
           notificationAutomationId={notificationAutomationId}
           notificationAutomationSequence={notificationAutomationSequence}
-        />
-      </DeferredPanel>
-    );
-  }
-
-  if (label === "代码开发") {
-    return (
-      <DeferredPanel>
-        <CodingWorkbench
-          active={codingActive}
-          cwd={cwd}
-          workspaces={workspaces}
-          onSelectWorkspace={onSelectWorkspace}
-          onToast={onToast}
-          codingWorkspaces={codingWorkspaces ?? []}
-          activeCodingWorkspaceCwd={activeCodingWorkspaceCwd ?? ""}
-          onCloseCodingWorkspace={onCloseCodingWorkspace}
-          apiReady={codingApiReady}
-          models={codingModels}
-          defaultModelId={codingModelId}
-          onOpenSettings={onOpenModelSettings}
-          onExit={onExitCodingWorkspace}
-          onRegisterLeaveGuard={onRegisterCodingLeaveGuard}
-          sessionId={sessionId}
-          onStartRun={onStartCodingRun}
-          onActivateSession={onActivateCodingSession}
-          onChangeModel={onChangeCodingModel}
-          onSendMessage={onSendCodingMessage}
-          onCancelRun={onCancelCodingRun}
-          onCorrectRun={onCorrectCodingRun}
         />
       </DeferredPanel>
     );

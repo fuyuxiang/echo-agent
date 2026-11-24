@@ -47,6 +47,7 @@ export function CloudStoragePanel({ onToast, onUnsavedChange }: {
   const [loading, setLoading] = useState(false);
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
+  const [configSaveError, setConfigSaveError] = useState<string | null>(null);
   const [browseError, setBrowseError] = useState<string | null>(null);
   const [showConfig, setShowConfig] = useState(false);
   const [preview, setPreview] = useState<{
@@ -136,10 +137,12 @@ export function CloudStoragePanel({ onToast, onUnsavedChange }: {
       if (configSavingRef.current) return;
       configSavingRef.current = true;
       setConfigSaving(true);
+      setConfigSaveError(null);
       try {
         await saveStorageProviderConfig(config);
-        registerStorageProvider(createTauriWebDavProvider(config));
-        const next = [...configsRef.current.filter((item) => item.id !== config.id), config];
+        const saved = { ...config, password: config.password ? "••••" : undefined };
+        registerStorageProvider(createTauriWebDavProvider(saved));
+        const next = [...configsRef.current.filter((item) => item.id !== config.id), saved];
         configsRef.current = next;
         setConfigs(next);
         setProviders(listStorageProviders());
@@ -156,7 +159,7 @@ export function CloudStoragePanel({ onToast, onUnsavedChange }: {
         setDraft({ id: "", label: "", kind: "webdav", baseUrl: "", username: "", password: "", enabled: true });
         setShowConfig(false);
       } catch (error) {
-        onToast?.(`保存失败：${String(error).replace(/^Error:\s*/, "")}`);
+        setConfigSaveError(String(error).replace(/^Error:\s*/, ""));
       } finally {
         configSavingRef.current = false;
         setConfigSaving(false);
@@ -322,6 +325,7 @@ export function CloudStoragePanel({ onToast, onUnsavedChange }: {
 
   const beginNewConfig = () => confirmConfigChange(() => {
     const next: StorageProviderConfig = { id: "", label: "", kind: "webdav", baseUrl: "", username: "", password: "", enabled: true };
+    setConfigSaveError(null);
     configBaseline.current = JSON.stringify(next);
     setDraft(next);
     setShowConfig(true);
@@ -330,6 +334,7 @@ export function CloudStoragePanel({ onToast, onUnsavedChange }: {
   const editSelectedConfig = () => confirmConfigChange(() => {
     const config = configs.find((item) => item.id === selectedProvider);
     if (!config) return;
+    setConfigSaveError(null);
     configBaseline.current = JSON.stringify(config);
     setDraft({ ...config });
     setShowConfig(true);
@@ -444,8 +449,8 @@ export function CloudStoragePanel({ onToast, onUnsavedChange }: {
       validate: (values) => validateStorageName(values.name),
       action: async (values) => {
         const name = values.name.trim();
-        const ok = await getStorageProvider(providerId)?.writeText(joinStoragePath(path, name), values.content);
-        if (!ok) throw new Error("服务端未写入文件");
+        const ok = await getStorageProvider(providerId)?.createText(joinStoragePath(path, name), values.content);
+        if (!ok) throw new Error("服务端未创建文件");
         await browse(providerId, path);
       },
     });
@@ -492,6 +497,7 @@ export function CloudStoragePanel({ onToast, onUnsavedChange }: {
           <label className="storage-panel__field">用户名（可选）<input className="form-control" aria-label="WebDAV 用户名" value={draft.username ?? ""} disabled={configSaving} onChange={(e) => setDraft({ ...draft, username: e.target.value })} autoComplete="off" /></label>
           <label className="storage-panel__field">密码或应用令牌（可选）<input className="form-control" aria-label="WebDAV 密码或应用令牌" type="password" value={draft.password ?? ""} disabled={configSaving} onChange={(e) => setDraft({ ...draft, password: e.target.value })} autoComplete="new-password" /></label>
           <label className="storage-panel__enabled"><input type="checkbox" checked={draft.enabled} disabled={configSaving} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} /> 启用此存储源</label>
+          {configSaveError && <div className="panel-inline-error" role="alert">保存失败：{configSaveError}</div>}
           <div className="storage-panel__config-actions">
             <button type="button" className="form-button" onClick={() => confirmConfigChange(() => setShowConfig(false))} disabled={configSaving}>取消</button>
             <button type="button" className="form-button form-button--primary" onClick={() => void saveConfig()} disabled={configSaving || !draft.baseUrl.trim()}>

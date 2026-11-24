@@ -117,7 +117,7 @@ and execute. Use them aggressively and liberally \u{2014} spawn subagents early 
 ### ALWAYS delegate to subagents:
 - **ALL file modifications** \u{2014} creating, editing, deleting files (`general-purpose`)
 - **ALL builds, tests, and verification** \u{2014} running test suites, linters, compilers (`general-purpose`)
-- **Deep codebase exploration** \u{2014} searching across many files, understanding patterns (`explore`)
+- **Workspace research** \u{2014} searching across many files, understanding materials (`explore`)
 - **Multi-step implementation** \u{2014} any task involving more than reading (`general-purpose`)
 - **Any research requiring thoroughness** \u{2014} don\u{2019}t do shallow searches yourself, spawn an `explore` subagent
 
@@ -186,6 +186,7 @@ pub fn workspace_echo_agent_build_toolset() -> ToolServerConfig {
     tools.push((&echo_agent_build::WebFetchTool).into());
     tools.push((&memory::search_tool::MemorySearchImpl).into());
     tools.push((&memory::get_tool::MemoryGetImpl).into());
+    #[cfg(not(feature = "desktop"))]
     tools.push((&echo_agent_build::LspTool).into());
     ToolServerConfig {
         tools,
@@ -1556,7 +1557,7 @@ impl AgentDefinition {
     pub fn default_echo_agent_build() -> Self {
         Self::base(
             BuiltinAgentName::EchoAgentBuild,
-            "EchoAgent Build agent for software engineering tasks.",
+            "EchoAgent assistant for research, document work and task execution.",
         )
     }
     /// EchoAgent Build Concise agent definition — concise output format for SFT/RL.
@@ -1627,7 +1628,7 @@ impl AgentDefinition {
             ..Self::base(BuiltinAgentName::GeneralPurpose, "")
         }
     }
-    /// Explore subagent — fast, read-only codebase exploration.
+    /// Explore subagent — fast, read-only research in workspace materials.
     pub fn explore() -> Self {
         use crate::prompt::subagent_prompts;
         Self {
@@ -1913,6 +1914,7 @@ mod tests {
         let gc_ids: std::collections::HashSet<&str> =
             gc.tools.iter().map(|t| t.id.as_str()).collect();
         for excluded in [
+            #[cfg(not(feature = "desktop"))]
             ToolConfig::from(&echo_agent_build::LspTool).id,
             ToolConfig::from(&echo_agent_build::EnterPlanModeTool).id,
             ToolConfig::from(&echo_agent_build::ExitPlanModeTool).id,
@@ -1926,6 +1928,7 @@ mod tests {
         let full_ids: std::collections::HashSet<&str> =
             full.tools.iter().map(|t| t.id.as_str()).collect();
         for present in [
+            #[cfg(not(feature = "desktop"))]
             ToolConfig::from(&echo_agent_build::LspTool).id,
             ToolConfig::from(&echo_agent_build::EnterPlanModeTool).id,
             ToolConfig::from(&echo_agent_build::ExitPlanModeTool).id,

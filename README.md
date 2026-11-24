@@ -18,7 +18,7 @@
 
 下载与你的设备匹配的安装包，支持 **macOS（Apple Silicon、Intel）和 Windows x64**。在「设置 → 模型」添加并测试自己的模型连接，或使用组织提供的模型。选好工作目录和权限模式后即可发起任务。[下载桌面端](https://github.com/fuyuxiang/echo-agent-desktop/releases) · [完成第一个任务](docs/desktop/quickstart.md)
 
-- 在 Echo Code 工作台审阅代码改动，查看验证结果。在办公任务中，可以生成并检查 Word、Excel、PowerPoint 或 PDF 文件。[代码工作台](docs/desktop/coding.md) · [办公文档](client/docs/office-documents.md)
+- 让 Agent 在授权的目录中修改代码，在会话中检查文件改动和验证结果。在办公任务中，可以生成并检查 Word、Excel、PowerPoint 或 PDF 文件。[代码任务与文件变更](docs/desktop/coding.md) · [办公文档](client/docs/office-documents.md)
 - 让 Agent 操作网页或已授权的桌面应用，在任务中查看操作记录和权限请求。[平台支持与权限](docs/desktop/automation.md)
 - 为任务选用专家、技能和 MCP 连接器，为项目安排定时任务。接入组织服务后，可以邀请成员协作。[定时任务](docs/desktop/collaboration-scheduling.md) · [团队项目](client/docs/team-projects.md)
 
@@ -51,8 +51,6 @@ echo-agent setup --flow quickstart
 ## 参与贡献
 
 [贡献指南](CONTRIBUTING.md) · [问题反馈](https://github.com/fuyuxiang/echo-agent/issues) · [社区讨论](https://github.com/fuyuxiang/echo-agent/discussions) · [QQ 群 47572014](https://qm.qq.com/q/JWOPDBNssw) · [安全报告](SECURITY.md)
-
-Echo Agent 由 **付玉祥**、**高延荣**共同发起。
 
 ## 许可证
 

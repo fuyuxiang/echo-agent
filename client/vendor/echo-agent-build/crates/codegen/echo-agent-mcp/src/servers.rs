@@ -1251,7 +1251,30 @@ impl McpError {
     }
 }
 
-type ToolDispatchGuard = fn(&str) -> Result<(), String>;
+const USER_INSTANCE_META_KEY: &str = "echo.agent/user_mcp_instance";
+
+pub fn set_user_mcp_instance_id(server: &mut acp::McpServer, id: &str) {
+    let meta = match server {
+        acp::McpServer::Http(server) => &mut server.meta,
+        acp::McpServer::Sse(server) => &mut server.meta,
+        acp::McpServer::Stdio(server) => &mut server.meta,
+        _ => return,
+    };
+    meta.get_or_insert_with(Default::default)
+        .insert(USER_INSTANCE_META_KEY.into(), id.into());
+}
+
+pub fn user_mcp_instance_id(server: &acp::McpServer) -> Option<&str> {
+    let meta = match server {
+        acp::McpServer::Http(server) => &server.meta,
+        acp::McpServer::Sse(server) => &server.meta,
+        acp::McpServer::Stdio(server) => &server.meta,
+        _ => return None,
+    };
+    meta.as_ref()?.get(USER_INSTANCE_META_KEY)?.as_str()
+}
+
+type ToolDispatchGuard = fn(&str, Option<&str>) -> Result<(), String>;
 static TOOL_DISPATCH_GUARD: std::sync::OnceLock<ToolDispatchGuard> = std::sync::OnceLock::new();
 
 /// Install the embedded host's admission policy for all MCP transports.
@@ -1260,10 +1283,21 @@ pub fn install_tool_dispatch_guard(guard: ToolDispatchGuard) {
 }
 
 pub fn check_tool_dispatch(server: &str) -> Result<(), McpError> {
+    check_dispatch(server, None)
+}
+
+fn check_dispatch(server: &str, user_instance_id: Option<&str>) -> Result<(), McpError> {
     if let Some(guard) = TOOL_DISPATCH_GUARD.get() {
-        guard(server).map_err(McpError::ClientError)?;
+        guard(server, user_instance_id).map_err(McpError::ClientError)?;
     }
     Ok(())
+}
+
+/// Re-evaluate at teardown time so late unload commands preserve a
+/// replacement installed with the same name after the original was revoked.
+pub fn is_revoked_user_mcp_server(server: &acp::McpServer) -> bool {
+    user_mcp_instance_id(server)
+        .is_some_and(|id| check_dispatch(mcp_server_name(server), Some(id)).is_err())
 }
 
 /// True when a failed refresh-token grant was a **network-level** failure
@@ -1553,7 +1587,7 @@ impl echo_agent_tool_runtime::Tool for McpErasedTool {
         {
             Ok(result) => Ok(result),
             Err(first_err) if client.has_auth() && !no_replay => {
-                check_tool_dispatch(&self.tool.server_name).map_err(|e| {
+                client.check_dispatch().map_err(|e| {
                     echo_agent_tool_runtime::ToolError::custom("process_manager", e.to_string())
                 })?;
                 auth_retry_attempted = true;
@@ -1774,7 +1808,7 @@ impl McpErasedTool {
         no_replay: bool,
     ) -> Result<rmcp::model::CallToolResult, echo_agent_tool_runtime::ToolError> {
         let check_dispatch = || {
-            check_tool_dispatch(&self.tool.server_name).map_err(|e| {
+            client.check_dispatch().map_err(|e| {
                 echo_agent_tool_runtime::ToolError::custom("process_manager", e.to_string())
             })
         };
@@ -1869,6 +1903,9 @@ impl McpErasedTool {
             tool_name: self.tool.name.clone(),
             error: original_err.to_string(),
         });
+        client.check_dispatch().map_err(|e| {
+            echo_agent_tool_runtime::ToolError::custom("process_manager", e.to_string())
+        })?;
         let mcp_service = match client.recover().await {
             Ok(service) => {
                 ew.emit(echo_agent_session_events::Event::McpTransportReconnect {
@@ -1890,7 +1927,7 @@ impl McpErasedTool {
                 ));
             }
         };
-        check_tool_dispatch(&self.tool.server_name).map_err(|e| {
+        client.check_dispatch().map_err(|e| {
             echo_agent_tool_runtime::ToolError::custom("process_manager", e.to_string())
         })?;
         match tokio::time::timeout(timeout_duration, mcp_service.call_tool(params)).await {
@@ -2939,6 +2976,7 @@ fn next_client_id() -> u64 {
 pub struct McpClient {
     /// Unique identity of this client *instance*. See [`Self::client_id`].
     client_id: u64,
+    user_instance_id: Option<String>,
     server_name: McpServerName,
     state: Mutex<ClientState>,
     /// Wakes [`Self::ensure_initialized`] callers that observed
@@ -3135,6 +3173,7 @@ impl McpClient {
         let expose_image_base64 = Self::load_expose_image_base64(overrides, meta_config);
         Self {
             client_id: next_client_id(),
+            user_instance_id: None,
             server_name,
             state: Mutex::new(ClientState::Pending(transport)),
             init_done: Notify::new(),
@@ -3531,6 +3570,10 @@ impl McpClient {
 
     pub fn server_name(&self) -> &str {
         &self.server_name
+    }
+
+    pub fn check_dispatch(&self) -> Result<(), McpError> {
+        check_dispatch(&self.server_name, self.user_instance_id.as_deref())
     }
 
     /// Unique identity of this client *instance*. Two clients for the
@@ -4512,9 +4555,9 @@ impl McpClient {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        check_tool_dispatch(&self.server_name)?;
+        self.check_dispatch()?;
         let mcp_service = self.ensure_initialized().await?;
-        check_tool_dispatch(&self.server_name)?;
+        self.check_dispatch()?;
         let result = mcp_service
             .call_tool({
                 let mut params = CallToolRequestParams::new(tool_name.to_string());
@@ -4776,7 +4819,9 @@ pub async fn start_mcp_server(
     ctx: &McpSpawnCtx<'_>,
 ) -> Result<McpClient, McpError> {
     let _per_server_timer = echo_agent_telemetry::instrumentation::timer("mcp_start_one_server");
-    match mcp_server {
+    let instance_id = user_mcp_instance_id(&mcp_server).map(str::to_owned);
+    check_dispatch(mcp_server_name(&mcp_server), instance_id.as_deref())?;
+    let mut client = match mcp_server {
         acp::McpServer::Stdio(acp::McpServerStdio {
             name,
             command,
@@ -4906,7 +4951,9 @@ pub async fn start_mcp_server(
         other => Err(McpError::ClientError(format!(
             "unsupported MCP server transport: {other:?}"
         ))),
-    }
+    }?;
+    client.user_instance_id = instance_id;
+    Ok(client)
 }
 
 pub async fn start_mcp_servers(

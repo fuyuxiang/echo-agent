@@ -287,7 +287,7 @@ unicode-bidi-mirroring = "0.4"
 unicode-normalization = "0.1"
 unicode-segmentation = "1.12.0"
 unicode-width = "0.2"
-url = "2"
+url = "2.5.9"
 urlencoding = "2"
 uuid = { version = "1", features = ["serde", "v4", "v5"] }
 vte = "0.15.0"
@@ -462,3 +462,5 @@ ort-sys = { path = "../ort-sys" }
 # ABI-compatible safety backports for the pager's ratatui dependencies.
 lru-0-12 = { package = "lru", path = "../lru-0.12" }
 lru-0-16 = { package = "lru", path = "../lru-0.16" }
+# Gitoxide uses std; avoid resolving faster-hex's unused heapless 0.8 backend.
+faster-hex = { path = "../faster-hex" }

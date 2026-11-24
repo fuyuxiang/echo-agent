@@ -7,8 +7,9 @@ use serde_json::json;
 use echo_agent_mcp::rmcp;
 use echo_agent_mcp::rmcp::ServerHandler;
 use echo_agent_mcp::rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, ErrorData as McpError, JsonObject,
-    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData as McpError,
+    JsonObject, ListToolsResult, MetaObject, PaginatedRequestParams, ServerCapabilities,
+    ServerConfig, Tool,
 };
 
 #[derive(Clone)]
@@ -52,32 +53,25 @@ struct EchoArgs {
 }
 
 impl ServerHandler for TestMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::default();
+    fn get_info(&self) -> ServerConfig {
+        let mut info = ServerConfig::default();
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info
     }
 
-    fn list_tools(
+    async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
-        let tools = self.tools.clone();
-        async move {
-            Ok(ListToolsResult {
-                tools: (*tools).clone(),
-                next_cursor: None,
-                meta: None,
-            })
-        }
+    ) -> Result<ListToolsResult, McpError> {
+        Ok(ListToolsResult::with_all_items(self.tools.as_ref().clone()))
     }
 
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResponse, McpError> {
         match request.name.as_ref() {
             "echo" => {
                 let args: EchoArgs = match request.arguments {
@@ -98,10 +92,9 @@ impl ServerHandler for TestMcpServer {
                     }
                 };
 
-                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                    "ECHO: {}",
-                    args.message
-                ))]))
+                Ok(CallToolResponse::Complete(CallToolResult::success(vec![
+                    ContentBlock::text(format!("ECHO: {}", args.message)),
+                ])))
             }
             other => Err(McpError::invalid_params(
                 format!("unknown tool: {other}"),
@@ -182,13 +175,13 @@ mod mcp_apps_tests {
             Arc::new(schema),
         );
         let meta_map: JsonObject = serde_json::from_value(json!({ "ui": ui_meta })).unwrap();
-        tool.meta = Some(rmcp::model::Meta(meta_map));
+        tool.meta = Some(MetaObject(meta_map));
         tool
     }
 
     #[test]
     fn test_meta_ui_survives_serialization_roundtrip() {
-        // rmcp Meta is #[serde(transparent)] over JsonObject.
+        // rmcp MetaObject is #[serde(transparent)] over JsonObject.
         // Our pipeline does: tool.meta → serde_json::to_value → Option<Value>.
         // Verify the ui.resourceUri survives this conversion.
         let tool = ui_tool("dashboard", "ui://server/dash", None);

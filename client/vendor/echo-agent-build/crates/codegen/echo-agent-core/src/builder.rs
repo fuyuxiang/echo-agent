@@ -748,6 +748,7 @@ impl AgentBuilder {
                     .tools
                     .push((&echo_agent_build::WebFetchTool).into());
             }
+            #[cfg(not(feature = "desktop"))]
             if self.lsp.is_some() {
                 tool_config
                     .tools
@@ -959,6 +960,12 @@ impl AgentBuilder {
                         }
                     }
                     None if registered_tool_ids.iter().any(|id| tool_id_eq(t, id)) => {
+                        recognized_but_unavailable.push(t);
+                    }
+                    #[cfg(feature = "desktop")]
+                    None if tool_id_eq(t, echo_agent_tools::registry::types::RETIRED_LSP_TOOL_ID)
+                        || t == "LSP" =>
+                    {
                         recognized_but_unavailable.push(t);
                     }
                     None => unresolved.push(t),

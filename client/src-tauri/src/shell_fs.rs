@@ -67,6 +67,32 @@ fn read_picked_workspace_grants(path: &Path) -> Result<Vec<String>, String> {
     Ok(grants)
 }
 
+fn canonical_workspace_root(root: &str) -> Result<PathBuf, String> {
+    let requested = Path::new(root);
+    if !requested.is_absolute() {
+        return Err("工作区路径必须是绝对路径".into());
+    }
+    let canonical = requested
+        .canonicalize()
+        .map_err(|error| format!("无法解析工作区路径：{error}"))?;
+    if !canonical.is_dir() {
+        return Err("工作区必须是已存在的目录".into());
+    }
+    Ok(canonical)
+}
+
+fn grant_workspace_root(roots: &mut HashSet<PathBuf>, canonical: &Path) -> Result<(), String> {
+    if roots.iter().any(|root| canonical.starts_with(root)) {
+        return Ok(());
+    }
+    roots.retain(|root| !root.starts_with(canonical));
+    if roots.len() >= MAX_AUTHORIZED_ROOTS {
+        return Err(format!("已授权工作区不能超过 {MAX_AUTHORIZED_ROOTS} 个"));
+    }
+    roots.insert(canonical.to_path_buf());
+    Ok(())
+}
+
 impl FilesystemAccess {
     pub fn new() -> Self {
         let access = Self::default();
@@ -82,10 +108,6 @@ impl FilesystemAccess {
         // ignored rather than broadening access through lexical strings.
         for workspace in crate::sessions::list_workspaces() {
             let _ = access.authorize_workspace(&workspace.cwd);
-        }
-
-        for root in crate::coding::isolation::managed_worktrees() {
-            let _ = access.authorize_workspace(&root.to_string_lossy());
         }
 
         // Knowledge sources are also durable user selections. Load this file
@@ -124,22 +146,25 @@ impl FilesystemAccess {
             tracing::warn!(dir = %dir.display(), %error, "failed to create attachment store");
             return;
         }
-        if let Err(error) = crate::attachment_blob::prune_store(dir, None) {
+        let canonical_dir = match crate::paths::canonical_managed_dir(dir) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!(dir = %dir.display(), %error, "invalid attachment store");
+                return;
+            }
+        };
+        if let Err(error) = crate::attachment_blob::prune_store(&canonical_dir, None) {
             tracing::warn!(dir = %dir.display(), %error, "failed to prune attachment store");
         }
-        let Ok(canonical_dir) = std::fs::canonicalize(dir) else {
-            tracing::warn!(dir = %dir.display(), "failed to canonicalize attachment store");
-            return;
-        };
         if let Ok(mut root) = self.managed_attachment_root.lock() {
-            *root = Some(canonical_dir);
+            *root = Some(canonical_dir.clone());
         }
 
         // Validate the existing entries once at startup so malformed/symlinked
         // content is visible in logs. Authorization itself is checked lazily by
         // `require_managed_attachment`, so the number of historical files no
         // longer competes with MAX_AUTHORIZED_FILES.
-        let entries = match std::fs::read_dir(dir) {
+        let entries = match std::fs::read_dir(&canonical_dir) {
             Ok(entries) => entries,
             Err(error) => {
                 tracing::debug!(
@@ -237,28 +262,12 @@ impl FilesystemAccess {
     /// canonical spelling. The set is deliberately bounded to avoid an IPC
     /// caller turning grants into unbounded process memory.
     pub(crate) fn authorize_workspace(&self, root: &str) -> Result<PathBuf, String> {
-        let requested = PathBuf::from(root);
-        if !requested.is_absolute() {
-            return Err("工作区路径必须是绝对路径".into());
-        }
-        let canonical = requested
-            .canonicalize()
-            .map_err(|error| format!("无法解析工作区路径：{error}"))?;
-        if !canonical.is_dir() {
-            return Err("工作区必须是已存在的目录".into());
-        }
+        let canonical = canonical_workspace_root(root)?;
         let mut roots = self
             .roots
             .lock()
             .map_err(|_| "文件系统授权状态已损坏".to_string())?;
-        if roots.iter().any(|root| canonical.starts_with(root)) {
-            return Ok(canonical);
-        }
-        roots.retain(|root| !root.starts_with(&canonical));
-        if roots.len() >= MAX_AUTHORIZED_ROOTS {
-            return Err(format!("已授权工作区不能超过 {MAX_AUTHORIZED_ROOTS} 个"));
-        }
-        roots.insert(canonical.clone());
+        grant_workspace_root(&mut roots, &canonical)?;
         Ok(canonical)
     }
 
@@ -267,7 +276,15 @@ impl FilesystemAccess {
             .picked_workspace_grants
             .lock()
             .map_err(|_| "工作区授权状态已损坏".to_string())?;
-        let canonical = self.authorize_workspace(root)?;
+        let canonical = canonical_workspace_root(root)?;
+        let mut roots = self
+            .roots
+            .lock()
+            .map_err(|_| "文件系统授权状态已损坏".to_string())?;
+        // Validate both grants before publishing either. A failed disk update
+        // must leave the prior in-memory scope available and no broader.
+        let mut next_roots = roots.clone();
+        grant_workspace_root(&mut next_roots, &canonical)?;
         let mut grants = read_picked_workspace_grants(path)?;
         let canonical_string = canonical.to_string_lossy().into_owned();
         if !grants.iter().any(|entry| entry == &canonical_string) {
@@ -279,6 +296,7 @@ impl FilesystemAccess {
                 .map_err(|error| format!("序列化工作区授权失败：{error}"))?;
             crate::paths::write_private_file(path, &body)?;
         }
+        *roots = next_roots;
         Ok(canonical)
     }
 
@@ -513,8 +531,7 @@ impl FilesystemAccess {
         // granting access to provider credentials or session stores alongside
         // them in the rest of ECHO_AGENT_HOME.
         let internal_projects = crate::paths::echo_agent_home_dir().join("projects");
-        let internal_allowed = internal_projects
-            .canonicalize()
+        let internal_allowed = crate::paths::canonical_managed_dir(&internal_projects)
             .is_ok_and(|root| canonical.starts_with(root));
 
         // Exact-file grants (file picker selection, paste-image landing) are
@@ -563,9 +580,16 @@ fn bounded_limit(requested: Option<u64>, hard_max: usize) -> usize {
 }
 
 pub(crate) fn open_regular_file_no_follow(path: &Path) -> Result<std::fs::File, String> {
-    let metadata = std::fs::symlink_metadata(path).map_err(|e| format!("读取失败：{e}"))?;
+    open_regular_file_no_follow_io(path).map_err(|error| format!("读取失败：{error}"))
+}
+
+fn open_regular_file_no_follow_io(path: &Path) -> std::io::Result<std::fs::File> {
+    let metadata = std::fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err("读取目标必须是普通文件，不能是符号链接".into());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "读取目标必须是普通文件，不能是符号链接",
+        ));
     }
 
     let mut options = std::fs::OpenOptions::new();
@@ -582,10 +606,13 @@ pub(crate) fn open_regular_file_no_follow(path: &Path) -> Result<std::fs::File, 
         // by the post-open regular-file check below.
         options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
     }
-    let file = options.open(path).map_err(|e| format!("读取失败：{e}"))?;
-    let opened = file.metadata().map_err(|e| format!("读取失败：{e}"))?;
+    let file = options.open(path)?;
+    let opened = file.metadata()?;
     if !opened.is_file() {
-        return Err("读取目标必须是普通文件".into());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "读取目标必须是普通文件",
+        ));
     }
     Ok(file)
 }
@@ -594,17 +621,25 @@ pub(crate) fn open_regular_file_no_follow(path: &Path) -> Result<std::fs::File, 
 /// pre-open size and the bytes actually consumed are capped, closing the
 /// metadata/open race and a file-growth allocation attack.
 pub(crate) fn read_regular_file_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
-    let file = open_regular_file_no_follow(path)?;
-    let metadata = file.metadata().map_err(|e| format!("读取失败：{e}"))?;
+    read_regular_file_bounded_io(path, limit).map_err(|error| format!("读取失败：{error}"))
+}
+
+pub(crate) fn read_regular_file_bounded_io(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    let file = open_regular_file_no_follow_io(path)?;
+    let metadata = file.metadata()?;
     if metadata.len() > limit {
-        return Err(format!("文件超过 {} 字节安全上限", limit));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("文件超过 {limit} 字节安全上限"),
+        ));
     }
     let mut data = Vec::with_capacity(metadata.len().min(limit) as usize);
-    file.take(limit.saturating_add(1))
-        .read_to_end(&mut data)
-        .map_err(|e| format!("读取失败：{e}"))?;
+    file.take(limit.saturating_add(1)).read_to_end(&mut data)?;
     if data.len() as u64 > limit {
-        return Err(format!("文件超过 {} 字节安全上限", limit));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("文件超过 {limit} 字节安全上限"),
+        ));
     }
     Ok(data)
 }
@@ -659,7 +694,10 @@ fn resolve_path(path: &str, cwd: Option<&str>) -> PathBuf {
 /// existing ancestor plus the missing suffix. Resolving symlinks before the
 /// allow-list comparison prevents an authorized directory symlink from being
 /// used to escape into another tree.
-fn canonicalize_candidate(candidate: &Path, allow_missing: bool) -> Result<PathBuf, String> {
+pub(crate) fn canonicalize_candidate(
+    candidate: &Path,
+    allow_missing: bool,
+) -> Result<PathBuf, String> {
     if !candidate.is_absolute() {
         return Err("文件系统路径必须是绝对路径".into());
     }
@@ -1231,6 +1269,7 @@ fn write_text_file_authorized(
     let resolved = resolve_path(&path, Some(&workspace_root));
     let safe = ensure_under_workspace(&authorized_root, &resolved)?;
     access.is_authorized(&safe, true)?;
+    crate::legacy_workspace::ensure_workspace_available(&safe)?;
     if let Some(parent) = safe.parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败：{e}"))?;
@@ -1239,6 +1278,7 @@ fn write_text_file_authorized(
     // Re-resolve after directory creation to close symlink escapes introduced
     // between the first check and the actual write.
     let final_path = access.is_authorized(&safe, true)?;
+    crate::legacy_workspace::ensure_workspace_available(&final_path)?;
     write_text_atomically(&final_path, content.as_bytes())?;
     Ok(final_path.to_string_lossy().to_string())
 }
@@ -1309,6 +1349,7 @@ pub async fn export_text_file(
         .file_name()
         .ok_or_else(|| "导出路径没有文件名".to_string())?;
     let destination = canonical_parent.join(file_name);
+    crate::legacy_workspace::ensure_workspace_available(&destination)?;
     write_text_atomically(&destination, content.as_bytes())?;
     Ok(Some(destination.to_string_lossy().into_owned()))
 }
@@ -1473,7 +1514,7 @@ fn list_dir_resolved(
     // Translate ignore_files basenames to &str slices for the chain helper.
     let ignore_names: Vec<&str> = match ignore_files.as_ref() {
         Some(list) => list.iter().map(String::as_str).collect(),
-        None => crate::coding::gitignore_chain::DEFAULT_IGNORE_FILES.to_vec(),
+        None => crate::workspace_ignore::DEFAULT_IGNORE_FILES.to_vec(),
     };
     let read = authorized
         .read_dir()
@@ -1516,7 +1557,7 @@ fn list_dir_resolved(
         }
         // Apply the nested ignore chain to honour `.echoagentignore` /
         // `.gitignore` (deeper whitelist wins, matching Git precedence).
-        if crate::coding::gitignore_chain::apply_nested_gitignore(
+        if crate::workspace_ignore::apply_nested_gitignore(
             &ignore_root,
             &entry.path(),
             is_dir,
@@ -1641,6 +1682,31 @@ mod tests {
                 .unwrap(),
             canonical
         );
+    }
+
+    #[test]
+    fn failed_picker_persistence_keeps_existing_workspace_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let selected = temp.path().join("selected");
+        let approved = selected.join("previously-approved");
+        std::fs::create_dir_all(&approved).unwrap();
+        let grant_file = temp.path().join("picked-workspaces.json");
+        std::fs::write(&grant_file, "{invalid json").unwrap();
+
+        let access = FilesystemAccess::default();
+        let existing = access
+            .authorize_workspace(&approved.to_string_lossy())
+            .unwrap();
+        assert!(access
+            .authorize_picked_workspace_at(&selected.to_string_lossy(), &grant_file)
+            .is_err());
+        assert_eq!(access.authorized_roots(), vec![existing]);
+        assert!(access
+            .require_workspace(&selected.to_string_lossy())
+            .is_err());
+        assert!(access
+            .require_workspace(&approved.to_string_lossy())
+            .is_ok());
     }
 
     #[cfg(unix)]
@@ -2334,6 +2400,26 @@ mod tests {
             .is_authorized(&dir.join("image-link.png"), false)
             .unwrap_err();
         assert!(error.contains("未授权"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_attachment_root_does_not_grant_implicit_access() {
+        let data_home = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let attachment_root = data_home.path().join("clipboard-images");
+        let file = external.path().join("notes.txt");
+        std::fs::write(&file, b"external notes").unwrap();
+        std::os::unix::fs::symlink(external.path(), &attachment_root).unwrap();
+
+        let access = FilesystemAccess::default();
+        access.register_attachment_store(&attachment_root);
+        assert!(access.is_authorized(&file, false).is_err());
+        access.authorize_file(&file).unwrap();
+        assert_eq!(
+            access.is_authorized(&file, false).unwrap(),
+            file.canonicalize().unwrap()
+        );
     }
 
     #[cfg(unix)]

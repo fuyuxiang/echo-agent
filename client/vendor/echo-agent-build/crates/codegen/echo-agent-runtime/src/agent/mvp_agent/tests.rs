@@ -3683,6 +3683,7 @@ async fn search_index_honors_the_session_search_feature() {
 }
 /// Reclaiming is the one irreversible half of the deferred work, and the six hour
 /// throttle then hides the run that could have honored a remote veto.
+#[cfg(not(feature = "desktop"))]
 #[tokio::test]
 #[serial_test::serial]
 async fn auto_gc_declines_until_the_remote_answer_settles() {
@@ -4406,7 +4407,7 @@ fn cancel_does_not_forward_to_bridge_in_local_mode() {
             let Some(acknowledged) = options.acknowledged else {
                 return false;
             };
-            acknowledged.notify_one();
+            acknowledged.notify_processed(false);
             true
         });
         agent
@@ -4419,6 +4420,60 @@ fn cancel_does_not_forward_to_bridge_in_local_mode() {
         );
     });
 }
+
+#[test]
+fn named_cancel_reports_stale_only_for_opted_in_desktop_callers() {
+    use crate::session::{
+        CancelHistoryDisposition, STALE_PROMPT_CANCEL_ERROR_CODE, SessionCommand,
+    };
+    use acp::Agent as _;
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let sid = acp::SessionId::new("sess-cancel-target");
+        let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+        agent.insert_resident(&sid, handle);
+        for (action, report_stale_prompt, ignored_stale) in [
+            ("stop", true, false),
+            ("pause", false, true),
+            ("stop", true, true),
+        ] {
+            let mut meta = serde_json::Map::new();
+            meta.insert("cancelTrigger".into(), action.into());
+            meta.insert("promptId".into(), "named-prompt".into());
+            if report_stale_prompt {
+                meta.insert("reportStalePrompt".into(), true.into());
+            }
+            let cancel = agent.cancel(acp::CancelNotification::new(sid.clone()).meta(Some(meta)));
+            let observe = async {
+                let Some(SessionCommand::Cancel(options)) = cmd_rx.recv().await else {
+                    panic!("normal cancel must reach the session actor");
+                };
+                assert_eq!(options.history, CancelHistoryDisposition::Keep);
+                assert_eq!(options.expected_prompt_id.as_deref(), Some("named-prompt"));
+                assert_eq!(options.trigger.as_ref().map(|t| t.as_str()), Some(action));
+                options
+                    .acknowledged
+                    .expect("cancel acknowledgement")
+                    .notify_processed(ignored_stale);
+            };
+            let (result, ()) = tokio::join!(cancel, observe);
+            if report_stale_prompt && ignored_stale {
+                let error = result.expect_err("opted-in callers must see a stale cancellation");
+                assert_eq!(
+                    error.code,
+                    acp::Error::new(STALE_PROMPT_CANCEL_ERROR_CODE, "").code
+                );
+                assert_eq!(
+                    error.data,
+                    Some(serde_json::json!({ "kind": "stale_prompt_cancel" }))
+                );
+            } else {
+                result.expect("legacy and matching cancel replies must succeed");
+            }
+        }
+    });
+}
+
 /// Regression (post-cancel slot hang, first bad release 0.2.101; see
 /// `dispatch_lock`). SDK e2e shape:
 /// `test_cancel_ends_in_flight_turn_and_frees_slot` (echo-agent-agent-sdk).
@@ -4449,7 +4504,7 @@ fn cancel_never_overtakes_in_flight_prompt_intake() {
                     SessionCommand::Cancel(options) => {
                         driver_order.borrow_mut().push("cancel");
                         if let Some(acknowledged) = options.acknowledged {
-                            acknowledged.notify_one();
+                            acknowledged.notify_processed(false);
                         }
                     }
                     _ => {}
@@ -5514,50 +5569,10 @@ fn tier_recheck_identity_guard_accepts_enrichment_canonical_user_id() {
 #[test]
 fn gated_reconnect_recheck_lifts_gate_clearing_paywall_flash() {
     run_local_for_bridge_test(|| async {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        listener
-            .set_nonblocking(true)
-            .expect("nonblocking accept loop");
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let accept_stop = stop.clone();
-        let accept_thread = std::thread::spawn(move || {
-            use std::io::{Read, Write};
-            while !accept_stop.load(std::sync::atomic::Ordering::Acquire) {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-                        let mut head = Vec::new();
-                        let mut byte = [0u8; 1];
-                        while !head.ends_with(b"\r\n\r\n") {
-                            match stream.read(&mut byte) {
-                                Ok(1) => head.push(byte[0]),
-                                _ => break,
-                            }
-                        }
-                        let head = String::from_utf8_lossy(&head);
-                        let response = if head.contains("/user?include=subscription") {
-                            let body =
-                                r#"{"userId":"user-flash","subscriptionTier":"EchoAgentPro"}"#;
-                            format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                                body.len()
-                            )
-                        } else {
-                            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\
-                             Connection: close\r\n\r\n"
-                                .to_owned()
-                        };
-                        let _ = stream.write_all(response.as_bytes());
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(std::time::Duration::from_millis(20));
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
+        use echo_agent_test_support::MockInferenceServer;
+
+        let server = MockInferenceServer::start().await.expect("start mock proxy");
+        server.set_user_subscription_tier(Some("EchoAgentPro"));
         let temp_dir = tempfile::tempdir().unwrap();
         let auth_manager = std::sync::Arc::new(crate::auth::AuthManager::new(
             temp_dir.path(),
@@ -5565,19 +5580,22 @@ fn gated_reconnect_recheck_lifts_gate_clearing_paywall_flash() {
         ));
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let gateway = GatewaySender::new(tx);
-        let cfg = crate::agent::config::Config::default();
+        let mut cfg = crate::agent::config::Config::default();
+        cfg.endpoints.cli_chat_proxy_base_url = Some(server.url());
         let agent = MvpAgent::new(gateway, &cfg, auth_manager, None).expect("valid test config");
-        agent.cfg.borrow_mut().endpoints.cli_chat_proxy_base_url =
-            Some(format!("http://{addr}/v1"));
         let auth = crate::auth::EchoAgentAuth {
             key: jwt_with_tier(5),
-            user_id: "user-flash".into(),
+            user_id: "mock-user".into(),
             auth_mode: crate::auth::AuthMode::Oidc,
             oidc_issuer: Some(crate::auth::ECHO_AGENT_OAUTH2_ISSUER.to_owned()),
             expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
             ..crate::auth::EchoAgentAuth::test_default()
         };
         agent.auth_manager.hot_swap(auth);
+        assert!(
+            agent.auth_manager.current().is_some(),
+            "test auth must be usable"
+        );
         agent.tier_allowed.set(false);
         tokio::time::timeout(
             std::time::Duration::from_secs(30),
@@ -5585,6 +5603,15 @@ fn gated_reconnect_recheck_lifts_gate_clearing_paywall_flash() {
         )
         .await
         .expect("re-check must finish well inside its bounded awaits");
+        let subscription_requests = server
+            .requests()
+            .into_iter()
+            .filter(|request| request.method == "GET" && request.path == "/v1/user?include=subscription")
+            .count();
+        assert_eq!(
+            subscription_requests, 1,
+            "the re-check must reach the mock subscription endpoint exactly once"
+        );
         assert!(
             agent.tier_allowed.get(),
             "a confirmed qualifying tier must lift the gate — the reconnect paywall flash clears"
@@ -5594,8 +5621,6 @@ fn gated_reconnect_recheck_lifts_gate_clearing_paywall_flash() {
             1,
             "the lift came from exactly one claimed re-check"
         );
-        stop.store(true, std::sync::atomic::Ordering::Release);
-        accept_thread.join().expect("accept loop joins");
     });
 }
 /// Agent with pre-loaded auth, a gateway receiver (to assert emitted

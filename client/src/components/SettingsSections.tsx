@@ -42,7 +42,8 @@ import {
 } from "lucide-react";
 import { SettingsDisclosure } from "./SettingsDisclosure";
 import { useTheme } from "./ThemeProvider";
-import { exportBackup, inspectBackup, restoreBackup, backupLastError } from "@/lib/backup-client";
+import { exportBackup, inspectBackup, restoreBackup, backupLastError, hasDeferredUiArchive, exportDeferredUiArchive } from "@/lib/backup-client";
+import { confirmExternalOperationStopped, exportLegacyWorkspaceArchive, pendingExternalOperations } from "@/lib/legacy-workspace";
 import {
   internalReload,
   memoryConfigGet,
@@ -453,7 +454,7 @@ export function HelpSettingsPanel() {
 const PERMISSION_ACTION_LABELS: Record<string, string> = { allow: "允许", ask: "询问", deny: "拒绝" };
 const PERMISSION_TOOL_LABELS: Record<string, string> = {
   bash: "执行命令", read: "读取文件", edit: "修改文件", grep: "搜索文件",
-  mcp: "连接器工具", webfetch: "访问网页", any: "所有工具",
+  mcp: "连接器工具", webfetch: "访问网页", websearch: "搜索网页", any: "所有工具",
 };
 
 export function SecuritySettingsPanel() {
@@ -470,7 +471,13 @@ export function SecuritySettingsPanel() {
   const [automationError, setAutomationError] = useState<string | null>(null);
   const [automationFeedback, setAutomationFeedback] = useState("");
   const rulesDirty = JSON.stringify(rules) !== savedRules;
+  const unparsedRuleCount = rules.filter(rule => rule.unparsed).length;
   const builderDirty = draft.action !== "ask" || draft.tool !== "bash" || Boolean(draft.pattern?.trim());
+  const rulesSummary = [
+    rules.length ? `${rules.length} 条自定义规则` : "未添加自定义规则",
+    unparsedRuleCount ? `${unparsedRuleCount} 条待核对` : "",
+    rulesDirty || builderDirty ? "有未保存的修改" : "",
+  ].filter(Boolean).join(" · ");
   useSettingsDraft({ dirty: rulesDirty || builderDirty, busy: saving, label: "权限规则" });
 
   const loadRules = useCallback(async () => {
@@ -593,7 +600,7 @@ export function SecuritySettingsPanel() {
       <SettingsDisclosure title="任务浏览器" settingId="browser-data" description="管理所选任务的登录数据和访问范围">
         <BrowserTaskSettings />
       </SettingsDisclosure>
-      <SettingsDisclosure title="高级权限规则" settingId="permission-rules" description={feedback.startsWith("保存失败") ? feedback : rulesError ? "读取失败，请展开重试；原有规则不会被覆盖。" : loading ? "正在读取…" : `${rules.length ? `${rules.length} 条自定义规则` : "未添加自定义规则"}${rulesDirty || builderDirty ? " · 有未保存的修改" : ""}`} defaultOpen={Boolean(rulesError) || feedback.startsWith("保存失败")}>
+      <SettingsDisclosure title="高级权限规则" settingId="permission-rules" description={feedback.startsWith("保存失败") ? feedback : rulesError ? "读取失败，请展开重试；原有规则不会被覆盖。" : loading ? "正在读取…" : rulesSummary} defaultOpen={Boolean(rulesError) || unparsedRuleCount > 0 || feedback.startsWith("保存失败")}>
         <SettingsGroup
           title="权限规则"
           desc="拒绝优先于询问，询问优先于允许。保存后重启 Agent 生效。"
@@ -606,13 +613,23 @@ export function SecuritySettingsPanel() {
               </button>
             </div>
           )}
+          {unparsedRuleCount > 0 && <p className="settings-msg settings-msg--warn" role="status">请核对旧格式或无法识别的规则。可转换的规则可先查看转换结果，再保存修改。其余规则可删除后重新添加。</p>}
           {rules.length > 0 ? (
             <ul className="rules-list" aria-label="权限规则列表">
               {rules.map((rule, index) => (
-                <li key={`${rule.action}-${rule.tool}-${rule.pattern ?? ""}-${index}`} className={`rules-list__item rules-list__item--${rule.action}`}>
+                <li key={`${rule.action}-${rule.tool}-${rule.pattern ?? ""}-${index}`} className={`rules-list__item rules-list__item--${rule.action}`} tabIndex={-1}>
                   <span className="rules-list__action">{PERMISSION_ACTION_LABELS[rule.action] || rule.action}</span>
-                  <span className="rules-list__tool">{PERMISSION_TOOL_LABELS[rule.tool] || rule.tool}</span>
-                  <span className="rules-list__pattern">{rule.pattern || "所有调用"}</span>
+                  <span className="rules-list__tool">{rule.unparsed ? "待核对" : PERMISSION_TOOL_LABELS[rule.tool] || rule.tool}</span>
+                  <span className="rules-list__pattern" title={rule.unparsed?.source}>
+                    {rule.unparsed?.source ?? `${rule.patternMode === "domain" ? "域名 · " : ""}${rule.pattern || "所有调用"}`}
+                    {rule.unparsed?.repairable && <button type="button" className="settings-btn settings-btn--ghost settings-btn--compact rules-list__repair"
+                      disabled={loading || saving || Boolean(rulesError)} aria-label={`转换旧规则 ${index + 1}`}
+                      onClick={event => {
+                        event.currentTarget.closest("li")?.focus();
+                        setFeedback("");
+                        setRules(items => items.map((item, itemIndex) => itemIndex === index ? { ...item, unparsed: undefined } : item));
+                      }}>转换格式</button>}
+                  </span>
                   <button
                     type="button"
                     className="settings-btn settings-btn--ghost settings-btn--danger settings-btn--compact settings-btn--icon-only rules-list__remove"
@@ -641,7 +658,7 @@ export function SecuritySettingsPanel() {
             <label className="permission-rule-builder__field">
               <span>工具类型</span>
               <Select className="form-control" value={draft.tool} onChange={(e) => { setFeedback(""); setDraft({ ...draft, tool: e.target.value }); }} aria-label="工具类型" disabled={loading || saving || Boolean(rulesError)}>
-                {['bash', 'read', 'edit', 'grep', 'mcp', 'webfetch', 'any'].map((tool) => <option key={tool} value={tool}>{PERMISSION_TOOL_LABELS[tool]}（{tool}）</option>)}
+                {Object.entries(PERMISSION_TOOL_LABELS).map(([tool, label]) => <option key={tool} value={tool}>{label}（{tool}）</option>)}
               </Select>
             </label>
             <label className="permission-rule-builder__field permission-rule-builder__field--pattern">
@@ -669,14 +686,28 @@ export function SecuritySettingsPanel() {
 
 // ---------- 数据管理 ----------
 
-export function DataSettingsPanel() {
+export function DataSettingsPanel({ recoveryRequested = false }: { recoveryRequested?: boolean } = {}) {
   const [agentHome, setAgentHome] = useState("");
   const [message, setMessage] = useState("");
+  const [exportFeedback, setExportFeedback] = useState<{ kind: "success" | "error"; text: string }>();
   const [busy, setBusy] = useState(false);
+  const [hasRecoveryArchive, setHasRecoveryArchive] = useState(false);
   const { requestConfirmation, dialog } = useAppDialog();
+
+  const [operations, setOperations] = useState<Awaited<ReturnType<typeof pendingExternalOperations>>>();
+  const [verificationNotes, setVerificationNotes] = useState<Record<string, string>>({});
+
+  async function refreshOperations() {
+    try {
+      setOperations(await pendingExternalOperations());
+    } catch (error) {
+      setMessage(`读取旧版外部操作失败：${String(error)}`);
+    }
+  }
 
   useEffect(() => {
     void backupLastError().then((error) => { if (error) setMessage(`上次恢复失败，已保留原有数据：${error}`); }).catch(() => {});
+    void hasDeferredUiArchive().then(setHasRecoveryArchive).catch(() => {});
     void echoAgentDataDir()
       .then(setAgentHome)
       .catch((error) => setMessage(`读取数据目录失败：${String(error).replace(/^Error:\s*/, "")}`));
@@ -689,9 +720,15 @@ export function DataSettingsPanel() {
         <div className="settings-group__footer">
           <button type="button" className="settings-btn" disabled={busy} onClick={async () => {
             setBusy(true);
-            try { const path = await exportBackup(); if (path) setMessage(`备份已保存：${path}`); }
-            catch (error) { setMessage(`备份失败：${String(error)}`); }
-            finally { setBusy(false); }
+            setExportFeedback(undefined);
+            try {
+              const path = await exportBackup();
+              if (path) setExportFeedback({ kind: "success", text: `备份已保存到 ${path}` });
+            } catch (error) {
+              setExportFeedback({ kind: "error", text: `备份未生成。${String(error).replace(/^Error:\s*/, "")}` });
+            } finally {
+              setBusy(false);
+            }
           }}>{busy ? "处理中…" : "导出备份"}</button>
           <button type="button" className="settings-btn" disabled={busy} onClick={async () => {
             setBusy(true);
@@ -708,9 +745,23 @@ export function DataSettingsPanel() {
             finally { setBusy(false); }
           }}>从备份恢复</button>
         </div>
+        {exportFeedback && <p className={`settings-msg settings-msg--${exportFeedback.kind}`} role={exportFeedback.kind === "error" ? "alert" : "status"}>{exportFeedback.text}</p>}
       </SettingsGroup>
+      {(hasRecoveryArchive || recoveryRequested) && <SettingsGroup title="待恢复的界面数据" settingId="ui-recovery" desc="界面存储空间不足时，备份里的草稿和队列会留在本机恢复档案，可导出查阅。">
+        <div className="settings-group__footer">
+          <button type="button" className="settings-btn" disabled={busy} onClick={async () => {
+            setBusy(true);
+            try {
+              const path = await exportDeferredUiArchive();
+              if (path) setMessage(`恢复档案已保存：${path}`);
+            } catch (error) {
+              setMessage(`导出恢复档案失败：${String(error)}`);
+            } finally { setBusy(false); }
+          }}>导出恢复档案</button>
+        </div>
+      </SettingsGroup>}
       <SettingsDisclosure title="本地数据与备份范围" description="查看存储位置，以及备份包含的内容">
-        <p className="settings-hint">备份包含会话、项目资料、代码任务记录、记忆、粘贴附件、草稿、队列和本机用量。恢复会替换同名记录，其他数据保留。历史外部文件仍依赖原工作目录。原件缺失时，可从所属任务的成果面板打开已恢复的编辑稿并另存为 Word 或 PDF。</p>
+        <p className="settings-hint">备份包含会话、项目资料、旧版工作台历史、记忆、粘贴附件、草稿、队列和本机用量。旧版工作台草稿和队列可导出为档案。恢复会替换同名记录，其他数据保留。历史外部文件仍依赖原工作目录。原件缺失时，可从所属任务的成果面板打开已恢复的编辑稿并另存为 Word 或 PDF。</p>
         <SettingsGroup title="本地数据目录" settingId="data-directory" desc="会话、项目、自动化、通知和配置都保存在此目录。">
           <div className="settings-row settings-row--comfortable settings-row--path">
             <div className="settings-row__label settings-row__label--stacked">
@@ -728,6 +779,48 @@ export function DataSettingsPanel() {
           </div>
         </SettingsGroup>
         <p className="settings-hint">请通过应用管理会话和资料，避免直接删除数据目录中的文件。</p>
+      </SettingsDisclosure>
+      <SettingsDisclosure title="旧版工作台资料" settingId="legacy-workspace" description="导出草稿和队列，核验待处理的外部操作">
+        <p className="settings-hint">代码工作台已下线。已有会话可在历史中打开，源码和工作树仍位于各自的原目录。旧版计划、输入草稿和队列可导出为 JSON。</p>
+        <div className="settings-group__footer">
+          <button type="button" className="settings-btn" disabled={busy} onClick={async () => {
+            setBusy(true);
+            try {
+              const path = await exportLegacyWorkspaceArchive();
+              if (path) setMessage(`旧版工作台历史已保存：${path}`);
+            } catch (error) {
+              setMessage(String(error).replace(/^Error:\s*/, ""));
+            } finally { setBusy(false); }
+          }}>导出旧版草稿和队列</button>
+          <button type="button" className="settings-btn" disabled={busy} onClick={() => void refreshOperations()}>
+            查看待核验操作
+          </button>
+        </div>
+        {operations?.length === 0 && <p className="settings-hint">没有待核验的旧版外部操作。</p>}
+        {operations?.map(operation => (
+          <SettingsGroup key={operation.operationId} title={operation.toolName} desc={operation.workspace}>
+            <label className="settings-row">
+              核验依据
+              <textarea className="settings-input" maxLength={2000} value={verificationNotes[operation.operationId] ?? ""} onChange={event => {
+                const note = event.currentTarget.value;
+                setVerificationNotes(notes => ({ ...notes, [operation.operationId]: note }));
+              }} />
+            </label>
+            <button type="button" className="settings-btn" disabled={busy || [...(verificationNotes[operation.operationId] ?? "").trim()].length < 8}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await confirmExternalOperationStopped(operation.operationId, verificationNotes[operation.operationId]);
+                  setMessage("核验已保存，已解除这项操作的目录限制。");
+                  await refreshOperations();
+                } catch (error) {
+                  setMessage(String(error));
+                } finally {
+                  setBusy(false);
+                }
+              }}>核验并解除目录限制</button>
+          </SettingsGroup>
+        ))}
       </SettingsDisclosure>
       {message && <p className="settings-msg" role="status">{message}</p>}
       {dialog}

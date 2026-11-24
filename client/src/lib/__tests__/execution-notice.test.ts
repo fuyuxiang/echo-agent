@@ -63,6 +63,14 @@ describe("execution notices are about observable impact", () => {
   it.each(["error", "rate_limit", "max_tokens", "max_turns", "content_filter"])("整轮 %s 即使有正文也清楚提示", (reason) => {
     expect(getExecutionNotice(message([tool("read", "completed")], { stopReason: reason }))?.kind).toBe("runtime");
   });
+  it("恢复历史后仍识别模型回复中断并保留当前任务入口", () => {
+    const agentResult = JSON.stringify({ error_kind: "chat_stream_interrupted", message: "error decoding response body" });
+    expect(getExecutionNotice(message([], { stopReason: "error", agentResult }))).toMatchObject({
+      title: "模型回复中断",
+      description: "已有内容已保留。可在当前任务继续。",
+    });
+    expect(getExecutionNotice(message([], { agentResult }))).toBeNull();
+  });
   it("额度错误只在已确认的失败轮次中识别，不猜测恢复时间", () => {
     expect(getExecutionNotice(message([], { stopReason: "error", agentResult: "five-hour quota exhausted" }))).toMatchObject({ title: "模型额度已用尽", modelSettings: true });
     expect(getExecutionNotice(message([], { agentResult: "quota exhausted" }))).toBeNull();

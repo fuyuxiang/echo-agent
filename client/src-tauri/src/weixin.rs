@@ -2555,6 +2555,10 @@ async fn route_message(
             current.session_id.clone(),
             Some("stop".into()),
             None,
+            None,
+            None,
+            None,
+            None,
         )
         .await?;
         return send_text(

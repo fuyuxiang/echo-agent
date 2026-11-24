@@ -1,8 +1,10 @@
 import { nativeReviewOutput } from './lib/native-review-output.mjs';
 // Synthetic admission tests only. No Native app, network, model, or user data.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import vm from 'node:vm';
 import ts from 'typescript';
@@ -62,6 +64,27 @@ const report = (phase) => {
 const args = (phase = 'first-launch') => ({ report: report(phase), manifest: manifest(phase), pid: 12345, startedAt: Date.now() - 1000,
   exitCode: 0, signal: null, previousExpected: expected });
 const cases = [];
+if (process.platform === 'darwin') {
+  const scratch = mkdtempSync(join(tmpdir(), 'echo-core-resource-test-'));
+  try {
+    const child = spawnSync(process.execPath, ['scripts/validate-native-core-review.mjs', '--resource-only'], {
+      env: { ...process.env, NATIVE_REVIEW_MODEL_CONFIG: '', TMPDIR: scratch,
+        NATIVE_CORE_REVIEW_OUTPUT: join(scratch, 'evidence') },
+      encoding: 'utf8', timeout: 20000,
+    });
+    assert.equal(child.status, 0, child.error?.message || child.stderr);
+    const result = JSON.parse(child.stdout);
+    assert.equal(result.resourcesPrepared, true);
+    assert.equal(result.nativeVerified, false);
+    assert.equal(result.passed, false);
+    const report = JSON.parse(readFileSync(join(result.output, 'result.json'), 'utf8'));
+    assert.equal(report.fixtures.length, 3);
+    assert(!readFileSync(join(result.home, 'config.toml'), 'utf8').includes('api_key'));
+    cases.push({ name: 'resource-only preparation does not require a model configuration', passed: true, actualNative: false });
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
 {
   // Production streaming chunks carry _meta.promptId; durable completion ACKs
   // carry update.prompt_id. Join both real wire forms without losing scope.

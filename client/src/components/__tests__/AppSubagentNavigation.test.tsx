@@ -44,7 +44,15 @@ vi.mock("@/lib/agent-client", async (original) => ({
   ...await original<object>(),
   agentInit: vi.fn(), agentAuthStatus: vi.fn(), providersList: vi.fn(),
   agentListAllSessions: vi.fn(), agentListWorkspaces: vi.fn(async () => []),
-  agentLoadSession: vi.fn(async () => "model-a"),
+  agentListSessionHistory: vi.fn(async () => ({
+    sessions: await (await import("@/lib/agent-client")).agentListAllSessions(true),
+    nextCursor: null,
+    nextArchiveCursor: null,
+    incomplete: false,
+  })),
+  agentFindSessionSummary: vi.fn(async (sessionId: string) =>
+    (await (await import("@/lib/agent-client")).agentListAllSessions(true)).find(entry => entry.sessionId === sessionId) ?? null),
+  agentRecoverSession: vi.fn(async () => ({ modelId: "model-a" })),
   internalReload: vi.fn(async () => {}), subscribeAgentEvents: vi.fn(async () => () => {}),
 }));
 
@@ -100,7 +108,7 @@ describe("子代理任务层级导航", () => {
     fireEvent.click(screen.getByRole("button", {name:"打开历史群会话"}));
     expect(await screen.findByTestId("active-group")).toHaveTextContent("群聊视图");
     expect(useGroupStore.getState().currentId).toBe("historical-group");
-    expect(client.agentLoadSession).not.toHaveBeenCalledWith("old-group-session",expect.anything());
+    expect(client.agentRecoverSession).not.toHaveBeenCalledWith("old-group-session",expect.anything());
   });
   it("归属查询失败时保留当前页面，允许重试且不按普通会话加载", async () => {
     vi.mocked(invoke).mockImplementation(async(command) => {
@@ -110,7 +118,7 @@ describe("子代理任务层级导航", () => {
     await start();
     fireEvent.click(screen.getByRole("button", {name:"打开历史群会话"}));
     await screen.findByText(/暂时无法确认会话归属/);
-    expect(client.agentLoadSession).not.toHaveBeenCalled();
+    expect(client.agentRecoverSession).not.toHaveBeenCalled();
     expect(screen.getByText("首页")).toBeInTheDocument();
   });
   it("快速切换时忽略晚到的群归属查询，不覆盖新任务", async () => {
@@ -128,7 +136,7 @@ describe("子代理任务层级导航", () => {
     await act(async () => resolveOwner("historical-group"));
     expect(screen.queryByTestId("active-group")).toBeNull();
     expect(screen.getByTestId("active-task")).toHaveTextContent("其他任务");
-    expect(client.agentLoadSession).not.toHaveBeenCalledWith("old-group-session",expect.anything());
+    expect(client.agentRecoverSession).not.toHaveBeenCalledWith("old-group-session",expect.anything());
   });
   it.each([false, true])("嵌套子代理可逐级返回并定位原条目，需要重试=%s", async retry => {
     await start();
@@ -137,7 +145,7 @@ describe("子代理任务层级导航", () => {
     fireEvent.click(screen.getByRole("button", { name: "打开子代理" }));
     await waitFor(() => expect(screen.getByTestId("active-task")).toHaveTextContent("子代理记录"));
     expect(screen.getByRole("button", { name: /返回上级任务：母任务/ })).toBeInTheDocument();
-    if (retry) vi.mocked(client.agentLoadSession).mockRejectedValueOnce(new Error("历史回放中断"));
+    if (retry) vi.mocked(client.agentRecoverSession).mockRejectedValueOnce(new Error("历史回放中断"));
     fireEvent.click(screen.getByRole("button", { name: "打开子代理" }));
     await waitFor(() => expect(screen.getByTestId("active-task")).toHaveTextContent("孙子代理记录"));
     if (retry) {

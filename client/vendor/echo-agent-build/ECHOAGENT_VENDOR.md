@@ -131,3 +131,19 @@ coalescing; existing record IDs remain stable.
 Task topic keys remain unique because automatic task completion addresses them
 by key; shared-prefix task saves cannot silently overwrite or complete another
 task.
+
+The Messages and Responses adapters finish on their protocol terminal events
+even when the HTTP connection stays open. EOF before `message_stop` fails the
+Messages request, and a failed Messages attempt stops retrying after sending
+visible output. An incomplete Responses turn terminates before its tool items
+can reach dispatch. Content filtering uses the existing refusal path, and only
+`max_output_tokens` produces a token-limit outcome. The sampler stream unit tests and the loopback
+`chat_stream_termination` integration suite cover these transitions.
+
+Normal named cancellation validates the prompt before any turn teardown. A
+stale request keeps the legacy no-op acknowledgement unless the client sets
+`reportStalePrompt` on a named non-rewind request. The desktop uses this
+option to distinguish a stale request from a completed cancellation.
+Its in-process admission ticket also lets the host withdraw a named prompt
+during preparation. Ticket validation and enqueue to the session actor share
+the same lock as withdrawal.

@@ -1,7 +1,0 @@
-#!/bin/sh
-
-for i in {1..300}
-do
-   sleep 1
-   echo "tasking osx... $i"
-done

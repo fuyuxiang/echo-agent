@@ -101,6 +101,27 @@ describe("FolderTrustDialog", () => {
     await waitFor(() => expect(folderTrustRespond).toHaveBeenCalledWith("trust-1", false));
   });
 
+  it("已结束的信任请求会让出弹窗，后续请求仍可处理", async () => {
+    vi.mocked(agentListPendingInteractions)
+      .mockResolvedValueOnce(pending([first]))
+      .mockResolvedValueOnce(pending([second]))
+      .mockResolvedValueOnce(pending([]));
+    vi.mocked(folderTrustRespond).mockResolvedValueOnce(false);
+    const onResolve = vi.fn();
+    const onToast = vi.fn();
+    render(<FolderTrustDialog request={{ cwd: first.cwd }} onResolve={onResolve} onToast={onToast} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /信任并加载/ }));
+    await screen.findByText(second.cwd);
+    expect(screen.queryByText(first.cwd)).not.toBeInTheDocument();
+    expect(onToast).toHaveBeenCalledWith("此文件夹的信任请求已结束，请重新发起需要授权的操作。");
+
+    fireEvent.click(screen.getByRole("button", { name: "不信任" }));
+    await waitFor(() => expect(onResolve).toHaveBeenCalledOnce());
+    expect(folderTrustRespond).toHaveBeenNthCalledWith(2, second.requestId, false);
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
   it("空队列隐藏后卸载焦点圈定，不吞掉全局 Tab", async () => {
     vi.mocked(agentListPendingInteractions).mockResolvedValueOnce(pending([]));
     const onResolve = vi.fn();

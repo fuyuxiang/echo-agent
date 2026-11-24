@@ -6,7 +6,7 @@ import { draftRevision, useDraftRevision } from "@/lib/draft-lifecycle";
 import type { PromptPrediction } from "@/lib/use-prompt-prediction";
 import "@/styles/prompt-prediction.css";
 import { useStorageHealth } from "@/lib/durable-ui-state";
-import { ArrowUp, ListPlus, Pause, Square, Folder, FolderOpen, Globe2, Mic, Monitor, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, ListPlus, Pause, Square, Globe2, Mic, Monitor, X, type LucideIcon } from "lucide-react";
 import { ChevronDownIcon } from "@/foundation/components/Icon/icons";
 import { ModelSelector, type ModelOption } from "./ModelSelector";
 import { ThumbImg } from "./experts-panel/shared/ThumbImg";
@@ -24,12 +24,11 @@ import {
   type InputHistory,
 } from "@/lib/input-history";
 import { WorkspacePicker } from "./WorkspacePicker";
-import { displayPath } from "@/lib/display-path";
 import { PermissionPicker, type ProjectDraftPermission } from "./PermissionPicker";
 import { AutomationBoundaryNotice, type PermissionRole } from "./AutomationBoundaryNotice";
 import { usePermissionModeStore } from "@/stores/permission-mode-store";
 import { SlashCommands, type SlashCommandsHandle } from "./SlashCommands";
-import { AtMentionMenu, type AtMentionHandle, type AtMentionSymbol } from "@/components/AtMentionMenu";
+import { AtMentionMenu, type AtMentionHandle } from "@/components/AtMentionMenu";
 import {
   isClientSlashCommand,
   parseSlashInvocation,
@@ -67,7 +66,7 @@ import {
   extractFilesFromClipboard,
   blobToBytes,
 } from "@/lib/clipboard-paste";
-import { AttachmentKind, attachmentBasename, classifyAttachment } from "@/lib/user-message";
+import { AttachmentKind, classifyAttachment } from "@/lib/user-message";
 import {
   parseSessionControlIntent,
   type SessionControlAction,
@@ -117,7 +116,6 @@ export function Composer({
   disabled,
   sendDisabled = false,
   filePaths,
-  workspaceSymbols,
   onSend,
   onCancel,
   onControl,
@@ -150,9 +148,6 @@ export function Composer({
   defaultWorkspaceCwd,
   projectWorkspaceDefault,
   workspaceError,
-  onOpenWorkspace,
-  managedTaskWorkspace = false,
-  openWorkspaceDisabled,
   // Seed text (from HomePage chips). Consumed once, then cleared via callback.
   initialText,
   onInitialTextConsumed,
@@ -211,8 +206,6 @@ export function Composer({
   sendDisabled?: boolean;
   /** SP4: workspace-relative file paths to back the `@` candidate picker. */
   filePaths?: string[];
-  /** SP4: workspace symbols (mirrors `SymbolIndexClient.symbols()`). */
-  workspaceSymbols?: AtMentionSymbol[];
   mentionMembers?: { id: string; name: string; role?: string }[];
   onMentionMember?: (memberId: string) => void;
   onSend: (text: string, attachments?: string[]) => boolean | void | Promise<boolean | void>;
@@ -262,9 +255,6 @@ export function Composer({
   defaultWorkspaceCwd?: string;
   projectWorkspaceDefault?: { cwd?: string };
   workspaceError?: string;
-  onOpenWorkspace?: () => void;
-  managedTaskWorkspace?: boolean;
-  openWorkspaceDisabled?: boolean;
   /** Optional initial text to seed the input (one-shot, then cleared). */
   initialText?: string;
   onInitialTextConsumed?: () => void;
@@ -817,7 +807,10 @@ export function Composer({
             | { type: string; paths?: string[] }
             | undefined;
           if (!payload) return;
-          if (draftOnlyRef.current) {
+          // The WebView reports drops even while capability management hides
+          // this Composer and preserves its draft for the return journey.
+          const input = ref.current;
+          if (!input || input.closest("[hidden]") || draftOnlyRef.current) {
             setDragHovering(false);
             return;
           }
@@ -1000,6 +993,10 @@ export function Composer({
 
   const finishAcceptedSubmission = (submittedText: string, submission: DraftSubmission) => {
     const { scope } = submission;
+    if (scope === draftScopeRef.current && isCurrentDraftEpoch(submission.scopeEpoch) && submittedText.trim()) {
+      histRef.current = pushHistory(histRef.current, submittedText);
+      histCursorRef.current = histRef.current.items.length;
+    }
     if (scope !== undefined && draftRevision(scope) !== submission.revision) return;
     if (scope !== draftScopeRef.current || !isCurrentDraftEpoch(submission.scopeEpoch)) {
       // Consume only the submitted version. A new draft may reuse this scope
@@ -1009,11 +1006,7 @@ export function Composer({
       return;
     }
     if (localRevisionRef.current !== submission.localRevision) return;
-    if (submittedText.trim()) {
-      histRef.current = pushHistory(histRef.current, submittedText);
-      histCursorRef.current = histRef.current.items.length;
-      draftRef.current = "";
-    }
+    if (submittedText.trim()) draftRef.current = "";
     discardOwnedAttachments([...ownedAttachmentPathsRef.current]);
     updateText("");
     updateAttachments([]);
@@ -1210,11 +1203,7 @@ export function Composer({
   };
 
   const showModelPicker = !!onModelChange && !!models;
-  const showWorkspacePicker = !!onSelectWorkspace && !!workspaces;
   const homeLayout = showMeta && !compact;
-  const workspacePath = cwd ? displayPath(cwd) : undefined;
-  const workspaceLabel = managedTaskWorkspace ? "任务文件夹"
-    : workspacePath ? attachmentBasename(workspacePath) : automaticWorkspace ? "默认任务目录" : "工作目录未记录";
   const knowledgePicker = <KnowledgePicker
     sessionId={knowledgeSessionId}
     deferRuntimeSync={knowledgeDeferred}
@@ -1245,33 +1234,6 @@ export function Composer({
     : controlIntent ? `${controlIntent === "pause" ? "暂停" : "停止"}当前执行`
     : streaming ? "加入队列，当前任务完成后发送（Enter）"
     : sending ? "正在发送" : "发送消息";
-
-  const workspaceControl = showWorkspacePicker ? (
-    <WorkspacePicker
-      cwd={cwd}
-      workspaces={workspaces!}
-      onSelectWorkspace={onSelectWorkspace!}
-      automaticWorkspace={automaticWorkspace}
-      defaultWorkspaceCwd={defaultWorkspaceCwd}
-      projectDefault={projectWorkspaceDefault}
-      workspaceErrorId={workspaceError ? workspaceErrorId : undefined}
-      disabled={disabled || sending}
-      onBusyChange={busy => { workspacePickingRef.current = busy; setWorkspacePicking(busy); }}
-    />
-  ) : workspacePath && onOpenWorkspace ? (
-    <button type="button" className="echo-composer-meta__btn echo-composer-meta__workspace echo-composer-meta__open-workspace"
-      disabled={openWorkspaceDisabled} aria-label={managedTaskWorkspace ? "打开任务文件夹" : `打开工作目录：${workspacePath}`}
-      title={`${managedTaskWorkspace ? "打开任务文件夹" : "打开文件夹"} · ${workspacePath}`} onClick={onOpenWorkspace}>
-      <FolderOpen size={14} strokeWidth={1.75} aria-hidden="true" />
-      <span className="workspace-picker__label">{workspaceLabel}</span>
-    </button>
-  ) : (
-    <span className="echo-composer-meta__value echo-composer-meta__workspace"
-      title={workspacePath ?? (automaticWorkspace ? "创建时自动分配独立文件夹" : workspaceLabel)}>
-      <Folder size={14} strokeWidth={1.75} aria-hidden="true" />
-      <span className="workspace-picker__label"><span className="sr-only">工作目录：</span>{workspaceLabel}</span>
-    </span>
-  );
 
   return (
     <div
@@ -1558,7 +1520,6 @@ export function Composer({
           text={text}
           cursor={cursorPos}
           filePaths={filePaths ?? mentionCandidates.filePaths}
-          workspaceSymbols={workspaceSymbols ?? mentionCandidates.workspaceSymbols}
           members={mentionMembers}
           onPick={(mention, _replacement, memberId) => {
             if (memberId) onMentionMember?.(memberId);
@@ -1602,7 +1563,7 @@ export function Composer({
               <span
                 className={`echo-composer__automation-badge echo-composer__automation-badge--${automationMode}`}
                 title={automationMode === "browser_use"
-                  ? "本任务可以在独立浏览器中操作网页"
+                  ? "本任务可以打开和操作网页"
                   : "本任务可以查看屏幕并操作本机应用"}
               >
                 {automationMode === "browser_use"
@@ -1645,7 +1606,19 @@ export function Composer({
             )}
             {showMeta && !permissionInline && (
               <div className="echo-composer-meta" role="group" aria-label="任务执行设置">
-                {workspaceControl}
+                {onSelectWorkspace && workspaces && (
+                  <WorkspacePicker
+                    cwd={cwd}
+                    workspaces={workspaces}
+                    onSelectWorkspace={onSelectWorkspace}
+                    automaticWorkspace={automaticWorkspace}
+                    defaultWorkspaceCwd={defaultWorkspaceCwd}
+                    projectDefault={projectWorkspaceDefault}
+                    workspaceErrorId={workspaceError ? workspaceErrorId : undefined}
+                    disabled={disabled || sending}
+                    onBusyChange={busy => { workspacePickingRef.current = busy; setWorkspacePicking(busy); }}
+                  />
+                )}
                 <PermissionPicker onToast={onToast} sessionId={commandSessionId}
                   projectDraftPermission={projectDraftPermission} disabled={draftOnly} showLockedAsText />
                 {workspaceError && <p id={workspaceErrorId} role="alert" className="echo-composer-meta__workspace-error">{workspaceError}</p>}

@@ -26,9 +26,26 @@ try {
       await page.getByRole("button",{name:"加入队列",exact:true}).waitFor();
     }
     if(state==="paused") {
-      const feedback=page.locator(".chatview__scroll .session-turn-feedback");await feedback.getByRole("button",{name:"继续任务",exact:true}).waitFor();
+      const feedback=page.locator(".chatview__scroll .session-turn-feedback");
+      await feedback.waitFor();
       assert.equal(await page.locator(".session-turn-feedback").count(),1);
-      await feedback.scrollIntoViewIfNeeded();await feedback.getByRole("button",{name:"继续任务",exact:true}).click({trial:true});
+      await feedback.scrollIntoViewIfNeeded();
+      const resume=feedback.getByRole("button",{name:"继续任务",exact:true});
+      if(mode==="default"){
+        await resume.click({trial:true});
+      }else{
+        assert.equal(await resume.count(),0,"tool modes require explicit instructions to resume");
+        assert.match(await feedback.textContent(), /可(?:直接)?发送(?:新)?消息/);
+        await page.screenshot({path:join(output,`${mode}-${state}-${width}-${theme}.png`)});
+        const text="继续当前任务，操作前请按原权限确认";
+        await composer.getByRole("textbox",{name:"输入问题或任务"}).fill(text);
+        await composer.getByRole("button",{name:"发送",exact:true}).click();
+        await feedback.waitFor({state:"detached"});
+        const sends=await page.evaluate(()=>window.workbenchCalls.filter(call=>call.command==="review_send"));
+        assert.equal(sends.length,1);
+        assert.equal(sends[0].args.sessionId,"review-conversation");
+        assert.equal(sends[0].args.text,text);
+      }
     }
     if(state==="approval") {
       const card=page.getByRole("region",{name:"操作授权"});await card.waitFor();
@@ -41,7 +58,7 @@ try {
       assert.ok(Math.abs(geometry.width-geometry.composerWidth)<1);assert.equal(geometry.overflow,false);
       await page.screenshot({path:join(output,`${mode}-${state}-${width}-${theme}.png`)});
       await card.getByRole("button",{name:"允许一次",exact:true}).click();await card.waitFor({state:"hidden"});
-    } else await page.screenshot({path:join(output,`${mode}-${state}-${width}-${theme}.png`)});
+    } else if(state!=="paused"||mode==="default") await page.screenshot({path:join(output,`${mode}-${state}-${width}-${theme}.png`)});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);
     evidence.push({width,height,theme,mode,state});
   }

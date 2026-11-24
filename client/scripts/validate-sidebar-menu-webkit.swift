@@ -117,13 +117,13 @@ final class Review: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             };
             await drag('knowledge', row('projects'));
             assert(ids('primary')[0] === 'knowledge', 'Native pointer failed to move knowledge into primary: ' + ids('primary') + ', trusted downs=' + trustedDown + ', moves=' + trustedMove);
-            await drag('knowledge', row('coding'), true);
-            assert(ids('primary').join(',') === 'projects,organization,coding,knowledge,capabilities', 'Native same-group reorder failed');
+            await drag('knowledge', row('organization'), true);
+            assert(ids('primary').join(',') === 'projects,organization,knowledge,capabilities', 'Native same-group reorder failed');
             await drag('organization', row('automation'), true);
-            assert(ids('more').join(',') === 'automation,organization', 'Native primary-to-more drag failed');
+            assert(ids('more').join(',') === 'automation,organization,coding', 'Native primary-to-more drag failed');
             const button = text => [...dialog().querySelectorAll('button')].find(e => e.textContent === text);
             button('恢复默认').click(); await delay(50);
-            for (const id of ['projects', 'organization', 'coding', 'capabilities']) {
+            for (const id of ['projects', 'organization', 'capabilities']) {
               row(id).querySelector('[data-menu-handle]').dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowRight', bubbles: true})); await delay(20);
             }
             assert(ids('primary').length === 0, 'Empty-group setup failed');

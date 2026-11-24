@@ -6,17 +6,10 @@ import * as agentClient from "@/lib/agent-client";
 const base = { streaming: false, onSend: vi.fn(), onCancel: vi.fn() };
 
 describe("Composer", () => {
-  it("给自动分配的工作目录显示任务文件夹，真实路径仍可查看", () => {
+  it("已绑定目录的会话底栏不显示目录控件", () => {
     const cwd = "/EchoAgent/Tasks/c2856c21-0e33-43a3-8541-bc06cebcdc89";
-    const open = vi.fn();
-    const view = render(<Composer {...base} showMeta cwd={cwd} managedTaskWorkspace onOpenWorkspace={open} />);
-    const folder = screen.getByRole("button", { name: "打开任务文件夹" });
-    expect(folder).toHaveTextContent("任务文件夹");
-    expect(folder.getAttribute("title")).toContain(cwd);
-    fireEvent.click(folder);
-    expect(open).toHaveBeenCalledOnce();
-    view.rerender(<Composer {...base} showMeta cwd="/Projects/客户资料" onOpenWorkspace={open} />);
-    expect(screen.getByRole("button", { name: "打开工作目录：/Projects/客户资料" })).toHaveTextContent("客户资料");
+    render(<Composer {...base} showMeta compact cwd={cwd} />);
+    expect(screen.getByRole("group", { name: "任务执行设置" })).not.toHaveTextContent(/工作目录|任务文件夹|c2856c21/);
   });
 
   it("会话加载完成、任务开始/结束、模型切换都自动同步容量", async () => {

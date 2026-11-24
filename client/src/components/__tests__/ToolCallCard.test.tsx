@@ -101,6 +101,7 @@ describe("ToolCallCard", () => {
 
   it("以文档成果展示内置 Office 调用", () => {
     const onOpenPath = vi.fn();
+    const warning = "Word 文件已保存，应用内编辑稿未能保存。可在 Word 中继续编辑。";
     const officeCall: ToolCallView = {
       toolCallId: "office-1",
       title: "echoagent-office__office_create",
@@ -112,6 +113,7 @@ describe("ToolCallCard", () => {
         format: "docx",
         byteSize: 1024,
         sha256: "a".repeat(64),
+        editableSourceWarning: warning,
       },
       content: [{ type: "text", text: JSON.stringify({
         path: "/work/EchoAgent成果/季度报告.docx",
@@ -126,6 +128,7 @@ describe("ToolCallCard", () => {
     </>);
     expect(screen.getAllByText("文档")).toHaveLength(2);
     expect(screen.getByText("生成 季度报告")).toBeInTheDocument();
+    expect(screen.getByText(warning)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "/work/EchoAgent成果/季度报告.docx" }));
     expect(onOpenPath).toHaveBeenCalledWith("/work/EchoAgent成果/季度报告.docx");
     expect(screen.queryByText(/sha256/)).not.toBeInTheDocument();

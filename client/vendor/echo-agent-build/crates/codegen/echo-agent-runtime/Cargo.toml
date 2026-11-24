@@ -5,6 +5,7 @@ version = "1.0.8"
 edition.workspace = true
 
 [features]
+desktop = ["echo-agent-core/desktop", "echo-agent-tools/desktop", "echo-agent-workspace/desktop"]
 default = []
 dhat-heap = ["dep:dhat"]
 # Loom model-checking for src/auth/manager/lock/flock_wait.rs; test-only

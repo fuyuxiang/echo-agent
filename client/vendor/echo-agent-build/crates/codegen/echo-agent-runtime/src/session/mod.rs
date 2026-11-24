@@ -423,6 +423,8 @@ pub(crate) struct RegistryConfig {
 pub mod acp_conversion;
 pub(crate) mod acp_mcp;
 pub(crate) mod acp_session;
+pub use acp_session::is_private_memory_query;
+pub const PRIVATE_MEMORY_LOOKUP_META: &str = "privateMemoryLookup";
 pub(crate) mod agent_rebuild;
 pub(crate) mod chat_persistence;
 pub(crate) mod events;

@@ -1039,6 +1039,7 @@ pub struct PersonalMemorySnapshot {
     quarantined_count: usize,
     auto_processing_enabled: bool,
     enabled: bool,
+    workspace_available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     dream_undo: Option<echo_agent_memory::dream::DreamUndoVersion>,
 }
@@ -1087,6 +1088,7 @@ pub fn memory_records_get(
             .unwrap_or(0),
         auto_processing_enabled: config.auto_flush_enabled,
         enabled: config.enabled,
+        workspace_available: cwd.is_some() && !storage.is_ephemeral(),
         dream_undo,
     })
 }
@@ -1305,10 +1307,35 @@ async fn search_session_page(
         } => (results, next_offset, bootstrapping),
         SearchResponse::Hits(hits) => (hits, None, false),
     };
-    let results = raw
-        .into_iter()
-        .take(limit as usize)
-        .filter(|hit| valid_admin_id(&hit.session_id))
+    // FTS owns the raw offset. Filtering a page must not hide its continuation
+    // cursor when all of its matches belong to unavailable sessions.
+    let results = tauri::async_runtime::spawn_blocking(move || {
+        let archived = crate::meta::read_state().archived_set();
+        let root = crate::sessions::agent_sessions_root();
+        visible_search_hits(raw, &root, &archived, limit as usize)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(SearchPage {
+        results,
+        next_offset: next_offset.filter(|next| *next > offset),
+        bootstrapping,
+    })
+}
+
+fn visible_search_hits(
+    raw: Vec<RawSearchHit>,
+    root: &Path,
+    archived: &HashSet<String>,
+    limit: usize,
+) -> Vec<SearchHit> {
+    raw.into_iter()
+        .take(limit)
+        .filter(|hit| {
+            valid_admin_id(&hit.session_id)
+                && !archived.contains(&hit.session_id)
+                && crate::sessions::session_is_searchable(root, &hit.session_id, hit.cwd.as_deref())
+        })
         .map(|h| SearchHit {
             session_id: h.session_id,
             cwd: h.cwd.map(|value| bounded_text(value, MAX_LOCAL_PATH_CHARS)),
@@ -1317,12 +1344,7 @@ async fn search_session_page(
             rank: h.rank,
             updated_at: h.updated_at.map(|value| bounded_text(value, 128)),
         })
-        .collect();
-    Ok(SearchPage {
-        results,
-        next_offset: next_offset.filter(|next| *next > offset),
-        bootstrapping,
-    })
+        .collect()
 }
 
 // ========================================================================
@@ -1687,8 +1709,7 @@ async fn request_rewind(
     let workspace =
         crate::commands::trusted_existing_session_cwd(state, filesystem, session_id, None)?;
     if payload.get("fileGuard").is_some() {
-        crate::coding_document_bridge::ensure_workspace_admission(&workspace.to_string_lossy())
-            .await?;
+        crate::legacy_workspace::ensure_workspace_available(&workspace)?;
     }
     if target_prompt_index.is_some_and(|target| {
         crate::meta::read_state()
@@ -2244,7 +2265,7 @@ pub async fn folder_trust_respond(
 /// Use install purpose-built prompts while their tools remain isolated in the
 /// session-bound, authenticated automation MCP server.
 #[tauri::command]
-pub async fn set_coding_mode(
+pub async fn set_agent_mode(
     state: State<'_, AppState>,
     session_id: String,
     mode: String,
@@ -2256,7 +2277,7 @@ pub async fn set_coding_mode(
         "agent" => "default",
         "browser_use" => "browser_use",
         "computer_use" => "computer_use",
-        _ => return Err("unsupported coding mode".into()),
+        _ => return Err("unsupported session mode".into()),
     };
     let automation_mode = crate::automation::AutomationMode::parse(mode_id)
         .unwrap_or(crate::automation::AutomationMode::Default);
@@ -2820,6 +2841,47 @@ pub async fn plugins_action(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn search_filters_unloaded_archived_hidden_and_missing_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().canonicalize().unwrap();
+        let root = temp.path().join("sessions");
+        let workspace = root.join(
+            echo_agent_runtime::util::echo_agent_home::encode_cwd_dirname(&cwd.to_string_lossy()),
+        );
+        for (id, hidden) in [
+            ("visible", false),
+            ("archive-off-page", false),
+            ("hidden-off-page", true),
+        ] {
+            let path = workspace.join(id);
+            std::fs::create_dir_all(&path).unwrap();
+            let summary =
+                serde_json::json!({ "cwd": cwd, "hidden": hidden, "session_summary": "fixture" });
+            std::fs::write(
+                path.join("summary.json"),
+                serde_json::to_vec(&summary).unwrap(),
+            )
+            .unwrap();
+        }
+        let hits = ["visible", "archive-off-page", "hidden-off-page", "removed"]
+            .into_iter()
+            .map(|id| super::RawSearchHit {
+                session_id: id.into(),
+                cwd: Some(cwd.to_string_lossy().into_owned()),
+                title: Some(id.into()),
+                snippet: Some(format!("{id} content")),
+                rank: None,
+                updated_at: None,
+            })
+            .collect();
+        let visible =
+            super::visible_search_hits(hits, &root, &["archive-off-page".into()].into(), 10);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].session_id, "visible");
+        assert_eq!(visible[0].snippet.as_deref(), Some("visible content"));
+    }
+
     use super::{
         check_expected_revision, delete_session_memory_artifacts_from_storage, file_revision,
         init_sqlite_vec, kill_running_task, list_memory, list_running_tasks,

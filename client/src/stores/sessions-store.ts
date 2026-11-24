@@ -38,14 +38,14 @@ function withLifecycleTimestamp<T extends Partial<SessionSummary> & { sessionId:
 /**
  * Session catalog and sidebar presentation state.
  *
- * `independent` is the complete persisted session catalog across every cwd.
+ * `independent` holds loaded history pages and sessions hydrated by ID.
  * A cwd is execution context for the agent and never decides whether a row is
  * a task or a project. The sidebar derives project membership from explicit
  * project references. `workspaces` only supplies the Composer's working-directory
  * picker, while `homeCwd` is the default target for newly created sessions.
  */
 interface SessionsState {
-  /** Complete task/session catalog across historical working directories. */
+  /** Loaded task summaries across historical working directories. */
   independent: SessionSummary[];
   /** Renderer-lifetime deletion barriers against stale native events/lists. */
   deletedSessionIds: string[];

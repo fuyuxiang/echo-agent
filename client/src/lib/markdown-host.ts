@@ -1,11 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ask, save } from "@tauri-apps/plugin-dialog";
 import type { MarkdownConfig, PathType } from "@/components/markdown/types";
+import { developmentEndpoint } from "./browser-preview";
 
 export type MarkdownHostOptions = {
   cwd?: string;
   sessionId?: string | null;
   onToast?: (msg: string) => void;
+  onOpenWeb?: (url: string) => void;
 };
 
 type PathStat = {
@@ -151,8 +153,12 @@ export function createMarkdownHostConfig(
 
   const onLinkClick: MarkdownConfig["onLinkClick"] = ({ href, event }) => {
     if (!href) return;
-    // Intercept http(s) so we open in the system browser (Tauri webview
-    // target=_blank is unreliable / may be blocked).
+    if (opts.onOpenWeb && /^https?:\/\//i.test(href) && !event.metaKey && !event.ctrlKey && !event.shiftKey
+      && (event.altKey || developmentEndpoint(href))) {
+      event.preventDefault();
+      opts.onOpenWeb(href);
+      return false;
+    }
     if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
       event.preventDefault();
       void invoke("open_url", { url: href }).catch((e) =>
@@ -275,6 +281,9 @@ export function createMarkdownHostConfig(
     resolveCode,
     openCodeLink,
     onLinkClick,
+    openLinkPreview: opts.onOpenWeb ? href => {
+      if (/^https?:\/\//i.test(href) && !developmentEndpoint(href)) return () => opts.onOpenWeb?.(href);
+    } : undefined,
     onApplyCode,
   };
 }

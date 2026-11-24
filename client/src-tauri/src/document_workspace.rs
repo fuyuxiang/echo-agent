@@ -1,10 +1,9 @@
 //! One source shared by the document canvas, Agent tools, and local exports.
 use crate::document_export::{DocumentExportReceipt, DocumentExportRequest};
-use crate::document_store::{self, EditableDocument};
+use crate::document_store::{self, file_hash, EditableDocument};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Serialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::{
     borrow::Cow,
     collections::HashMap,
@@ -31,10 +30,6 @@ pub(crate) fn document_lock(path: &Path) -> Result<Arc<DocumentLock>, String> {
     let lock = Arc::new(DocumentLock::new(()));
     locks.insert(key, Arc::downgrade(&lock));
     Ok(lock)
-}
-fn file_hash(path: &Path) -> Result<(String, u64), String> {
-    let bytes = crate::shell_fs::read_regular_file_bounded(path, 50 * 1024 * 1024)?;
-    Ok((format!("{:x}", Sha256::digest(&bytes)), bytes.len() as u64))
 }
 fn session_root(app: &AppHandle, session: &str) -> Result<PathBuf, String> {
     let cwd = app
@@ -84,7 +79,7 @@ fn resolve_original(
     Ok(canonical)
 }
 
-fn read_record_at(
+pub(crate) fn read_record_at(
     home: &Path,
     session: &str,
     path: &Path,
@@ -424,6 +419,7 @@ pub(crate) async fn publish_for_session(
     if value.exported_revision == value.revision {
         return Ok(value);
     }
+    crate::legacy_workspace::ensure_workspace_available(&path)?;
     let request = DocumentExportRequest {
         title: value.title.clone(),
         markdown: String::new(),
@@ -449,6 +445,7 @@ pub(crate) async fn publish_for_session(
         format: "docx".into(),
         byte_size,
         sha256: sha256.clone(),
+        editable_source_warning: None,
     };
     crate::session_artifacts::stage(session, receipt.clone(), &value.title)?;
     crate::document_store::install_revision(&output, &path, &value.file_sha256)?;

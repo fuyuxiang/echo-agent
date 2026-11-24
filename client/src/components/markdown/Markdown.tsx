@@ -16,6 +16,7 @@ import rehypeKatex from "rehype-katex";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { common } from "lowlight";
 import { LinkifyIt } from "linkify-it";
+import { PanelRightOpen } from "lucide-react";
 import "katex/dist/katex.min.css";
 
 import { preprocessMarkdown } from "./preprocess";
@@ -546,7 +547,7 @@ function MarkdownInner({
             }
           }
         };
-        return (
+        const link = (
           <a
             href={href}
             title={title}
@@ -558,6 +559,10 @@ function MarkdownInner({
             {aChildren}
           </a>
         );
+        const preview = href && !config?.staticRendering ? config?.openLinkPreview?.(href) : undefined;
+        return preview ? <span className="md-link-preview">{link}<button type="button"
+          className="md-link-preview__button" aria-label="在侧栏预览网页" title="在侧栏预览"
+          onClick={preview}><PanelRightOpen size={13} aria-hidden="true" /></button></span> : link;
       },
       img: ({
         src,

@@ -11,8 +11,8 @@ const output = reviewOutput(join(tmpdir(),"echo-color-audit",baseline ? "before"
 const server = await createUiReviewServer(0, { baseline });
 const base = `http://127.0.0.1:${server.httpServer.address().port}/__ui-review`;
 const selected = process.argv.find(arg => arg.startsWith("--surface="))?.slice(10);
-const surfaces = ["workbench", "home", "home:unconfigured", "home:loading", "home:error", "conversation", "search", "browser-toolbar", "capabilities", "page:技能", "page:连接器", "page:插件", "page:项目", "collapsed-project", "page:自动化", "automation-edit", "page:知识库", "organization", "organization-login", "meeting", "coding", "model", "general", "personalize", "memory", "personal-memory", "agent-settings", "shortcuts", "usage", "cloud-storage", "data", "archived", "security", "help", "agent-mail", "notify-channels", "weixin-unconnected", "weixin-connected", "weixin-offline", "modal-long", "modal-error", "about", "feedback", "update", "results", "details", "trust", "execution", "runtime", "queue", "controls", "page:技能:error", "page:连接器:error", "page:插件:error", "trust:error", "execution:complete", "execution:error", "results:code", "results:diagram", "projects", "management-experts", "management-knowledge", "management-schedules", "organization-shell", "expert-entry", "workspace-picker", "permission-picker", "toast", "content-menus", "coding-question", ...(baseline ? [] : ["color-system"])].filter(spec => !selected || selected.split(",").includes(spec)).sort((a,b) => selected ? selected.split(",").indexOf(a) - selected.split(",").indexOf(b) : 0);
-const screenshots = new Set(["home", "conversation", "page:连接器", "page:技能", "page:项目", "organization", "coding", "general", "modal-error", "execution", "controls", "meeting", "color-system", "model", "organization-shell", "management-schedules", "workspace-picker", "content-menus", "search"]);
+const surfaces = ["workbench", "home", "home:unconfigured", "home:loading", "home:error", "conversation", "search", "browser-toolbar", "capabilities", "page:技能", "page:连接器", "page:插件", "page:项目", "collapsed-project", "page:自动化", "automation-edit", "page:知识库", "organization", "organization-login", "meeting",  "model", "general", "personalize", "memory", "personal-memory", "agent-settings", "shortcuts", "usage", "cloud-storage", "data", "archived", "security", "help", "agent-mail", "notify-channels", "weixin-unconnected", "weixin-connected", "weixin-offline", "modal-long", "modal-error", "about", "feedback", "update", "results", "details", "trust", "execution", "runtime", "queue", "controls", "page:技能:error", "page:连接器:error", "page:插件:error", "trust:error", "execution:complete", "execution:error", "results:code", "results:diagram", "projects", "management-experts", "management-knowledge", "management-schedules", "organization-shell", "expert-entry", "workspace-picker", "permission-picker", "toast", "content-menus",  ...(baseline ? [] : ["color-system"])].filter(spec => !selected || selected.split(",").includes(spec)).sort((a,b) => selected ? selected.split(",").indexOf(a) - selected.split(",").indexOf(b) : 0);
+const screenshots = new Set(["home", "conversation", "page:连接器", "page:技能", "page:项目", "organization",  "general", "modal-error", "execution", "controls", "meeting", "color-system", "model", "organization-shell", "management-schedules", "workspace-picker", "content-menus", "search"]);
 const scenarios = process.argv.includes("--full") ? [[1024,680,11], [1024,680,18], [1280,800,13], [1920,1080,11], [1920,1080,18]] : [[1280,800,13]];
 const evidence = [];
 let browser;
@@ -112,7 +112,6 @@ try {
       if (spec === "management-schedules") await page.getByText("每日 AI 新闻推送",{exact:true}).first().waitFor();
       const result = await page.evaluate(inspectRenderedColors);
       if (surface === "color-system") {
-        assert(result.text.some(item=>item.selector==="b" && item.text==="3"),"The real dirty-file count must be visible and measured");
         assert.equal(result.controls.filter(item=>item.role==="status-icon").length,2,"Both recording indicators must be visible and measured");
       }
       evidence.push({spec,theme,width,height,font,state:"default",...result});
@@ -149,6 +148,9 @@ try {
         await page.getByRole("button",{name:"查看计划",exact:true}).click();
         await page.getByRole("group",{name:"计划审批",exact:true}).getByRole("button",{name:"批准执行",exact:true}).click();
         await page.getByRole("group",{name:"计划审批",exact:true}).waitFor({state:"hidden"});
+        const workspace = page.getByRole("complementary", { name: "工作区面板", exact: true });
+        await workspace.getByRole("button", { name: "关闭面板", exact: true }).click();
+        await workspace.waitFor({state:"hidden"});
         const queueDisclosure = page.getByRole("button", { name: /^待发送 \d+ 条/, expanded: false });
         if (await queueDisclosure.isVisible()) await queueDisclosure.click();
         await page.locator(".queue-row--paused").first().waitFor();

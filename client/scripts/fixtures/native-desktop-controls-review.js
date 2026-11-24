@@ -48,7 +48,7 @@ window.__echoDesktopControlsReview = async ({ home, cwd, modelId }) => {
     });
     sessionId=await invoke('agent_new_session',{cwd,modelId,permissionMode:'ask'});
     report.sessionId=sessionId;
-    await invoke('set_coding_mode',{sessionId,mode:'computer_use'});
+    await invoke('set_agent_mode',{sessionId,mode:'computer_use'});
     const promptId=`controls-${Date.now()}`;
     await invoke('agent_send',{sessionId,promptId,text:'本次是只读工具接入验收。请通过 echoagent-automation MCP 实际调用 computer_capabilities，然后 computer_list_apps，若 nextCursor 非空必须用 computer_continue 取完所有页（禁止使用终端命令），根据实际 totalItems 报告应用总数，然后调用 automation_pause。只允许为这些工具进行工具发现。不要输入、点击、打开应用、保存文件或访问其他数据。最后用中文报告实际结果，回复结尾标记 CONTROL-RUNTIME-READONLY。',attachments:[]});
     const completed=await wait(()=>completions.find(e=>e.sessionId===sessionId&&e.promptId===promptId),'actual model task completion',180000);

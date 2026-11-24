@@ -22,6 +22,7 @@ export function FileChangesPanel({ messages }: FileChangesPanelProps) {
         {summary.totalFiles > 0 && (
           <span className="file-changes__summary">
             {summary.totalFiles} 个文件 ·{" "}
+            {summary.files.some(file => file.approximate) && "约 "}
             <span className="file-changes__added">+{summary.totalAdded}</span>{" "}
             <span className="file-changes__removed">-{summary.totalRemoved}</span>
           </span>
@@ -45,6 +46,7 @@ export function FileChangesPanel({ messages }: FileChangesPanelProps) {
                 </span>
               )}
               <span className="file-changes__stats">
+                {f.approximate && "约 "}
                 <span className="file-changes__added">+{f.added}</span>
                 <span className="file-changes__removed">-{f.removed}</span>
               </span>

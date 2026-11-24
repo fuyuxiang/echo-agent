@@ -10,9 +10,9 @@ This C4-style context view names system types and responsibilities. Directed sol
 
 | Area | Desktop | Standalone Runtime |
 | --- | --- | --- |
-| Entry points | Task UI, coding workspace, expert groups | Terminal, channels, Gateway |
+| Entry points | Conversations, projects, expert groups | Terminal, channels, Gateway |
 | Engine | In-process Rust engine | Standalone Python engine |
-| Host | Windows, workspaces, IDE, local services, lifecycle | Composition, channels, scheduling, service lifecycle |
+| Host | Windows, workspaces, local services, lifecycle | Composition, channels, scheduling, service lifecycle |
 | Interface | Desktop application | Gateway Dashboard; CLI/TUI |
 | Extensions | Embedded tools, Desktop MCP, skills, plugins | Built-in tools, MCP, skills, Python plugins |
 | State | Application data and working directories | Instance workspace and storage |

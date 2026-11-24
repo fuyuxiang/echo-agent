@@ -1,8 +1,6 @@
-import { bindTeamProjectSession, captureTeamProjectOperation, teamProjectRequest, type OpenTeamExecution, type TeamProjectSnapshot, type StartTeamWork } from "@/lib/team-project-client";
+import { bindTeamProjectSession, canEditTeamProject, captureTeamProjectOperation, projectRoleUnavailable, teamProjectRequest, type OpenTeamExecution, type TeamProjectSnapshot, type StartTeamWork } from "@/lib/team-project-client";
+import { isPrivateMemoryLookup, privateMemoryInSharedProject } from "@/lib/private-memory-lookup";
 import { documentEditPrompt, forgetDocumentSessions } from "@/lib/document-workspace";
-import type { CodingTurnOptions } from "./lib/agent-client";
-import { codingApi } from "./features/coding/lib/tauri-api";
-import { useTaskStore } from "./features/coding/store/task-store";
 import { findModelDisplayName } from "@/lib/model-presentation";
 import { SessionNavigation } from "./components/SessionHeader";
 import { PageChromeProvider } from "./components/PageToolbar";
@@ -24,6 +22,7 @@ import { Toast, type ToastAction } from "./components/Toast";
 import { useToastQueue } from "./lib/use-toast-queue";
 import { useRendererRecoveryStatus, type RendererRecoveryStatus } from "./lib/renderer-recovery";
 import { readRecoverySessionId, saveRecoverySessionId } from "./lib/recovery-context";
+import { legacyWorkspaceSessions } from "./lib/legacy-workspace";
 import { planRecoveryAttempt, MAX_RECOVERY_ATTEMPTS } from "./lib/recovery-policy";
 import { toastMessage, type ToastMessageKind } from "./lib/toast-message";
 import { memoryDreamMessage, memoryFlushMessage } from "./lib/memory-feedback";
@@ -40,15 +39,16 @@ import {
   resolveConfiguredModelId,
   resolveSessionModelId,
 } from "./lib/model-selection";
-import { useSessionStore } from "./stores/session-store";
+import { sessionControlReceiptState, useSessionStore } from "./stores/session-store";
 import { useSessionsStore } from "./stores/sessions-store";
 import { useContinuationStore } from "./stores/continuation-store";
 import { latestContinuationTarget } from "./lib/session-continuation";
 import { useDesktopTray } from "./lib/use-desktop-tray";
 import { TrayActionCancelled } from "./lib/desktop-tray-connection";
 import { reconcileSessionCatalog } from "./lib/session-catalog";
+import { pendingSessionInteractionStatus, restoreSessionInteractions } from "./lib/session-interactions";
 import { meetingDrafts } from "./lib/meeting-drafts";
-import { createExitPreparationController, type DesktopExitNotice, type DesktopExitFailure } from "./lib/recording-exit";
+import { createExitPreparationController, type DesktopExitNotice, type DesktopExitFailure, type ExitPreparationStage } from "./lib/recording-exit";
 import { usePermissionStore } from "./stores/permission-store";
 import {
   hasPendingQuestionForSession,
@@ -69,8 +69,8 @@ import {
   agentRecoverSession,
   agentReloadSession,
   agentSessionLoadInFlight,
-  agentListAllSessions,
-  agentListSessions,
+  agentListSessionHistory,
+  agentFindSessionSummary,
   agentListWorkspaces,
   agentRenameSession,
   agentDeleteSession,
@@ -80,7 +80,7 @@ import {
   agentAuthStatus,
   sessionContinue,
   type ContinuationRequest,
-  setCodingMode,
+  setAgentMode,
   togglePlanMode,
   providersList,
   flattenModels,
@@ -98,9 +98,6 @@ import {
   type WorkspaceInfo,
 } from "./lib/agent-client";
 import type { AgentEntry, SessionSummary, ContinuationTarget, ConversationNavigationRequest } from "./lib/types";
-import { buildCodingWorkflowPrompt } from "./features/coding/lib/workflow";
-import { CodingTaskRuntimeManager } from "./features/coding/lib/coding-task-runtime";
-import { codingQueueOwner, settleCodingQueueTurn } from "./features/coding/lib/coding-followup";
 import { flushProjectPersistence, hydrateProjectsFromBackend, projectOwnsSession, useProjectsStore, type ProjectMeta, type ProjectTab } from "./stores/projects-store";
 import {
   onSessionStatusPersistenceIssue,
@@ -138,7 +135,7 @@ import type { AutomationMode } from "./lib/automation-client";
 import { applySessionScopedFailure } from "./lib/session-scoped-failure";
 import { isGlobalShortcutBlocked } from "./lib/keyboard-scope";
 import { useModalPresence } from "./lib/use-modal-focus";
-import { useAppDialog, type ConfirmAction } from "./components/AppDialog";
+import { useAppDialog } from "./components/AppDialog";
 import { confirmAutomationEditorExit } from "./stores/automation-editor-store";
 import { hydrateKnowledgeSources } from "./lib/kb-source-storage";
 import {
@@ -254,16 +251,16 @@ function extractMarkdownBody(raw: string): string {
   return rest.slice(closeIdx + 1).replace(/^\n---\s*/, "").trim();
 }
 
-/** Find a session in the complete catalog without depending on a render. */
+/** Find a loaded summary without depending on a render. */
 function findSessionSummary(sessionId: string): SessionSummary | undefined {
   return useSessionsStore.getState().independent
     .find((entry) => entry.sessionId === sessionId);
 }
 
-export default function App() {
+export default function App({ uiRestoreDeferred = false }: { uiRestoreDeferred?: boolean } = {}) {
   return (
     <ThemeProvider>
-      <Shell />
+      <Shell uiRestoreDeferred={uiRestoreDeferred} />
     </ThemeProvider>
   );
 }
@@ -303,7 +300,7 @@ function prepareExistingProjectTurn(sessionId: string, body: string) {
   })();
 }
 
-function Shell() {
+function Shell({ uiRestoreDeferred }: { uiRestoreDeferred: boolean }) {
   const notificationNavigatorRef = useRef<(sessionId: string) => Promise<void>>(async () => {});
   const notificationAutomationNavigatorRef = useRef<(automationId: string) => Promise<void>>(async () => {});
   const [init, setInit] = useState<InitResult | null>(null);
@@ -320,7 +317,8 @@ function Shell() {
   useGroupEvents(!!init?.ok);
   const groupChatOpen = useGroupStore(state => !!state.current);
   const [initAttempt, setInitAttempt] = useState(0);
-  const [exitPreparing, setExitPreparing] = useState(false);
+  const [exitStage, setExitStage] = useState<ExitPreparationStage | null>(null);
+  const exitPreparing = exitStage !== null;
   const runtimeRecoveryRequested = useRef(false);
   const [recoverySessionId] = useState(readRecoverySessionId);
   const rendererRestoreChecked = useRef(false);
@@ -347,7 +345,6 @@ function Shell() {
   const automationSessionRunsRef = useRef(new Map<string, { recordId: string; promptId?: string }>());
   const [commandRefreshKey, setCommandRefreshKey] = useState(0);
   const [placeholderView, setPlaceholderView] = useState<string | null>(null);
-  const [hasOpenedCodingWorkspace, setHasOpenedCodingWorkspace] = useState(false);
   const [capabilityVisit, setCapabilityVisit] = useState<{
     destination: ComposerCapabilityDestination;
     cwd?: string;
@@ -403,56 +400,7 @@ function Shell() {
   const [automaticWorkspace, setAutomaticWorkspace] = useState(true);
   const taskWorkspaceRequestRef = useRef(crypto.randomUUID());
   const projectSessionRequestsRef = useRef(new Map<string, { context: string; requestId: string; pending: boolean }>());
-  /** Repository owned by the dedicated Coding Workspace. */
-  const [codingWorkspaceCwd, setCodingWorkspaceCwd] = useState("");
-  // Dedicated Coding projects: one active project plus a persisted recent list.
-  const [codingWorkspaces, setCodingWorkspaces] = useState<WorkspaceInfo[]>([]);
-  const [activeCodingWorkspaceCwd, setActiveCodingWorkspaceCwd] = useState("");
-  const codingLeaveGuardRef = useRef<((confirm?: ConfirmAction) => Promise<boolean>) | null>(null);
   const preparingProjectTurns = useRef(new Set<string>());
-  const registerCodingLeaveGuard = useCallback((guard: ((confirm?: ConfirmAction) => Promise<boolean>) | null) => {
-    codingLeaveGuardRef.current = guard;
-  }, []);
-
-  // Hydrate recent Coding projects from localStorage on first mount.
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("echo-coding-workspaces");
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as WorkspaceInfo[];
-      if (!Array.isArray(parsed) || parsed.length === 0) return;
-      setCodingWorkspaces(parsed);
-      const active = localStorage.getItem("echo-coding-active-cwd");
-      if (active && parsed.some((w) => w.cwd === active)) {
-        setActiveCodingWorkspaceCwd(active);
-      } else {
-        setActiveCodingWorkspaceCwd(parsed[0].cwd);
-      }
-    } catch {
-      /* corrupt entry, ignore */
-    }
-  }, []);
-
-  // Persist recent Coding projects whenever the list changes.
-  useEffect(() => {
-    try {
-      localStorage.setItem(
-        "echo-coding-workspaces",
-        JSON.stringify(codingWorkspaces),
-      );
-    } catch {
-      /* quota or storage disabled */
-    }
-  }, [codingWorkspaces]);
-  useEffect(() => {
-    try {
-      if (activeCodingWorkspaceCwd) {
-        localStorage.setItem("echo-coding-active-cwd", activeCodingWorkspaceCwd);
-      }
-    } catch {
-      /* quota */
-    }
-  }, [activeCodingWorkspaceCwd]);
   const [cancellingSessionId, setCancellingSessionId] = useState<string | null>(null);
   const modelsRef = useRef<ModelOption[]>([]);
   const authReadyRef = useRef(false);
@@ -461,6 +409,11 @@ function Shell() {
   const selectionGenerationRef = useRef(0);
   const handleProjectNavigation = useCallback(() => { selectionGenerationRef.current += 1; }, []);
   const sessionCatalogGenerationRef = useRef(0);
+  const historyRequestInFlight = useRef(false);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [archiveHistoryCursor, setArchiveHistoryCursor] = useState<string | null>(null);
+  const [historyIncomplete, setHistoryIncomplete] = useState(false);
+  const [loadingMoreHistory, setLoadingMoreHistory] = useState(false);
   const modelCatalogGenerationRef = useRef(0);
   const memoryCommandsInFlightRef = useRef(new Set<string>());
   const manuallyNamedSessionsRef = useRef(new Set<string>());
@@ -471,6 +424,7 @@ function Shell() {
 
   const sessionStore = useSessionStore;
   const sessionsStore = useSessionsStore;
+  const sessionCatalogLoading = useSessionsStore(state => state.loading);
   const permissionStore = usePermissionStore;
   const questionStore = useQuestionStore;
   const updateStatus = useUpdateStore((state) => state.status);
@@ -485,6 +439,20 @@ function Shell() {
     setSearchOpen(false);
     setAboutOpen(false);
     setSettingsOpen(true);
+  }, []);
+  useEffect(() => {
+    if (uiRestoreDeferred) enqueueToast("部分界面数据已保存为恢复档案，可以继续使用应用", [
+      { label: "查看恢复档案", onClick: () => openSettings("data", "ui-recovery") },
+    ], 12000, "info");
+  }, [enqueueToast, openSettings, uiRestoreDeferred]);
+  const [legacySessions, setLegacySessions] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let active = true;
+    void legacyWorkspaceSessions().then(ids => {
+      if (active && Array.isArray(ids)) setLegacySessions(new Set(ids));
+    }).catch(() => {});
+    return () => { active = false; };
   }, []);
   const openModelManagement = useCallback((modelId?: string) => {
     openSettings("model");
@@ -589,23 +557,42 @@ function Shell() {
   }, [init?.auth.ready]);
 
   /** Session/directory discovery is recoverable and must not take down the shell. */
-  const refreshSessionCatalog = useCallback(async () => {
-    const generation = ++sessionCatalogGenerationRef.current;
+  const refreshSessionCatalog = useCallback(async (refresh = false) => {
     const store = sessionsStore.getState();
+    if (store.loading) return;
+    const generation = ++sessionCatalogGenerationRef.current;
     const catalogAtStart = store.independent;
     store.setLoading(true);
     store.setError(null);
+    historyRequestInFlight.current = false;
+    setLoadingMoreHistory(false);
     const [sessionResult, workspaceResult] = await Promise.allSettled([
-      agentListAllSessions(true),
+      refresh ? agentListSessionHistory(undefined, true) : agentListSessionHistory(),
       agentListWorkspaces(),
     ]);
     if (sessionCatalogGenerationRef.current !== generation) return;
     const failures: string[] = [];
     if (sessionResult.status === "fulfilled") {
-      const reconciled = reconcileSessionCatalog(sessionResult.value, catalogAtStart, sessionsStore.getState().independent);
-      sessionsStore.getState().setIndependent(reconciled);
+      const page = sessionResult.value;
+      const current = sessionsStore.getState().independent;
+      const reconciled = reconcileSessionCatalog(page.sessions, catalogAtStart, current);
+      if (page.nextCursor || page.nextArchiveCursor || page.incomplete) {
+        sessionsStore.getState().mergeSessions(reconciled);
+      } else {
+        // History pages omit hidden sessions. Keep summaries already opened
+        // through a parent task or a project association.
+        const included = new Set(reconciled.map(entry => entry.sessionId));
+        sessionsStore.getState().setIndependent([
+          ...reconciled,
+          ...current.filter(entry => entry.hidden && !included.has(entry.sessionId)),
+        ]);
+      }
+      setHistoryCursor(page.nextCursor);
+      setArchiveHistoryCursor(page.nextArchiveCursor);
+      setHistoryIncomplete(page.incomplete);
       useProjectsStore.getState().reconcileSessionArchiveStates(reconciled);
     } else {
+      setHistoryIncomplete(true);
       failures.push(`会话：${friendlyError(sessionResult.reason)}`);
     }
     if (workspaceResult.status === "fulfilled") {
@@ -618,6 +605,44 @@ function Shell() {
     latest.setError(failures.length > 0 ? failures.join("；") : null);
     latest.setLoading(false);
   }, [sessionsStore]);
+
+  const loadMoreSessionHistory = useCallback(async (archived: boolean) => {
+    const cursor = archived ? archiveHistoryCursor : historyCursor;
+    if (!cursor || historyRequestInFlight.current || sessionsStore.getState().loading) return;
+    const generation = sessionCatalogGenerationRef.current;
+    const before = sessionsStore.getState().independent;
+    historyRequestInFlight.current = true;
+    setLoadingMoreHistory(true);
+    try {
+      const page = await agentListSessionHistory(cursor);
+      if (generation !== sessionCatalogGenerationRef.current) return;
+      const store = sessionsStore.getState();
+      const reconciled = reconcileSessionCatalog(page.sessions, before, store.independent);
+      store.mergeSessions(reconciled);
+      useProjectsStore.getState().reconcileSessionArchiveStates(reconciled);
+      if (archived) setArchiveHistoryCursor(page.nextArchiveCursor);
+      else setHistoryCursor(page.nextCursor);
+      setHistoryIncomplete(current => current || page.incomplete);
+    } catch (error) {
+      if (generation === sessionCatalogGenerationRef.current) {
+        setHistoryIncomplete(true);
+        showToast(`加载历史任务失败：${friendlyError(error)}`, 6000);
+      }
+    } finally {
+      if (generation === sessionCatalogGenerationRef.current) {
+        historyRequestInFlight.current = false;
+        setLoadingMoreHistory(false);
+      }
+    }
+  }, [archiveHistoryCursor, historyCursor, sessionsStore, showToast]);
+
+  const historyControls = (archived: boolean) => ({
+    hasMore: (archived ? archiveHistoryCursor : historyCursor) !== null,
+    incomplete: historyIncomplete,
+    loading: loadingMoreHistory || sessionCatalogLoading,
+    loadMore: () => void loadMoreSessionHistory(archived),
+    refresh: () => void refreshSessionCatalog(true),
+  });
 
   /** Re-fetch providers + auth readiness after Settings add/edit/delete.
    *
@@ -736,13 +761,11 @@ function Shell() {
           if ((recovery?.phase === "restored" || recovery?.phase === "recovering")
               && selectionGenerationRef.current === selectionAtStart
               && !sessionsStore.getState().currentSessionId) {
-            const catalog = await agentListAllSessions(true);
+            const entry = await agentFindSessionSummary(recoverySessionId);
             if (disposed) return;
             if (selectionGenerationRef.current === selectionAtStart && !sessionsStore.getState().currentSessionId) {
-              const entry = catalog.find((session) => session.sessionId === recoverySessionId && !session.archived
-                && !sessionsStore.getState().deletedSessionIds.includes(session.sessionId));
-              if (entry) {
-                sessionsStore.getState().mergeSessions(catalog);
+              if (entry && !entry.archived && !sessionsStore.getState().deletedSessionIds.includes(entry.sessionId)) {
+                sessionsStore.getState().mergeSessions([entry]);
                 sessionsStore.getState().setCurrent(entry.sessionId);
                 rendererHistoryPending.current = true;
                 runtimeRecoveryRequested.current = true;
@@ -766,18 +789,6 @@ function Shell() {
           authReadyRef.current = result.auth.ready;
         }
 
-        const pendingInteractionStatus = (sessionId: string) => {
-          const pending = [
-            ["awaiting_permission", !!permissionStore.getState().queues[sessionId]?.length],
-            ["awaiting_answer", hasPendingQuestionForSession(sessionId)],
-            ["awaiting_approval", !!sessionStore.getState().transcripts[sessionId]?.planApprovals.length],
-          ] as const;
-          const current = findSessionSummary(sessionId)?.status;
-          // Keep the currently presented interaction until it closes, then
-          // surface another required action before reporting running again.
-          return pending.find(([status, waiting]) => waiting && status === current)?.[0]
-            ?? pending.find(([, waiting]) => waiting)?.[0];
-        };
         const stopListening = await subscribeAgentEvents({
           onUpdate: (u) => {
             const updateType = (u as { sessionUpdate?: string; type?: string }).sessionUpdate
@@ -795,7 +806,7 @@ function Shell() {
               !updatedTranscript?.completedPromptIds?.includes(updatePromptId)
               && (!activePromptId || updatePromptId === activePromptId)
             );
-            const pendingStatus = updateSessionId ? pendingInteractionStatus(updateSessionId) : undefined;
+            const pendingStatus = updateSessionId ? pendingSessionInteractionStatus(updateSessionId) : undefined;
             const currentStatus = updateSessionId
               ? findSessionSummary(updateSessionId)?.status
               : undefined;
@@ -862,7 +873,7 @@ function Shell() {
             ) {
               sessionsStore.getState().upsert({
                 sessionId,
-                status: pendingInteractionStatus(sessionId) ?? "working",
+                status: pendingSessionInteractionStatus(sessionId) ?? "working",
                 updatedAt: new Date().toISOString(),
               });
             }
@@ -880,10 +891,6 @@ function Shell() {
               return;
             }
             // Unscoped legacy Runtime events must never overwrite a task mode.
-          },
-          onGitHead: (payload) => {
-            void payload;
-            void refreshSessionCatalog();
           },
           onComplete: (p) => {
             if (sessionsStore.getState().deletedSessionIds.includes(p.sessionId)) return;
@@ -915,7 +922,6 @@ function Shell() {
             // A scoped old event may settle its own row. An unscoped event
             // rejected by the transcript must never consume a replacement row.
             if (p.promptId || completedCurrentTurn) {
-              settleCodingQueueTurn({ ...p, promptId: completedPromptId ?? "" });
               if (completedPromptId) useMessageQueueStore.getState().settleSending(
                 p.sessionId,
                 queuePolicy.settlement,
@@ -950,7 +956,7 @@ function Shell() {
               || requestedAction
               || p.recoverySummary
               || !queuePolicy.autoAdvance
-              || pendingInteractionStatus(p.sessionId)
+              || pendingSessionInteractionStatus(p.sessionId)
             ) return;
             // Internal/external notifications are dispatched by the Rust bridge
             // for every session (including background automation sessions).
@@ -993,7 +999,7 @@ function Shell() {
                   const latest = sessionStore.getState().transcripts[p.sessionId];
                   if (sessionsStore.getState().deletedSessionIds.includes(p.sessionId)
                     || latest?.streamingMessageId || latest?.pendingSendNowPromptId
-                    || latest?.control || pendingInteractionStatus(p.sessionId)) {
+                    || latest?.control || pendingSessionInteractionStatus(p.sessionId)) {
                     retry();
                     return;
                   }
@@ -1232,7 +1238,7 @@ function Shell() {
             ) {
               sessionsStore.getState().upsert({
                 sessionId,
-                status: pendingInteractionStatus(sessionId) ?? "working",
+                status: pendingSessionInteractionStatus(sessionId) ?? "working",
                 updatedAt: new Date().toISOString(),
               });
             }
@@ -1307,9 +1313,11 @@ function Shell() {
             if (e.sessionId !== currentSessionId) {
               return;
             }
-            const msg = e.detail
-              ? friendlyError(e.detail)
-              : e.kind === "rate_limit"
+            const msg = e.kind === "refusal" || e.kind === "content_filter"
+              ? "模型服务因内容过滤结束了本轮回复。可调整请求后重试。"
+              : e.detail
+                ? friendlyError(e.detail)
+              : e.kind === "rate_limit" || e.kind === "rate_limited"
                 ? "模型请求受限，请检查服务的调用频率或可用额度后再试。"
                 : "本轮执行出错，已有内容已保留。";
             sessionStore.getState().setError(msg, e.promptId ? { sessionId: e.sessionId, promptId: e.promptId } : undefined);
@@ -1342,7 +1350,7 @@ function Shell() {
               rendererHistoryPending.current = false;
             } finally {
               const status = findSessionSummary(entry.sessionId)?.status;
-              const pendingInteraction = pendingInteractionStatus(entry.sessionId);
+              const pendingInteraction = pendingSessionInteractionStatus(entry.sessionId);
               const adopted = activePromptId && sessionStore.getState().adoptRecoveredTurn(entry.sessionId, activePromptId);
               const knownIdle = activePromptId === null && !pendingInteraction;
               if (adopted && !pendingInteraction) {
@@ -1457,14 +1465,9 @@ function Shell() {
     let disposed = false;
     const stops: Array<() => void> = [];
     const exit = createExitPreparationController({
-      preparing: setExitPreparing,
+      preparing: setExitStage,
       failed: (message) => showToast(message, 8000),
       beforePrepare: async (isCurrent) => {
-        const confirmEditorExit: ConfirmAction = (options) =>
-          isCurrent() ? confirmAutomationExit(options) : Promise.resolve(false);
-        if (codingLeaveGuardRef.current && !(await codingLeaveGuardRef.current(confirmEditorExit))) {
-          throw new Error("已取消退出，代码编辑器仍保留在当前窗口");
-        }
         if (!isCurrent()) return;
         await confirmAutomationEditorExit(() => confirmAutomationExit({
         title: "退出前舍弃自动化草稿？",
@@ -1582,16 +1585,6 @@ function Shell() {
     }
     selectionGenerationRef.current += 1;
     setPlaceholderView(label);
-    if (label === "代码开发") {
-      // Enter from the active task's repository when one exists. Subsequent
-      // switches are kept in codingWorkspaceCwd and do not get overwritten by
-      // whichever Agent session currently has global focus.
-      setCodingWorkspaceCwd((current) => current || activeSessionCwd || newSessionTargetCwd);
-      // Coding owns its own repository explorer, so recover horizontal space
-      // while keeping the global sidebar one click away via the floating rail.
-      setSidebarCollapsed(true);
-      return;
-    }
     // Extension management uses the active Runtime session's trusted workspace
     // and broadcasts changes from it. Clearing that session on entry made all
     // install/source/toggle actions unreachable, even after opening a chat.
@@ -1602,24 +1595,13 @@ function Shell() {
     sessionStore.getState().reset();
     setCurrentModelId(resolveConfiguredModelId(models, newSessionModelOverrideRef.current, init?.auth.defaultModelId));
   };
-  const navigateWithGuard = (label: string, afterNavigate?: () => void) => {
-    if (placeholderView === "代码开发" && label !== "代码开发"
-        && label !== "用量统计" && label !== "通知渠道" && label !== "云存储"
-        && codingLeaveGuardRef.current) {
-      void codingLeaveGuardRef.current().then((allowed) => {
-        if (allowed) {
-          navigateNow(label);
-          afterNavigate?.();
-        }
-      });
-      return;
-    }
+  const navigate = (label: string, afterNavigate?: () => void) => {
     navigateNow(label);
     afterNavigate?.();
   };
   const handleNavigate = (label: string) => {
     if (label === "已归档") { openSettings("archived"); return; }
-    navigateWithGuard(label);
+    navigate(label);
   };
   const openComposerCapability = useCallback<OpenComposerCapability>((destination, cwd) => {
     capabilityReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -1661,7 +1643,7 @@ function Shell() {
   };
 
   const handleOpenProject = (projectId: string | null, focusDraft = false, tab: ProjectTab = "overview") => {
-    navigateWithGuard("项目", () => useProjectsStore.getState().setActiveProjectId(projectId, focusDraft, tab));
+    navigate("项目", () => useProjectsStore.getState().setActiveProjectId(projectId, focusDraft, tab));
   };
 
   const ensureQuotaAllowsSend = (): boolean => {
@@ -1726,7 +1708,7 @@ function Shell() {
       taskWorkspaceRequestRef.current = crypto.randomUUID();
       createdSessionId = sessionId;
       if (requestedMode !== "default") {
-        await setCodingMode(sessionId, requestedMode);
+        await setAgentMode(sessionId, requestedMode);
       }
       if (pendingExpert) {
         const saved = await agentSetSessionExpert(sessionId, pendingExpert.expertId, pendingExpert.name, "local", pendingExpert.avatarLocal, pendingExpert.definitionPath, pendingExpert.definitionRaw);
@@ -1801,7 +1783,6 @@ function Shell() {
     attachments: string[] = [],
     queueItemId?: string,
     promptTextOverride?: string,
-    coding?: CodingTurnOptions,
   ): Promise<boolean> => {
     if (!text.trim() && attachments.length === 0) return false;
     if (!currentSessionId) return handleSendNew(text, attachments);
@@ -1866,7 +1847,6 @@ function Shell() {
         promptText: prepared.promptText,
         displayText: sendText,
         attachments: sendAttachments,
-        coding,
         promptId: queuePromptId,
         onRejected: () => {
           prepared.setPending(true);
@@ -1935,93 +1915,6 @@ function Shell() {
     });
     if (!accepted) showToast("原会话状态已变化，请返回该会话重试");
     return accepted;
-  };
-
-  /**
-   * Open an Agent session for a coding-workbench task.
-   *
-   * The workbench owns the task itself (requirement, phase, change set); this
-   * only creates the session it runs in, so session lifecycle stays with the
-   * rest of the application. Echo Code always runs as an Agent; permission
-   * policy independently defines approval autonomy.
-   */
-  const handleStartCodingRun = async (
-    root: string,
-    requirement: string,
-    requestedModelId: string | undefined,
-    contextPaths: string[] = [],
-    onSessionReady?: (sessionId: string) => Promise<void>,
-    promptTextOverride?: string,
-    coding: CodingTurnOptions = { mode: "agent", documentToolBridge: true },
-  ): Promise<string | undefined> => {
-    setCodingWorkspaceCwd(root);
-    // Register the task's repository in recent Coding projects and activate it.
-    if (root) {
-      setCodingWorkspaces((current) =>
-        current.some((w) => w.cwd === root)
-          ? current
-          : [{ cwd: root, sessionCount: 0 }, ...current],
-      );
-      setActiveCodingWorkspaceCwd(root);
-    }
-    const modelId = isConfiguredModelId(models, requestedModelId)
-      ? requestedModelId
-      : requireConfiguredModel();
-    if (!modelId || !ensureQuotaAllowsSend()) return undefined;
-    const permissionState = usePermissionModeStore.getState();
-    const permissionMode = permissionState.capabilityStatus?.locked
-      ? permissionState.capabilityStatus.permissionMode
-      : permissionState.homeMode;
-    const creation = captureTaskCreation();
-    let sessionId: string | undefined;
-    try {
-      sessionId = await agentNewSession(root, modelId, permissionMode);
-      bindCreatedTaskKnowledge(sessionId, creation);
-      if (selectionGenerationRef.current === creation.selection) {
-        setCurrentModelId(modelId);
-        sessionsStore.getState().setCurrent(sessionId);
-        sessionStore.getState().setSession(sessionId);
-        setPlaceholderView("代码开发");
-      }
-      sessionsStore.getState().upsert({
-        sessionId,
-        title: `代码开发：${deriveTitle(requirement)}`,
-        cwd: root,
-        status: "working",
-        currentModelId: modelId,
-        permissionMode,
-      });
-
-      // Persist the task/session ownership before the first Agent token can be
-      // produced. Otherwise a very fast turn can finish before the workbench
-      // knows which task should receive its Git sync event.
-      if (onSessionReady) await onSessionReady(sessionId);
-      // Persist the initial user-selected session intent; following turns pass
-      // their explicit mode without creating a different conversation.
-      await setCodingMode(sessionId, coding.mode ?? "agent");
-      // Runtime binding and mode acknowledgement can outlive an account change.
-      assertTaskCreationKnowledge(creation);
-      const promptText = promptTextOverride ?? buildCodingWorkflowPrompt(requirement, contextPaths);
-      const accepted = beginAgentTurn({
-        sessionId,
-        promptText,
-        displayText: requirement,
-        coding,
-        attachments: coding.attachments,
-        allowBackgroundSession: true,
-      });
-      if (!accepted) throw new Error("代码开发会话未能接收任务");
-      if (selectionGenerationRef.current === creation.selection) usePermissionModeStore.getState().resetHomeMode();
-      return sessionId;
-    } catch (error) {
-      if (sessionId) {
-        if (sessionsStore.getState().independent.some(entry => entry.sessionId === sessionId)) {
-          sessionsStore.getState().upsert({ sessionId, status: "failed" });
-        } else await discardUnstartedTask(sessionId, root);
-      }
-      showToast(`启动代码开发失败：${friendlyError(error)}`, 6000);
-      return undefined;
-    }
   };
 
   /**
@@ -2100,11 +1993,6 @@ function Shell() {
     } finally {
       preparingProjectTurns.current.delete(sessionId);
     }
-    const codingTask = useTaskStore.getState().task;
-    const coding: CodingTurnOptions | undefined = codingTask?.sessionId === sessionId ? {
-      mode: transcript.agentMode === "ask" || transcript.agentMode === "plan" ? transcript.agentMode : "agent",
-      documentToolBridge:true,workspace:useTaskStore.getState().root,taskId:codingTask.id,
-    } : undefined;
     transcript.requestSendNow(promptId, sessionId);
     prepared.setPending(false);
     sessionsStore.getState().upsert({ sessionId, status: "working" });
@@ -2117,7 +2005,6 @@ function Shell() {
       sendAttachments,
       sendText,
       promptId,
-      coding,
     ).catch((error) => {
       if (isAgentPromptSettled(sessionId, promptId)) return;
       const detail = friendlyError(error);
@@ -2176,8 +2063,8 @@ function Shell() {
     const activePromptId = beforeCancel?.pendingSendNowPromptId ?? activeMessage?.promptId;
     // ChatView uses native tool status to reject ordinary idle chat controls.
     // Once requested, always apply the native execution fence: Runtime's
-    // coding mode can be default while a browser/computer session is live.
-    sessionStore.getState().requestControl(sessionId, action, activePromptId);
+    // The agent mode can be default while a browser/computer session is live.
+    const request = sessionStore.getState().requestControl(sessionId, action, activePromptId);
     sessionsStore.getState().upsert({
       sessionId,
       status: action === "pause" ? "pausing" : "stopping",
@@ -2185,12 +2072,12 @@ function Shell() {
     });
     setCancellingSessionId(sessionId);
     try {
-      await agentCancel(sessionId, action, activePromptId);
-      // Native resolves only after the session actor has applied cancellation.
-      // prompt_complete may reach the renderer just before or just after this
-      // acknowledgement; both paths are idempotent and represent real stopped
-      // work, so the UI can settle immediately without a speculative timer.
-      sessionStore.getState().confirmControl(sessionId, action);
+      await agentCancel(sessionId, action, activePromptId, beforeCancel?.pendingSendNowPromptId ? activeMessage?.promptId : undefined);
+      // Runtime can acknowledge a named request without cancelling a newer
+      // turn. Only the owner of the current fence may settle the session.
+      const receipt = sessionControlReceiptState(sessionId, request);
+      if (!receipt) return false;
+      if (receipt === "pending") sessionStore.getState().confirmControl(sessionId, action);
       useMessageQueueStore.getState().pauseQueued(sessionId);
       sessionsStore.getState().upsert({
         sessionId,
@@ -2212,14 +2099,16 @@ function Shell() {
       );
       return true;
     } catch (e) {
-      sessionStore.getState().rejectControl(sessionId, action);
-      const transcript = sessionStore.getState().transcripts[sessionId];
-      sessionsStore.getState().upsert({
-        sessionId,
-        status: transcript?.streamingMessageId || transcript?.pendingSendNowPromptId
-          ? "working"
-          : "failed",
-      });
+      const receipt = sessionControlReceiptState(sessionId, request);
+      if (!receipt) return false;
+      if (receipt === "pending") {
+        sessionStore.getState().rejectControl(sessionId, action);
+        const transcript = sessionStore.getState().transcripts[sessionId];
+        void restoreSessionInteractions(
+          sessionId,
+          transcript?.streamingMessageId || transcript?.pendingSendNowPromptId ? "working" : "failed",
+        );
+      }
       if (sessionStore.getState().sessionId === sessionId) {
         sessionStore.getState().setError(friendlyError(e));
       }
@@ -2331,51 +2220,7 @@ function Shell() {
     setWorkspaces(next);
   };
 
-  const handleSelectCodingWorkspace = (newCwd: string) => {
-    if (newCwd !== codingCwd) selectionGenerationRef.current += 1;
-    // The first IDE may use the active/default cwd without having an entry in
-    // recent Coding projects yet. Keep that displayed source when switching
-    // to a new worktree so it remains reachable and survives restart.
-    const previousCwd = codingCwd;
-    setCodingWorkspaceCwd(newCwd);
-    // Register the cwd in recent Coding projects and activate it.
-    if (newCwd) {
-      setCodingWorkspaces((current) => {
-        const retained = previousCwd && !current.some((workspace) => workspace.cwd === previousCwd)
-          ? [...current, workspaces.find((workspace) => workspace.cwd === previousCwd) ?? { cwd: previousCwd, sessionCount: 0 }]
-          : current;
-        return retained.some((workspace) => workspace.cwd === newCwd)
-          ? retained
-          : [{ cwd: newCwd, sessionCount: 0 }, ...retained];
-      });
-      setActiveCodingWorkspaceCwd(newCwd);
-    }
-    if (!newCwd) return;
-    // Keep the IDE repository independent from the ordinary chat composer's
-    // "next session" cwd. It still belongs in recent workspaces, but leaving
-    // Coding must not silently retarget an unrelated new chat.
-    const current = sessionsStore.getState().workspaces;
-    if (current.some((workspace) => workspace.cwd === newCwd)) return;
-    const next = [{ cwd: newCwd, sessionCount: 0 }, ...current];
-    sessionsStore.getState().setWorkspaces(next);
-    setWorkspaces(next);
-  };
-
-  const handleCloseCodingWorkspace = (cwd: string) => {
-    if (cwd === activeCodingWorkspaceCwd || cwd === codingWorkspaceCwd) selectionGenerationRef.current += 1;
-    setCodingWorkspaces((current) => {
-      const next = current.filter((w) => w.cwd !== cwd);
-      if (cwd === activeCodingWorkspaceCwd) {
-        setActiveCodingWorkspaceCwd(next[0]?.cwd ?? "");
-      }
-      if (cwd === codingWorkspaceCwd) {
-        setCodingWorkspaceCwd(next[0]?.cwd ?? "");
-      }
-      return next;
-    });
-  };
-
-  const createNewSessionView = () => {
+  const handleNewSession = () => {
     selectionGenerationRef.current += 1;
     setCapabilityVisit(null);
     setPlaceholderView(null);
@@ -2385,16 +2230,6 @@ function Shell() {
     setNewTaskMode("default");
     setCurrentModelId(resolveConfiguredModelId(models, newSessionModelOverrideRef.current, init?.auth.defaultModelId));
   };
-  const handleNewSession = () => {
-    if (placeholderView === "代码开发" && codingLeaveGuardRef.current) {
-      void codingLeaveGuardRef.current().then((allowed) => {
-        if (allowed) createNewSessionView();
-      });
-      return;
-    }
-    createNewSessionView();
-  };
-
   const handleStartOrganizationConversation = () => {
     const knowledge = useKnowledgeStore.getState();
     knowledge.setDefaultSources(["organization"]);
@@ -2405,17 +2240,6 @@ function Shell() {
   /** Navigate to home page without resetting session state (used after expert summon). */
   const handleGoHome = () => {
     setCapabilityVisit(null);
-    if (placeholderView === "代码开发" && codingLeaveGuardRef.current) {
-      void codingLeaveGuardRef.current().then((allowed) => {
-        if (allowed) {
-          selectionGenerationRef.current += 1;
-          setPlaceholderView(null);
-          sessionsStore.getState().setCurrent(null);
-          setCurrentModelId(resolveConfiguredModelId(models, newSessionModelOverrideRef.current, init?.auth.defaultModelId));
-        }
-      });
-      return;
-    }
     selectionGenerationRef.current += 1;
     setPlaceholderView(null);
     sessionsStore.getState().setCurrent(null);
@@ -2437,9 +2261,6 @@ function Shell() {
     usePermissionStore.getState().clearSession(sessionId);
     useQuestionStore.getState().clearSession(sessionId);
     useMessageQueueStore.getState().clear(sessionId);
-    for (const key of Object.keys(useMessageQueueStore.getState().queues)) {
-      if (codingQueueOwner(key)?.sessionId === sessionId) useMessageQueueStore.getState().clear(key);
-    }
     useSubagentStore.getState().clearSession(sessionId);
     leaveSessionIfCurrent(sessionId);
     // Permanent deletion must also forget any parked, in-memory transcript.
@@ -2488,6 +2309,16 @@ function Shell() {
   const handleArchiveSession = async (sessionId: string, archived: boolean, _explicitCwd?: string) => {
     const next = await agentSetSessionArchived(sessionId, archived);
     syncArchivedSessionState(sessionId, next);
+    if (!findSessionSummary(sessionId)) {
+      try {
+        const entry = await agentFindSessionSummary(sessionId);
+        if (entry) sessionsStore.getState().mergeSessions([entry]);
+        else setHistoryIncomplete(true);
+      } catch (error) {
+        setHistoryIncomplete(true);
+        showToast(`任务状态已更新，暂时无法读取会话摘要：${friendlyError(error)}`, 6000);
+      }
+    }
     if (next) showArchivedSessionActions(sessionId);
   };
 
@@ -2540,7 +2371,7 @@ function Shell() {
 
   const handleSelectSession = async (
     sessionId: string,
-    sessionCwd?: string,
+    _sessionCwd?: string,
     preservePlaceholder = false,
     strict = false,
     intent?: SessionSelectionIntent,
@@ -2568,47 +2399,25 @@ function Shell() {
         return;
       }
     }
-    if (!preservePlaceholder && placeholderView === "代码开发" && codingLeaveGuardRef.current) {
-      if (!(await codingLeaveGuardRef.current())) {
-        if (strict) throw new Error("请先处理代码开发中的未保存内容");
-        return;
-      }
-    }
     let entry = findSessionSummary(sessionId);
-    // Subagent child sessions can be created after the last catalog refresh
-    // and may live in an isolated worktree. Refresh the global catalog first;
-    // a parent cwd is not authoritative for those children.
+    // Children and older tasks may be outside the loaded history pages.
     if (!entry) {
       try {
-        const list = await agentListAllSessions(true);
+        const persisted = await agentFindSessionSummary(sessionId);
         if (selectionGenerationRef.current !== generation) {
           if (strict) throw new SessionNavigationSupersededError();
           return;
         }
-        sessionsStore.getState().mergeSessions(list);
-        entry = list.find((item) => item.sessionId === sessionId);
-      } catch {
-        // Fall through to the scoped compatibility lookup below. Older
-        // runtimes may not support global discovery.
-      }
-      // FTS/project/automation links can still provide a precise cwd. Hydrate
-      // it as a compatibility fallback without replacing other directories.
-      if (!entry && sessionCwd) {
-        try {
-          const list = await agentListSessions(sessionCwd, true);
-          if (selectionGenerationRef.current !== generation) {
-            if (strict) throw new SessionNavigationSupersededError();
-            return;
-          }
-          sessionsStore.getState().mergeSessions(list);
-          entry = list.find((item) => item.sessionId === sessionId);
-        } catch (error) {
-          if (selectionGenerationRef.current === generation) {
-            showToast(`加载会话信息失败：${friendlyError(error)}`, 6000);
-          }
-          if (strict) throw error;
-          return;
+        if (persisted) {
+          sessionsStore.getState().mergeSessions([persisted]);
+          entry = findSessionSummary(sessionId);
         }
+      } catch (error) {
+        if (selectionGenerationRef.current === generation) {
+          showToast(`加载会话信息失败：${friendlyError(error)}`, 6000);
+        }
+        if (strict) throw error;
+        return;
       }
     }
     if (selectionGenerationRef.current !== generation) {
@@ -2629,22 +2438,7 @@ function Shell() {
     }
     const persistedModelId = entry.currentModelId;
     const selectedModelId = resolveSessionModelId(models, persistedModelId);
-    let codingOwner: { root: string; taskId: string } | null = null;
-    if (!isSubagentNavigation && !refreshingFocusedSession && entry.cwd) {
-      const detail = await codingApi.taskForSession(entry.cwd,sessionId).catch(() => null);
-      if (detail) codingOwner = {root:entry.cwd,taskId:detail.id};
-      if (selectionGenerationRef.current !== generation) return;
-    }
-    if (codingOwner) {
-      setCodingWorkspaceCwd(codingOwner.root);
-      setActiveCodingWorkspaceCwd(codingOwner.root);
-      setCodingWorkspaces(current => current.some(item => item.cwd === codingOwner!.root)
-        ? current : [{ cwd: codingOwner!.root, sessionCount: 0 }, ...current]);
-      setPlaceholderView("代码开发");
-      useTaskStore.getState().setRoot(codingOwner.root);
-      await useTaskStore.getState().selectTask(codingOwner.taskId);
-      if (selectionGenerationRef.current !== generation) return;
-    } else if (!preservePlaceholder) setPlaceholderView(null);
+    if (!preservePlaceholder) setPlaceholderView(null);
     if (intent?.kind === "project-work-item") {
       setProjectWorkItemSource({ projectId: intent.projectId, sessionId });
     } else if (!isSubagentNavigation && !refreshingFocusedSession) {
@@ -2681,10 +2475,16 @@ function Shell() {
     try {
       // Load with the session's own cwd. Opening history must not re-aim the
       // working directory selected for the next new task.
-      const attachment = isAgentOwnedActiveStatus(entry.status)
-        ? await agentRecoverSession(sessionId, entry.cwd)
-        : { modelId: await agentLoadSession(sessionId, entry.cwd), activePromptId: undefined };
-      if (attachment.activePromptId) sessionStore.getState().adoptRecoveredTurn(sessionId, attachment.activePromptId);
+      // The catalog can lag behind work admitted by the native scheduler or
+      // another client. Use the resident turn identity even for an entry
+      // whose last persisted status is idle.
+      const attachment = await agentRecoverSession(sessionId, entry.cwd);
+      if (attachment.activePromptId
+          && !sessionsStore.getState().deletedSessionIds.includes(sessionId)
+          && sessionStore.getState().adoptRecoveredTurn(sessionId, attachment.activePromptId)
+          && !isAgentOwnedActiveStatus(findSessionSummary(sessionId)?.status)) {
+        sessionsStore.getState().upsert({ sessionId, status: "working" });
+      }
       historyLoaded = true;
       if (selectionGenerationRef.current !== generation) {
         if (strict) throw new SessionNavigationSupersededError();
@@ -2739,21 +2539,12 @@ function Shell() {
   notificationNavigatorRef.current = (sessionId) => handleSelectSession(sessionId, undefined, false, true);
   // Catalog surfaces close only after history has actually loaded. Deliberate
   // cancellation keeps their selection available without an error banner.
-  const openCatalogSession = async (sessionId: string, cwd?: string) => {
-    try { await handleSelectSession(sessionId, cwd, false, true); }
-    catch (error) {
-      if (error instanceof Error && error.message === "请先处理代码开发中的未保存内容") throw new TrayActionCancelled();
-      throw error;
-    }
-  };
+  const openCatalogSession = (sessionId: string, cwd?: string) => handleSelectSession(sessionId, cwd, false, true);
   const openTrayGroup = async (groupId: string) => {
     const generation = ++selectionGenerationRef.current;
     const ensureCurrentNavigation = () => {
       if (selectionGenerationRef.current !== generation) throw new TrayActionCancelled();
     };
-    if (placeholderView === "代码开发" && codingLeaveGuardRef.current && !(await codingLeaveGuardRef.current())) {
-      throw new TrayActionCancelled();
-    }
     ensureCurrentNavigation();
     if (useGroupStore.getState().groups.find(group => group.id === groupId)?.archived) throw new Error("专家团已归档");
     await useGroupStore.getState().select(groupId);
@@ -2773,12 +2564,7 @@ function Shell() {
       if (!action.targetId) throw new Error("专家团入口无效");
       await openTrayGroup(action.targetId);
     } else if (action.kind === "new") {
-      const generation = ++selectionGenerationRef.current;
-      if (placeholderView === "代码开发" && codingLeaveGuardRef.current && !(await codingLeaveGuardRef.current())) {
-        throw new TrayActionCancelled();
-      }
-      if (selectionGenerationRef.current !== generation) throw new TrayActionCancelled();
-      createNewSessionView();
+      handleNewSession();
       setTrayNewRequest(value => value + 1);
     } else if (action.kind === "all") {
       openSearch();
@@ -2794,9 +2580,6 @@ function Shell() {
     return () => cancelAnimationFrame(frame);
   }, [trayNewRequest, currentSessionId, placeholderView]);
   notificationAutomationNavigatorRef.current = async (automationId) => {
-    if (placeholderView === "代码开发" && codingLeaveGuardRef.current) {
-      if (!(await codingLeaveGuardRef.current())) throw new Error("请先处理代码开发中的未保存内容");
-    }
     selectionGenerationRef.current += 1;
     setNotificationAutomationOpen({ id: automationId, sequence: ++notificationAutomationSequenceRef.current });
     setPlaceholderView("自动化");
@@ -2904,7 +2687,7 @@ function Shell() {
     const cwd = source?.cwd ?? sourceCwd;
     if (!cwd) {
       showToast("接续对话已创建，但缺少工作目录信息，请刷新会话列表");
-      void refreshSessionCatalog();
+      void refreshSessionCatalog(true);
       return;
     }
     const modelId = resolveSessionModelId(models, source?.currentModelId);
@@ -3396,7 +3179,12 @@ function Shell() {
   };
 
   const handleStartTeamWork: StartTeamWork = async (project, task, requestedModel, capability) => {
+    if (!canEditTeamProject(project.role)) throw new Error(project.role === "viewer" ? "当前项目权限只允许查看，请使用项目问答" : projectRoleUnavailable);
     const identity = captureTeamProjectOperation();
+    if (await isPrivateMemoryLookup(task.title) || await isPrivateMemoryLookup(task.description)) {
+      throw new Error(privateMemoryInSharedProject);
+    }
+    identity.assertCurrent();
     const model = requireExplicitProjectModel(requestedModel);
     if (!model) throw new Error("执行模型暂不可用，任务尚未接手，请配置模型后重试");
     if (!ensureQuotaAllowsSend()) throw new Error("当前配额不足，任务尚未接手");
@@ -3486,6 +3274,7 @@ function Shell() {
     };
     const latest = await teamProjectRequest<TeamProjectSnapshot>("snapshot", project.id, undefined, undefined, identity);
     assertCurrent();
+    if (!canEditTeamProject(latest.role)) throw new Error(latest.role === "viewer" ? "当前权限只允许查看共享报告" : projectRoleUnavailable);
     const current = latest.runs?.find(item => item.id === run.id);
     if (!current || current.actorId !== useOrgSessionStore.getState().session?.user?.id) throw new Error("请查看该执行的共享报告；继续工作需要接手后新建执行");
     const groups = await groupList();
@@ -3493,9 +3282,8 @@ function Shell() {
     if (groups.some(group => group.id === current.sessionId)) {
       await useGroupStore.getState().select(current.sessionId); assertCurrent(); handleNavigate("专家团"); return;
     }
-    const localSessions = await agentListAllSessions(true);
+    const local = await agentFindSessionSummary(current.sessionId);
     assertCurrent();
-    const local = localSessions.find(session => session.sessionId === current.sessionId);
     if (!local) throw new Error("该执行不在本机或已删除。共享报告仍可查看；需要继续时，请从任务发起新执行。");
     const localProject = useProjectsStore.getState().projects.find(p => projectOwnsSession(p, current.sessionId));
     await handleSelectSession(current.sessionId, local.cwd, false, true, localProject ? { kind: "project-work-item", projectId: localProject.id } : undefined);
@@ -3511,12 +3299,6 @@ function Shell() {
     ? findSessionSummary(activeSubagentParent.parentSessionId)?.title ?? "上级任务"
     : null;
 
-  const codingWorkspaceActive = placeholderView === "代码开发";
-  useEffect(() => {
-    if (codingWorkspaceActive) setHasOpenedCodingWorkspace(true);
-  }, [codingWorkspaceActive]);
-  const codingCwd = activeCodingWorkspaceCwd || codingWorkspaceCwd
-    || (codingWorkspaceActive ? activeSessionCwd || newSessionTargetCwd : "");
   const placeholderProps = {
     onOpenAutomationSettings: (section: "general" | "notifications") => section === "notifications"
       ? openSettings("notify-channels") : openSettings("general", "background"),
@@ -3526,39 +3308,18 @@ function Shell() {
     onGoHome: handleGoHome,
     onStartOrganizationConversation: handleStartOrganizationConversation,
     onToast: showToast,
-    codingWorkspaces,
-    activeCodingWorkspaceCwd,
-    onCloseCodingWorkspace: handleCloseCodingWorkspace,
     workspaces,
     sessionId: currentSessionId ?? undefined,
     notificationAutomationId: notificationAutomationOpen?.id,
     notificationAutomationSequence: notificationAutomationOpen?.sequence,
-    codingApiReady: !!init?.auth.ready && !!newSessionModelId,
-    codingModels: models,
-    codingModelId: activeSessionModelId ?? newSessionModelId,
     projectModels: models,
     projectDefaultModelId: newSessionModelId,
     onProjectNavigate: handleProjectNavigation,
     onOpenProjectWorkItemSession: (projectId: string, sessionId: string, cwd?: string) =>
       handleSelectSession(sessionId, cwd, false, false, { kind: "project-work-item", projectId }),
-    codingActive: codingWorkspaceActive,
     onOpenMeetingMinutes: () => handleNavigate("录音转写"),
     onOpenModelSettings: () => openSettings("model"),
     onClientSlashCommand: handleClientSlashCommand,
-    onExitCodingWorkspace: () => {
-      selectionGenerationRef.current += 1;
-      setPlaceholderView(null);
-      setSidebarCollapsed(false);
-    },
-    onRegisterCodingLeaveGuard: registerCodingLeaveGuard,
-    onStartCodingRun: handleStartCodingRun,
-    onActivateCodingSession: (targetSessionId: string, targetCwd: string) =>
-      handleSelectSession(targetSessionId, targetCwd, true),
-    onChangeCodingModel: handleModelChange,
-    onSendCodingMessage: (value: string, promptTextOverride?: string, coding?: CodingTurnOptions) =>
-      handleSendCurrent(value, coding?.attachments ?? [], undefined, promptTextOverride, coding),
-    onCorrectCodingRun: (value: string) => handleSendNowCurrent(value),
-    onCancelCodingRun: () => handleCancel("stop"),
     onStartProject: handleStartProject,
     onStartProjectConversation: handleStartProjectConversation,
     onStartTeamWork: handleStartTeamWork,
@@ -3579,13 +3340,10 @@ function Shell() {
   return (
     <ModelManagementContext.Provider value={openModelManagement}>
     <ModelCatalogContext.Provider value={models}>
-    <div className={`app${IS_MACOS ? " app--macos" : ""}${codingWorkspaceActive ? " app--coding" : ""}`}>
-      {exitPreparing && !automationExitDialog && <div className="app__exit-overlay" role="status" aria-live="polite">正在保存录音与任务数据并准备退出…</div>}
-      {init?.ok && <CodingTaskRuntimeManager apiReady={init.auth.ready} availableModelIds={models.map(model => model.id)} roots={[...new Set([
-        ...codingWorkspaces.map((workspace) => workspace.cwd),
-        codingWorkspaceCwd,
-        activeCodingWorkspaceCwd,
-      ].filter(Boolean))]} />}
+    <div className={`app${IS_MACOS ? " app--macos" : ""}`}>
+      {exitStage && !automationExitDialog && <div className="app__exit-overlay" role="status" aria-live="polite">
+        {exitStage === "recording" ? "正在保存录音…" : exitStage === "tasks" ? "正在保存任务数据…" : "正在退出…"}
+      </div>}
       {/* macOS 使用系统原生 Overlay 标题栏(红绿灯 + 原生菜单栏),
           不再渲染自绘 TitleBar;Windows 保留窗口控制但隐藏左侧菜单区。 */}
       {!IS_MACOS && (
@@ -3611,7 +3369,8 @@ function Shell() {
           onRenameSession={handleRenameSession}
           onArchiveSession={handleArchiveSession}
           onDeleteSession={handleDeleteSession}
-          onRetrySessions={() => void refreshSessionCatalog()}
+          onRetrySessions={() => void refreshSessionCatalog(true)}
+          sessionHistory={historyControls(false)}
           activeNav={activeNav}
         />
         <SidebarResizeHandle layout={sidebarLayout} />
@@ -3620,24 +3379,12 @@ function Shell() {
           <ComposerCapabilityNavigation.Provider value={openComposerCapability}>
           {/* Keep the source composer and its draft controls mounted during management. */}
           <div className="app__composer-source" hidden={Boolean(capabilityVisit)}>
-          {(!currentSessionId || placeholderView) && !codingWorkspaceActive && !(init?.ok && !initError && ["项目", "组织", "专家·技能·连接器", "专家团", "技能", "连接器", "插件", "自动化", "知识库", "录音转写"].includes(placeholderView ?? "")) && (
+          {(!currentSessionId || placeholderView) && !(init?.ok && !initError && ["项目", "组织", "专家·技能·连接器", "专家团", "技能", "连接器", "插件", "自动化", "知识库", "录音转写"].includes(placeholderView ?? "")) && (
             <header className="main-page-controls" data-tauri-drag-region>
               <SessionNavigation sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)} onNewTask={handleNewSession} />
             </header>
           )}
           {(!currentSessionId || placeholderView) && modelCatalogNotice}
-          {init?.ok && (codingWorkspaceActive || hasOpenedCodingWorkspace) && (
-            <div className="app__coding-surface" hidden={!codingWorkspaceActive}>
-              <Suspense fallback={<div className="app__notice" role="status">正在加载界面…</div>}>
-                <PlaceholderPage
-                  {...placeholderProps}
-                  label="代码开发"
-                  cwd={codingCwd}
-                  onSelectWorkspace={handleSelectCodingWorkspace}
-                />
-              </Suspense>
-            </div>
-          )}
           {initError ? (
             <div className="app__notice app__notice--err">
               {runtimeAutoRetry !== null ? `AI 引擎将在稍后自动恢复（${runtimeAutoRetry}/${MAX_RECOVERY_ATTEMPTS}）：` : runtimeRecoveryRequested.current && runtimeRecoveryAttempts.current.length >= MAX_RECOVERY_ATTEMPTS ? "自动恢复已暂停，请手动重试：" : "初始化未完成："}{initError}
@@ -3669,7 +3416,7 @@ function Shell() {
               <br />
               请在「设置 → 模型」检查可用模型和连接。
             </div>
-          ) : codingWorkspaceActive ? null : (
+          ) : (
             <Suspense fallback={<div className="app__notice" role="status">正在加载界面…</div>}>
               {placeholderView === "专家团" ? (
                 <CapabilitySection active="专家团" onNavigate={handleNavigate} hideNavigation={groupChatOpen}>
@@ -3700,7 +3447,15 @@ function Shell() {
                         ? "task" : "overview"),
                   } : undefined}
                   attentionRequest={trayAttention?.sessionId === currentSessionId ? trayAttention.sequence : undefined}
-                  notice={modelCatalogNotice}
+                  notice={<>
+                    {modelCatalogNotice}
+                    {(legacySessions.has(currentSessionId) || /^代码开发[：:]/.test(currentEntry?.title ?? "")) && (
+                      <div className="conversation-continuation-feedback" role="note">
+                        <span>此会话来自已下线的代码工作台。你可以查看会话记录、原工作目录和已归档的草稿。</span>
+                        <button type="button" onClick={() => openSettings("data", "legacy-workspace")}>查看迁移资料</button>
+                      </div>
+                    )}
+                  </>}
                   onRename={handleRenameTitle}
                   navigation={{ sidebarCollapsed, onToggleSidebar: () => setSidebarCollapsed(!sidebarCollapsed), onNewTask: handleNewSession }}
                   headerLeading={activeSubagentParent ? <button type="button" className="main-topbar__return"
@@ -3847,6 +3602,7 @@ function Shell() {
             onModelsChanged={refreshModels}
             onOpenOrganization={() => { setSettingsOpen(false); handleNavigate("组织"); }}
             onRestoreSession={handleArchiveSession}
+            sessionHistory={historyControls(true)}
             onDeleteSession={handleDeleteSession}
             onOpenSession={(sessionId) => handleSelectSession(sessionId, undefined, false, true)}
             onOpenAutomation={(automationId) => notificationAutomationNavigatorRef.current(automationId)}

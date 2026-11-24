@@ -1,0 +1,677 @@
+//! Exercise the real HTTP decoder and sampler actor with deterministic SSE.
+
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+
+use axum::{Router, body::Body, response::Response, routing::post};
+use echo_agent_sampler::{
+    ApiBackend, RequestId, RetryPolicy, SamplerActor, SamplerConfig, SamplingClient,
+    SamplingErrorKind, SamplingEvent,
+};
+use echo_agent_sampling_types::{ConversationItem, ConversationRequest, SamplingError, StopReason};
+use echo_agent_test_support::{MockInferenceServer, ScriptedResponse, SseEvent, sse};
+use serde_json::{Value, json};
+
+const PATH: &str = "/v1/chat/completions";
+const MODEL: &str = "test-model";
+const DRAFT_ARGS: &str = r#"{"file_path":"summary.txt","content":"draft"}"#;
+const FINAL_ARGS: &str = r#"{"file_path":"summary.txt","content":"verified"}"#;
+
+fn tool_frames(id: &str, arguments: &str) -> Vec<SseEvent> {
+    sse::chat_completions_reasoning_then_tool_call_events("", id, "write_file", arguments, MODEL)
+}
+
+fn set_finish(frame: &mut SseEvent, reason: Value, index: u32) {
+    let mut frame_body: Value = serde_json::from_str(&frame.data).unwrap();
+    frame_body["choices"][0]["finish_reason"] = reason;
+    frame_body["choices"][0]["index"] = json!(index);
+    frame.data = frame_body.to_string();
+}
+
+struct Run {
+    requests: usize,
+    events: Vec<SamplingEvent>,
+}
+
+impl Run {
+    fn terminal(&self) -> &SamplingEvent {
+        let mut terminals = self.events.iter().filter(|event| {
+            matches!(
+                event,
+                SamplingEvent::Completed { .. } | SamplingEvent::Failed { .. }
+            )
+        });
+        let terminal = terminals
+            .next()
+            .expect("sampler must emit a terminal event");
+        assert!(
+            terminals.next().is_none(),
+            "sampler emitted multiple terminal events"
+        );
+        terminal
+    }
+
+    fn tool_delta_count(&self) -> usize {
+        self.events
+            .iter()
+            .filter(|event| matches!(event, SamplingEvent::ToolCallDelta { .. }))
+            .count()
+    }
+
+    fn tool_ids(&self) -> Vec<&str> {
+        self.events
+            .iter()
+            .filter_map(|event| match event {
+                SamplingEvent::ToolCallDelta { id: Some(id), .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn config(base_url: String) -> SamplerConfig {
+    SamplerConfig {
+        base_url,
+        api_key: Some("synthetic-test-key".to_owned()),
+        api_backend: ApiBackend::ChatCompletions,
+        model: MODEL.to_owned(),
+        max_completion_tokens: Some(1024),
+        max_retries: Some(3),
+        idle_timeout_secs: Some(2),
+        ..Default::default()
+    }
+}
+
+fn request() -> ConversationRequest {
+    ConversationRequest {
+        items: vec![ConversationItem::user("Write a verified summary.")],
+        ..Default::default()
+    }
+}
+
+async fn collect_events(base_url: String, retry_only_before_output: bool) -> Vec<SamplingEvent> {
+    collect_backend_events(config(base_url), retry_only_before_output).await
+}
+
+async fn collect_backend_events(
+    config: SamplerConfig,
+    retry_only_before_output: bool,
+) -> Vec<SamplingEvent> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let actor = SamplerActor::spawn(
+        config,
+        RetryPolicy {
+            max_retries: 2,
+            retry_only_before_output,
+            ..Default::default()
+        },
+        tx,
+    );
+    // Terminal events drive the actual SessionActor. The returned completion
+    // additionally fences the event drain so the measurement includes retries.
+    let _ = tokio::time::timeout(
+        Duration::from_secs(10),
+        actor.submit_and_collect(RequestId::from("stream-termination"), request()),
+    )
+    .await
+    .expect("sampler exceeded the test budget");
+
+    std::iter::from_fn(|| rx.try_recv().ok()).collect()
+}
+
+async fn sample(scripts: Vec<Vec<SseEvent>>, retry_only_before_output: bool) -> Run {
+    let server = MockInferenceServer::start().await.unwrap();
+    for events in scripts {
+        server.enqueue_response(PATH, ScriptedResponse::sse(events));
+    }
+    let started = std::time::Instant::now();
+    let events = collect_events(server.url(), retry_only_before_output).await;
+    let requests = server
+        .requests()
+        .iter()
+        .filter(|request| request.path == PATH)
+        .count();
+    let run = Run { requests, events };
+    let terminal = match run.terminal() {
+        SamplingEvent::Completed {
+            response, metrics, ..
+        } => json!({
+            "kind": "completed",
+            "attempts": metrics.attempts,
+            "stop": response.stop_reason,
+            "text": response.assistant().map(|item| item.content.as_ref()),
+            "tool_args": response.assistant().into_iter().flat_map(|item| &item.tool_calls)
+                .map(|call| call.arguments.as_ref()).collect::<Vec<_>>(),
+            "usage": response.usage,
+        }),
+        SamplingEvent::Failed { error, .. } => json!({"kind": "failed", "error": error.kind}),
+        _ => unreachable!(),
+    };
+    println!(
+        "{}",
+        json!({
+            "test": std::thread::current().name(),
+            "requests": requests,
+            "tool_ids": run.tool_ids(),
+        "tool_deltas": run.tool_delta_count(),
+            "terminal": terminal,
+            "elapsed_ms": started.elapsed().as_millis(),
+        })
+    );
+    run
+}
+
+#[tokio::test]
+async fn dev_eof_discards_draft_tool_before_retry() {
+    let mut interrupted = tool_frames("draft", DRAFT_ARGS);
+    interrupted.truncate(1);
+    let run = sample(vec![interrupted, tool_frames("verified", FINAL_ARGS)], true).await;
+    assert_eq!(run.requests, 2);
+    assert_eq!(run.tool_ids(), ["verified"]);
+    match run.terminal() {
+        SamplingEvent::Completed {
+            response, metrics, ..
+        } => {
+            assert_eq!(metrics.attempts, 2);
+            let calls = &response.assistant().unwrap().tool_calls;
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].arguments.as_ref(), FINAL_ARGS);
+        }
+        event => panic!("expected complete response after retry, got {event:?}"),
+    }
+}
+
+#[tokio::test]
+async fn empty_attempt_does_not_count_as_visible_output_for_a_later_interruption() {
+    let mut interrupted = tool_frames("draft", DRAFT_ARGS);
+    interrupted.truncate(1);
+    let run = sample(
+        vec![
+            sse::chat_completion_script_exact("", MODEL),
+            interrupted,
+            tool_frames("verified", FINAL_ARGS),
+        ],
+        false,
+    )
+    .await;
+    assert_eq!(run.requests, 3);
+    assert_eq!(run.tool_ids(), ["verified"]);
+    assert!(
+        matches!(run.terminal(), SamplingEvent::Completed { metrics, .. } if metrics.attempts == 3)
+    );
+}
+
+#[tokio::test]
+async fn dev_length_has_no_dispatchable_tool() {
+    let mut frames = tool_frames("draft", DRAFT_ARGS);
+    set_finish(&mut frames[1], json!("length"), 0);
+    let run = sample(vec![frames], false).await;
+    assert_eq!(run.requests, 1);
+    assert_eq!(run.tool_delta_count(), 0);
+    assert!(matches!(run.terminal(), SamplingEvent::Failed { error, .. }
+        if error.kind == SamplingErrorKind::MaxTokensTruncation));
+}
+
+#[tokio::test]
+async fn held_alternate_choice_does_not_finalize_selected_choice() {
+    let mut frames = sse::chat_completion_script_exact("First draft", MODEL);
+    frames.truncate(2);
+    set_finish(&mut frames[0], Value::Null, 2);
+    let mut role_only: Value = serde_json::from_str(&frames[0].data).unwrap();
+    role_only["choices"][0]["delta"] = json!({"role": "assistant"});
+    frames[0].data = role_only.to_string();
+    let run = sample(
+        vec![
+            frames,
+            sse::chat_completion_script_exact("Verified summary", MODEL),
+        ],
+        false,
+    )
+    .await;
+    assert_eq!(run.requests, 2);
+    assert!(
+        matches!(run.terminal(), SamplingEvent::Completed { response, .. }
+        if response.assistant().unwrap().content.as_ref() == "Verified summary")
+    );
+}
+
+#[tokio::test]
+async fn held_content_filter_has_no_dispatchable_tool() {
+    let mut frames = tool_frames("draft", DRAFT_ARGS);
+    set_finish(&mut frames[1], json!("content_filter"), 0);
+    let run = sample(vec![frames], false).await;
+    assert_eq!(run.requests, 1);
+    assert_eq!(run.tool_delta_count(), 0);
+    assert!(
+        matches!(run.terminal(), SamplingEvent::Completed { response, .. }
+        if response.stop_reason == Some(StopReason::ContentFilter)
+            && response.assistant().unwrap().tool_calls.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn guard_accepts_either_explicit_terminal_signal() {
+    let mut finish_only = tool_frames("verified", FINAL_ARGS);
+    finish_only.pop();
+    let mut done_only = tool_frames("verified", FINAL_ARGS);
+    set_finish(&mut done_only[1], Value::Null, 0);
+
+    for frames in [finish_only, done_only] {
+        let run = sample(vec![frames], false).await;
+        assert_eq!(run.requests, 1);
+        assert_eq!(run.tool_ids(), ["verified"]);
+        assert!(
+            matches!(run.terminal(), SamplingEvent::Completed { response, .. }
+            if response.assistant().unwrap().tool_calls[0].arguments.as_ref() == FINAL_ARGS
+                && response.usage.as_ref().unwrap().total_tokens == 30)
+        );
+    }
+}
+
+#[tokio::test]
+async fn guard_partial_text_never_retries_or_completes() {
+    let mut frames = sse::chat_completion_script_exact("First draft", MODEL);
+    frames.truncate(1);
+    let ordinary = sample(vec![frames.clone()], false).await;
+    let budgeted = sample(vec![frames], true).await;
+    for run in [ordinary, budgeted] {
+        assert_eq!(run.requests, 1);
+        assert!(matches!(run.terminal(), SamplingEvent::Failed { error, .. }
+            if error.kind == SamplingErrorKind::ChatStreamInterrupted));
+    }
+}
+
+fn messages_text_frames(text: &str) -> Vec<SseEvent> {
+    [
+        json!({"type":"message_start","message":{
+            "id":"msg_draft","type":"message","role":"assistant","content":[],"model":MODEL,
+            "stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}
+        }}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}),
+        json!({"type":"message_stop"}),
+    ]
+    .into_iter()
+    .map(|frame| SseEvent::data(frame.to_string()))
+    .collect()
+}
+
+#[tokio::test]
+async fn messages_streams_initial_text_before_later_deltas() {
+    let server = MockInferenceServer::start().await.unwrap();
+    let mut frames = messages_text_frames("answer.");
+    frames[1] = SseEvent::data(
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Verified "}})
+            .to_string(),
+    );
+    server.enqueue_response("/v1/messages", ScriptedResponse::sse(frames));
+    let events = collect_backend_events(
+        SamplerConfig {
+            api_backend: ApiBackend::Messages,
+            ..config(server.url())
+        },
+        false,
+    )
+    .await;
+    let run = Run {
+        requests: server.messages_request_count(),
+        events,
+    };
+    assert_eq!(run.requests, 1);
+    assert!(
+        matches!(run.terminal(), SamplingEvent::Completed { response, .. }
+        if response.assistant().unwrap().content.as_ref() == "Verified answer.")
+    );
+    let streamed: String = run
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            SamplingEvent::ChannelToken { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(streamed, "Verified answer.");
+}
+
+#[tokio::test]
+async fn messages_preserves_tool_input_from_either_start_or_deltas() {
+    let server = MockInferenceServer::start().await.unwrap();
+    let inline_args = json!({"file_path":"first.txt","content":"inline"});
+    let streamed_args = json!({"file_path":"second.txt","content":"streamed"});
+    let mut frames = messages_text_frames("");
+    frames.splice(1..5, [
+        json!({"type":"content_block_start","index":0,"content_block":{
+            "type":"tool_use","id":"tool_inline","name":"write_file","input":inline_args
+        }}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"content_block_start","index":1,"content_block":{
+            "type":"tool_use","id":"tool_streamed","name":"write_file","input":{}
+        }}),
+        json!({"type":"content_block_delta","index":1,"delta":{
+            "type":"input_json_delta","partial_json":"{\"file_path\":\"second.txt\","
+        }}),
+        json!({"type":"content_block_delta","index":1,"delta":{
+            "type":"input_json_delta","partial_json":"\"content\":\"streamed\"}"
+        }}),
+        json!({"type":"content_block_stop","index":1}),
+        json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}),
+    ].into_iter().map(|frame| SseEvent::data(frame.to_string())));
+    server.enqueue_response("/v1/messages", ScriptedResponse::sse(frames));
+    let events = collect_backend_events(
+        SamplerConfig {
+            api_backend: ApiBackend::Messages,
+            ..config(server.url())
+        },
+        false,
+    )
+    .await;
+    let run = Run {
+        requests: server.messages_request_count(),
+        events,
+    };
+    assert_eq!(run.requests, 1);
+    let SamplingEvent::Completed { response, .. } = run.terminal() else {
+        panic!("expected a completed tool response");
+    };
+    assert_eq!(response.stop_reason, Some(StopReason::ToolCalls));
+    let calls = &response.assistant().unwrap().tool_calls;
+    assert_eq!(calls.len(), 2);
+    for (tool_index, (id, expected)) in [
+        ("tool_inline", inline_args),
+        ("tool_streamed", streamed_args),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(calls[tool_index].id.as_ref(), id);
+        assert_eq!(
+            serde_json::from_str::<Value>(&calls[tool_index].arguments).unwrap(),
+            expected
+        );
+        let streamed: String = run
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                SamplingEvent::ToolCallDelta {
+                    tool_index: index,
+                    arguments_delta: Some(arguments),
+                    ..
+                } if *index as usize == tool_index => Some(arguments.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(serde_json::from_str::<Value>(&streamed).unwrap(), expected);
+    }
+}
+
+#[tokio::test]
+async fn messages_truncation_after_visible_output_fails_without_retry() {
+    // EOF after the block, EOF after stop_reason, and a message_stop
+    // without stop_reason must all preserve the published draft and fail.
+    for (keep_delta, keep_stop) in [(false, false), (true, false), (false, true)] {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut frames = messages_text_frames("Draft.");
+        if !keep_stop {
+            frames.pop();
+        }
+        if !keep_delta {
+            frames.remove(4);
+        }
+        server.enqueue_response("/v1/messages", ScriptedResponse::sse(frames));
+        let config = SamplerConfig {
+            api_backend: ApiBackend::Messages,
+            ..config(server.url())
+        };
+        let events = collect_backend_events(config, false).await;
+        let run = Run {
+            requests: server.messages_request_count(),
+            events,
+        };
+        assert_eq!(run.requests, 1);
+        assert!(run.events.iter().any(|event| matches!(
+            event,
+            SamplingEvent::ChannelToken { text, .. } if text == "Draft."
+        )));
+        assert!(matches!(run.terminal(), SamplingEvent::Failed { error, .. }
+            if error.kind == SamplingErrorKind::ChatStreamInterrupted && error.message.contains("message_stop")));
+    }
+}
+
+#[tokio::test]
+async fn responses_truncation_after_a_tool_call_fails_without_dispatchable_output() {
+    let mut frames = sse::responses_api_reasoning_then_tool_call_events(
+        "",
+        "call_read",
+        "read_document",
+        r#"{"name":"fixture.txt"}"#,
+        MODEL,
+    );
+    let terminal = frames
+        .iter_mut()
+        .find(|frame| frame.data.contains("\"type\":\"response.completed\""))
+        .expect("fixture must have a completed response");
+    let mut body: Value = serde_json::from_str(&terminal.data).unwrap();
+    assert_eq!(body["response"]["output"][1]["call_id"], "call_read");
+    body["type"] = json!("response.incomplete");
+    body["response"]["status"] = json!("incomplete");
+    body["response"]["incomplete_details"] = json!({"reason":"max_output_tokens"});
+    terminal.data = body.to_string();
+
+    let server = MockInferenceServer::start().await.unwrap();
+    server.enqueue_response("/v1/responses", ScriptedResponse::sse(frames));
+    let config = SamplerConfig {
+        api_backend: ApiBackend::Responses,
+        ..config(server.url())
+    };
+    let events = collect_backend_events(config, false).await;
+    let run = Run {
+        requests: server.requests().len(),
+        events,
+    };
+    assert_eq!(run.requests, 1);
+    assert!(matches!(run.terminal(), SamplingEvent::Failed { error, .. }
+        if error.kind == SamplingErrorKind::MaxTokensTruncation));
+}
+
+#[tokio::test]
+async fn typed_terminal_events_complete_while_http_body_is_still_open() {
+    let text = "Verified answer.";
+    let mut responses = sse::responses_api_script_exact(text, MODEL);
+    assert_eq!(responses.pop().unwrap().data, "[DONE]");
+    for (path, backend, frames) in [
+        (
+            "/v1/messages",
+            ApiBackend::Messages,
+            messages_text_frames(text),
+        ),
+        ("/v1/responses", ApiBackend::Responses, responses),
+    ] {
+        let first = encode_sse(&frames);
+        let app = Router::new().route(
+            path,
+            post(move || {
+                let first = first.clone();
+                async move {
+                    let body = Body::from_stream(async_stream::stream! {
+                        yield Ok::<_, std::io::Error>(first);
+                        std::future::pending::<()>().await;
+                    });
+                    Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(body)
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let config = SamplerConfig {
+            api_backend: backend,
+            ..config(url)
+        };
+        let events = collect_backend_events(config, false).await;
+        server.abort();
+        assert!(
+            matches!(events.last(), Some(SamplingEvent::Completed { response, .. })
+            if response.assistant().is_some_and(|assistant| assistant.content.as_ref() == text))
+        );
+    }
+}
+
+#[tokio::test]
+async fn conflicting_selected_finish_reasons_never_release_tools() {
+    for (first, second) in [
+        ("content_filter", "stop"),
+        ("length", "stop"),
+        ("stop", "content_filter"),
+    ] {
+        let mut frames = tool_frames("draft", DRAFT_ARGS);
+        let mut contradictory = frames[1].clone();
+        set_finish(&mut frames[1], json!(first), 0);
+        set_finish(&mut contradictory, json!(second), 0);
+        frames.insert(2, contradictory);
+        let run = sample(vec![frames], false).await;
+        assert_eq!(run.requests, 1);
+        assert_eq!(run.tool_delta_count(), 0);
+        assert!(matches!(run.terminal(), SamplingEvent::Failed { error, .. }
+            if error.kind == SamplingErrorKind::ChatStreamInterrupted && !error.is_retryable));
+    }
+}
+
+#[tokio::test]
+async fn done_cannot_finalize_an_unfinished_selected_choice() {
+    let mut frames = tool_frames("draft", DRAFT_ARGS);
+    set_finish(&mut frames[1], json!("stop"), 1);
+    let run = sample(vec![frames], false).await;
+    assert_eq!(run.requests, 1);
+    assert_eq!(run.tool_delta_count(), 0);
+    assert!(matches!(run.terminal(), SamplingEvent::Failed { error, .. }
+        if error.kind == SamplingErrorKind::ChatStreamInterrupted));
+}
+
+#[tokio::test]
+async fn tool_chunks_after_selected_finish_are_rejected() {
+    let mut frames = tool_frames("draft", DRAFT_ARGS);
+    frames.swap(0, 1);
+    let run = sample(vec![frames], false).await;
+    assert_eq!(run.requests, 1);
+    assert_eq!(run.tool_delta_count(), 0);
+    assert!(matches!(run.terminal(), SamplingEvent::Failed { error, .. }
+        if error.kind == SamplingErrorKind::ChatStreamInterrupted));
+}
+
+fn encode_sse(events: &[SseEvent]) -> String {
+    events
+        .iter()
+        .map(|event| format!("data: {}\n\n", event.data))
+        .collect()
+}
+
+async fn sample_transport_error(first: Vec<SseEvent>) -> Run {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let server_requests = Arc::clone(&requests);
+    let first = encode_sse(&first);
+    let app = Router::new().route(
+        PATH,
+        post(move || {
+            let attempt = server_requests.fetch_add(1, Ordering::Relaxed);
+            let first = first.clone();
+            async move {
+                let body = if attempt == 0 {
+                    Body::from_stream(async_stream::stream! {
+                        yield Ok(first);
+                        // Give the HTTP writer a pending poll so it flushes the
+                        // SSE frame before aborting the response body.
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        yield Err(std::io::Error::other("fixture interrupted the HTTP body"));
+                    })
+                } else {
+                    Body::from(encode_sse(&tool_frames("verified", FINAL_ARGS)))
+                };
+                Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(body)
+                    .unwrap()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let events = collect_events(url, false).await;
+    server.abort();
+    Run {
+        requests: requests.load(Ordering::Relaxed),
+        events,
+    }
+}
+
+#[tokio::test]
+async fn broken_http_body_retries_only_before_visible_output() {
+    let mut partial_text = sse::chat_completion_script_exact("First draft", MODEL);
+    partial_text.truncate(1);
+    let mut partial_reasoning = sse::chat_completions_reasoning_then_tool_call_events(
+        "thinking",
+        "draft",
+        "write_file",
+        DRAFT_ARGS,
+        MODEL,
+    );
+    partial_reasoning.truncate(1);
+    for frames in [partial_text, partial_reasoning] {
+        let run = sample_transport_error(frames).await;
+        assert_eq!(run.requests, 1);
+        assert!(
+            run.events
+                .iter()
+                .any(|event| matches!(event, SamplingEvent::ChannelToken { .. }))
+        );
+        assert_eq!(run.tool_delta_count(), 0);
+        assert!(matches!(run.terminal(), SamplingEvent::Failed { error, .. }
+            if error.kind == SamplingErrorKind::ChatStreamInterrupted));
+    }
+
+    let mut partial_tool = tool_frames("draft", DRAFT_ARGS);
+    partial_tool.truncate(1);
+    let run = sample_transport_error(partial_tool).await;
+    assert_eq!(run.requests, 2);
+    assert_eq!(run.tool_ids(), ["verified"]);
+    assert!(
+        matches!(run.terminal(), SamplingEvent::Completed { metrics, .. } if metrics.attempts == 2)
+    );
+}
+
+#[tokio::test]
+async fn transport_error_while_reading_trailer_preserves_selected_finish() {
+    let mut finished = tool_frames("verified", FINAL_ARGS);
+    finished.pop();
+    let run = sample_transport_error(finished).await;
+    assert_eq!(run.requests, 1);
+    assert_eq!(run.tool_ids(), ["verified"]);
+    assert!(
+        matches!(run.terminal(), SamplingEvent::Completed { response, .. }
+        if response.stop_reason == Some(StopReason::ToolCalls))
+    );
+}
+
+#[tokio::test]
+async fn collected_truncation_keeps_its_non_retryable_type() {
+    let server = MockInferenceServer::start().await.unwrap();
+    let mut frames = sse::chat_completion_script_exact("Partial", MODEL);
+    set_finish(&mut frames[0], json!("length"), 0);
+    server.enqueue_response(PATH, ScriptedResponse::sse(frames));
+    let client = SamplingClient::new(config(server.url())).unwrap();
+    let error = client.conversation_collect(request()).await.unwrap_err();
+    assert!(matches!(error, SamplingError::MaxTokensTruncation));
+    assert!(!error.is_retryable());
+    assert_eq!(server.requests().len(), 1);
+}

@@ -6,7 +6,7 @@
 
 当前固定驱动运行于 macOS，需要可访问且已解锁的图形会话，以及实际验收应用的辅助功能和屏幕录制权限。终端或单元测试程序获授权不代表应用具有同样授权；重新签名后应重新核对。
 
-先按 [开发与验收](../testing.md) 准备显式私有模型资源、检索模型、Theia、Office 和前端，再构建带 `tauri/custom-protocol` 的程序。该驱动创建独立的私有数据目录和合成工作区，不复用真实会话或业务资料。
+先按 [开发与验收](../testing.md) 准备显式私有模型资源、检索模型、语音资源、Office 和前端，再构建带 `tauri/custom-protocol` 的程序。该驱动创建独立的私有数据目录和合成工作区，不复用真实会话或业务资料。
 
 ```sh
 node scripts/validate-native-desktop-controls.mjs src-tauri/target/debug/echoagent --task-flow
@@ -64,7 +64,7 @@ macOS 原生模块测试需要可访问图形会话，但普通测试不派发�
 
 休眠、锁屏、人工等待和验收活动时限分别记录；期限只暂停、不自动恢复任务。清理时仅处理本次明确归属的 PID，记录正常退出或强制收尾的区别。完整证据留在私有验收目录或 CI artifacts，长期文档保留方法与限制。
 
-Windows 在实际交互桌面另行验收原生输入、文件面板和暂停恢复；安装包与通知检查见 [Windows 桌面验收](../windows-desktop-feedback-acceptance.md)。自绘界面、受保护内容、无限长文读取和 provider 硬挂起的限制见 [原生控件说明](README.md#平台限制)。性能比较见 [性能验证](performance.md)。
+Windows 在实际交互桌面另行验收原生输入、文件面板和暂停恢复；安装包检查见 [桌面发行验收](../desktop-release.md#构建与验收)。自绘界面、受保护内容、无限长文读取和 provider 硬挂起的限制见 [原生控件说明](README.md#平台限制)。性能比较见 [性能验证](performance.md)。
 
 ## 本次改造新增覆盖
 

@@ -129,9 +129,16 @@ try{
     await page.getByRole('button',{name:'导出文档',exact:true}).click();
     await page.getByRole('menuitem',{name:`另存为 ${label}`,exact:true}).click();
     await page.getByText('已导出恢复的编辑稿',{exact:true}).waitFor();
-    await page.locator(`.file-preview__path[title="/review/导出恢复稿.${format}"]`).waitFor();
+    const office = page.locator('.artifact-file-preview--office .office-workbench');
+    await office.locator(`.office-workbench__file strong[title="/review/导出恢复稿.${format}"]`).waitFor();
+    if (format === 'pdf') {
+      await office.locator('.office-page--pdf[data-page-rendered=true] canvas').waitFor();
+    } else {
+      await office.frameLocator('.office-workbench__stage iframe').getByText('已从备份恢复的内容', { exact: true }).waitFor();
+    }
     const calls=await page.evaluate(()=>window.documentReview.calls);
     assert.equal(calls.filter(({command})=>command==='document_workspace_export').length,1);
+    assert(calls.some(({command,args})=>command==='read_file_base64' && args.path===`/review/导出恢复稿.${format}`));
     assert(!calls.some(({command})=>command==='document_workspace_save'||command==='document_workspace_publish'));
   }
   assert.deepEqual(errors,[]);

@@ -291,3 +291,135 @@ Function EchoRequireDurableDirectory
   ${EndIf}
 FunctionEnd
 !macroend
+
+; Cleanup of the retired IDE payload is limited to the existing, registered
+; installation. Never recurse through a reparse point, including the install
+; folder's ancestors or nodes inside the retired payload.
+Var EchoRetiredResourceUnsafe
+Var EchoRetiredDataHome
+
+!macro EchoDeleteRetiredFile NAME
+  IfFileExists "$INSTDIR\${NAME}" 0 +4
+  ClearErrors
+  Delete "$INSTDIR\${NAME}"
+  IfErrors unsafe
+!macroend
+
+!macro EchoRetiredResourceFunctions PREFIX
+Function ${PREFIX}EchoCheckRetiredTree
+  Exch $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  System::Call 'kernel32::GetFileAttributesW(w r0) i.r1'
+  StrCmp $1 -1 invalid
+  IntOp $2 $1 & 0x400
+  StrCmp $2 0 0 invalid
+  IntOp $2 $1 & 0x10
+  StrCmp $2 0 done
+  StrCmp $0 $EchoRetiredDataHome invalid
+  IfFileExists "$0\.git" invalid
+  IfFileExists "$0\echoagent-state.json" invalid
+  IfFileExists "$0\coding-external-tool-leases.json" invalid
+  ClearErrors
+  FindFirst $3 $4 "$0\*"
+  IfErrors invalid
+  next:
+    StrCmp $4 "." advance
+    StrCmp $4 ".." advance
+    Push "$0\$4"
+    Call ${PREFIX}EchoCheckRetiredTree
+    StrCmp $EchoRetiredResourceUnsafe 1 close
+  advance:
+    ClearErrors
+    FindNext $3 $4
+    IfErrors close next
+  close:
+    FindClose $3
+    Goto done
+  invalid:
+    StrCpy $EchoRetiredResourceUnsafe 1
+  done:
+    Pop $4
+    Pop $3
+    Pop $2
+    Pop $1
+    Pop $0
+FunctionEnd
+
+Function ${PREFIX}EchoRemoveRetiredResources
+  ReadRegStr $0 SHCTX "${MANUPRODUCTKEY}" ""
+  StrCmp $0 "$INSTDIR" 0 done
+  ReadRegStr $0 SHCTX "${UNINSTKEY}" "InstallLocation"
+  StrCmp $0 "$\"$INSTDIR$\"" 0 done
+  IfFileExists "$INSTDIR\${MAINBINARYNAME}.exe" 0 done
+  IfFileExists "$INSTDIR\theia\parent-guard.cjs" 0 done
+
+  ; Validate every existing ancestor to prevent a registered junction or
+  ; alias from directing cleanup outside the product's install directory.
+  StrCpy $0 "$INSTDIR"
+  ${GetRoot} "$0" $2
+  StrCmp $2 "" unsafe
+  ancestor:
+    ; A UNC share root itself cannot be queried with GetFileAttributesW.
+    StrCmp $0 "$2" verified
+    StrCmp $0 "$2\" verified
+    System::Call 'kernel32::GetFileAttributesW(w r0) i.r1'
+    StrCmp $1 -1 unsafe
+    IntOp $1 $1 & 0x400
+    StrCmp $1 0 0 unsafe
+    ${GetParent} "$0" $1
+    StrCmp $1 "" unsafe
+    StrCmp $1 $0 unsafe
+    StrCpy $0 $1
+    Goto ancestor
+
+  verified:
+    StrCpy $EchoRetiredResourceUnsafe 0
+    ReadEnvStr $EchoRetiredDataHome "ECHO_AGENT_HOME"
+    StrCmp $EchoRetiredDataHome "" +2
+    GetFullPathName $EchoRetiredDataHome "$EchoRetiredDataHome"
+    Push "$INSTDIR\theia"
+    Call ${PREFIX}EchoCheckRetiredTree
+    StrCmp $EchoRetiredResourceUnsafe 1 unsafe
+    ; License files belong to the same old package. Check the parent too.
+    IfFileExists "$INSTDIR\licenses\theia\NOTICE.md" 0 remove
+    StrCpy $0 "$INSTDIR\licenses"
+    System::Call 'kernel32::GetFileAttributesW(w r0) i.r1'
+    StrCmp $1 -1 unsafe
+    IntOp $1 $1 & 0x400
+    StrCmp $1 0 0 unsafe
+    Push "$INSTDIR\licenses\theia"
+    Call ${PREFIX}EchoCheckRetiredTree
+    StrCmp $EchoRetiredResourceUnsafe 1 unsafe
+    !insertmacro EchoDeleteRetiredFile "licenses\theia\LICENSE-EPL"
+    !insertmacro EchoDeleteRetiredFile "licenses\theia\LICENSE-GPL-2.0-ONLY-CLASSPATH-EXCEPTION"
+    !insertmacro EchoDeleteRetiredFile "licenses\theia\NOTICE.md"
+    RMDir "$INSTDIR\licenses\theia"
+  remove:
+    ; Older installers did not leave a resource inventory. Remove exact
+    ; product paths only and leave unknown descendants intact.
+    !insertmacro EchoDeleteRetiredFile "theia\browser\lib\backend\main.js"
+    !insertmacro EchoDeleteRetiredFile "theia\browser\package.json"
+    !insertmacro EchoDeleteRetiredFile "theia\browser\package-lock.json"
+    !insertmacro EchoDeleteRetiredFile "theia\browser\.keep"
+    !insertmacro EchoDeleteRetiredFile "theia\node\LICENSE"
+    !insertmacro EchoDeleteRetiredFile "theia\node\node.exe"
+    !insertmacro EchoDeleteRetiredFile "theia\node\.keep"
+    ; Keep the recognition marker until every targeted file has been removed.
+    !insertmacro EchoDeleteRetiredFile "theia\parent-guard.cjs"
+    RMDir "$INSTDIR\theia\browser\lib\backend"
+    RMDir "$INSTDIR\theia\browser\lib"
+    RMDir "$INSTDIR\theia\browser"
+    RMDir "$INSTDIR\theia\node"
+    RMDir "$INSTDIR\theia"
+    ClearErrors
+    Goto done
+  unsafe:
+    DetailPrint "Could not safely remove retired application resources in $INSTDIR\theia."
+    SetErrorLevel 1
+    Abort "Could not safely remove retired application resources. Check the existing installation folder and run the installer again."
+  done:
+FunctionEnd
+!macroend

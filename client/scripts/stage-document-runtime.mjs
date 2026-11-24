@@ -1,7 +1,16 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, lstatSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+function needsCopy(source, destination) {
+  const staged = lstatSync(destination, { throwIfNoEntry: false });
+  if (!staged?.isFile()) return true;
+  const current = statSync(source);
+  return !current.isFile() || staged.size !== current.size
+    || !readFileSync(source).equals(readFileSync(destination));
+}
+
 export function stageDocumentRuntime() {
   const licenses = join(root, 'public/document-runtime/licenses');
   mkdirSync(licenses, { recursive: true });
@@ -17,12 +26,9 @@ export function stageDocumentRuntime() {
   const source = join(root, 'node_modules/pdfjs-dist');
   const { version } = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'));
   const destination = join(root, 'public/document-runtime/pdfjs', version);
-  const marker = join(destination, '.ready');
-  if (existsSync(marker) && readFileSync(marker, 'utf8') === version) return;
-  mkdirSync(destination, { recursive: true });
-  for (const directory of ['cmaps', 'standard_fonts', 'wasm', 'iccs']) cpSync(join(source, directory), join(destination, directory), { recursive: true });
-  cpSync(join(source, 'LICENSE'), join(destination, 'LICENSE'));
-  writeFileSync(marker, version);
-  console.log(`Staged local PDF preview fonts, CMaps and decoders: ${version}`);
+  for (const name of ['cmaps', 'standard_fonts', 'wasm', 'iccs', 'LICENSE']) {
+    cpSync(join(source, name), join(destination, name), { recursive: true, filter: needsCopy });
+  }
+  console.log(`Local PDF preview resources ready: ${version}`);
 }
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) stageDocumentRuntime();
+if (import.meta.main) stageDocumentRuntime();

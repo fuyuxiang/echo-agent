@@ -14,7 +14,8 @@ function themeColors(theme: "light" | "dark") {
   const selector = theme === "dark" ? ':root[data-theme="dark"]' : ':root,';
   const start = tokensCss.indexOf(selector);
   const body = tokensCss.slice(tokensCss.indexOf("{", start) + 1, tokensCss.indexOf("}", start));
-  const tokens = Object.fromEntries([...body.matchAll(/(--echo-[\w-]+):\s*([^;]+);/g)].map(match => [match[1], match[2].trim()]));
+  const shared = [...tokensCss.matchAll(/:root\s*\{([^}]+)\}/g)].map(match => match[1]).join("\n");
+  const tokens = Object.fromEntries([...(shared + "\n" + body).matchAll(/(--echo-[\w-]+):\s*([^;]+);/g)].map(match => [match[1], match[2].trim()]));
   const resolveToken = (name: string, seen = new Set<string>()): string => {
     if (seen.has(name)) throw new Error(`Circular theme token: ${name}`);
     seen.add(name);
@@ -36,17 +37,6 @@ function contrast(a: string, b: string) {
   return (high + .05) / (low + .05);
 }
 
-function composite(foreground: string, background: string) {
-  expect(foreground).toMatch(/^#[\da-f]{8}$/i);
-  const alpha = parseInt(foreground.slice(7, 9), 16) / 255;
-  expect(alpha).toBeGreaterThan(0);
-  expect(alpha).toBeLessThan(1);
-  return "#" + [1, 3, 5].map(index => Math.round(
-    parseInt(foreground.slice(index, index + 2), 16) * alpha
-    + parseInt(background.slice(index, index + 2), 16) * (1 - alpha),
-  ).toString(16).padStart(2, "0")).join("");
-}
-
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = resolve(dir, entry.name);
@@ -60,21 +50,15 @@ describe("theme token contract", () => {
     it(`${theme}: action, selection and status pairs remain readable on their own surfaces`, () => {
       const color = themeColors(theme);
       expect(color("button-primary-bg")).not.toBe(color("control-selected-bg"));
-      // Line and character decorations overlap. Check syntax against both
-      // actual composites, and the boundary that identifies the changed range.
-      for (const [kind, status] of [["added", "success"], ["removed", "error"]]) {
-        const line = composite(color(`code-diff-${kind}-bg`), color("surface-content"));
-        const characters = composite(color(`code-diff-${kind}-text-bg`), line);
-        const overlapping = composite(color(`code-diff-${kind}-text-bg`), characters);
-        expect(characters).not.toBe(line);
-        for (const background of [line, characters, overlapping]) {
-          for (const foreground of [
-            theme === "dark" ? "#569CD6" : "#0000FF",
-            theme === "dark" ? "#CE9178" : "#A31515",
-            theme === "dark" ? "#9CDCFE" : "#001080",
-            color("code-comment"), color("code-type"), color("code-number"), color("code-constant"),
-          ]) expect(contrast(foreground, background), `${theme}: ${kind} syntax on ${background}`).toBeGreaterThanOrEqual(4.5);
-          expect(contrast(color(`status-${status}`), background)).toBeGreaterThanOrEqual(3);
+      // Keep the retained line diff's text, line numbers and +/- marks readable.
+      for (const [kind, background, prefix] of [
+        ["add", "code-addition-bg", "status-success"],
+        ["del", "code-deletion-bg", "status-error"],
+      ]) {
+        expect(appCss).toContain(`.diff__line--${kind} { background: var(--echo-${background}); }`);
+        expect(appCss).toContain(`.diff__line--${kind} .diff__line-prefix { color: var(--echo-${prefix}); }`);
+        for (const foreground of ["text-strong", "text-weak", prefix]) {
+          expect(contrast(color(foreground), color(background)), `${theme}: ${foreground} on ${background}`).toBeGreaterThanOrEqual(4.5);
         }
       }
       for (const [fg, bg] of [

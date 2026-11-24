@@ -1563,10 +1563,8 @@ async fn reset_title_to_auto_then_generated_title_is_adopted() {
 async fn reset_title_to_auto_adopts_in_flight_generation_as_auto() {
     use std::sync::Arc;
 
-    use crate::session::persistence::PersistenceContentChunk;
-
     const MANUAL: &str = "Pinned manual";
-    const CHUNK: &str = "in flight chunk text for title fallback";
+    const GENERATED: &str = "Title from an in-flight generation";
 
     let info = Info {
         id: acp::SessionId::new("rename-reset-inflight"),
@@ -1585,37 +1583,38 @@ async fn reset_title_to_auto_adopts_in_flight_generation_as_auto() {
         .await
         .unwrap();
 
-    let actor = test_actor_inner(info.clone(), storage.clone(), None, false);
-
+    let actor = test_actor(info.clone(), storage.clone());
+    let summary_path = dir.path().join("summary.json");
+    let read_summary = || -> crate::session::persistence::Summary {
+        serde_json::from_slice(&std::fs::read(&summary_path).unwrap()).unwrap()
+    };
     actor
         .handle
         .tx
-        .send(PersistenceMsg::ContentChunk(PersistenceContentChunk::new(
-            vec![acp::ContentBlock::Text(acp::TextContent::new(CHUNK))],
-        )))
+        .send(PersistenceMsg::GeneratedTitle(GENERATED.into()))
         .unwrap();
+    flush_ack(&actor.handle).await.unwrap();
+    let pinned = read_summary();
+    assert_eq!(pinned.display_title(), MANUAL);
+    assert!(pinned.title_is_manual);
+
     assert!(storage.reset_title_to_auto(&info).await.unwrap());
     actor
         .handle
         .tx
         .send(PersistenceMsg::ResetTitleToAuto)
         .unwrap();
+    // Deliver the generation completion after unpinning. A real fallback can
+    // finish on either side of the disk write, so it cannot establish this order.
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::GeneratedTitle(GENERATED.into()))
+        .unwrap();
     flush_ack(&actor.handle).await.unwrap();
 
-    let summary_path = dir.path().join("summary.json");
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
-    let on_disk = loop {
-        let on_disk: crate::session::persistence::Summary =
-            serde_json::from_slice(&std::fs::read(&summary_path).unwrap()).unwrap();
-        if !on_disk.display_title().trim().is_empty() {
-            break on_disk;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("in-flight GeneratedTitle after unpin never adopted");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    };
-    assert_ne!(on_disk.display_title(), MANUAL);
+    let on_disk = read_summary();
+    assert_eq!(on_disk.display_title(), GENERATED);
     assert!(
         !on_disk.title_is_manual,
         "in-flight adopt after unpin must stay auto"

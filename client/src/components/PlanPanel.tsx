@@ -52,7 +52,7 @@ interface PlanPanelProps {
   sessionId?: string;
   onSend?: (text: string) => boolean | void | Promise<boolean | void>;
   onToast?: (msg: string) => void;
-  /** Keep an owning workflow (such as Echo Code) in sync with runtime approval. */
+  /** Keep an owning workflow in sync with runtime approval. */
   onApprovalResolved?: (
     outcome: "approved" | "cancelled" | "abandoned",
     entries: string[],

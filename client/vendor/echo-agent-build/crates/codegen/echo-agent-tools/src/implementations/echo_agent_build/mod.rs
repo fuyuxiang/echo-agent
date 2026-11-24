@@ -23,6 +23,7 @@ pub mod image_gen;
 pub mod init_or_update_app;
 pub mod kill_task;
 pub mod list_dir;
+#[cfg(not(feature = "desktop"))]
 pub mod lsp;
 pub mod monitor;
 pub mod read_file;
@@ -52,6 +53,7 @@ pub use image_gen::{
 pub use init_or_update_app::INIT_OR_UPDATE_APP_TOOL_NAME;
 pub use kill_task::{KillTaskTool, KillTerminalCommandTool};
 pub use list_dir::ListDirTool;
+#[cfg(not(feature = "desktop"))]
 pub use lsp::LspTool;
 pub use monitor::tool::MonitorTool;
 pub use read_file::ReadFileTool;

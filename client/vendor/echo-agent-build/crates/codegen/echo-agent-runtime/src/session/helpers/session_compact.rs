@@ -92,6 +92,7 @@ fn classify_sampling_error(err: SamplingError) -> CompactFailure {
                     && *status != StatusCode::TOO_MANY_REQUESTS)
         }
         SamplingError::MaxTokensTruncation => true,
+        SamplingError::ChatStreamInterrupted { retryable, .. } => !retryable,
         // Loops are stochastic at sampling temperature; a retry may differ.
         SamplingError::Http(_)
         | SamplingError::EventStreamError(_)
@@ -581,17 +582,20 @@ pub(crate) async fn generate_session_compact(
                 Err(e) => return Err(classify_sampling_error(e)),
             };
             let mut timing = StreamTiming::new();
-            let mut truncated = false;
-            let mut stop_reason: Option<String> = None;
             let mut content = String::new();
             let mut last_progress_at = std::time::Instant::now();
-            loop {
+            let (stop_reason, truncated) = loop {
                 let idle_remaining = idle_timeout.saturating_sub(last_progress_at.elapsed());
                 let chunk_result = match next_stream_step(&mut stream, idle_remaining, cancel)
                     .await?
                 {
                     StreamStep::Item(item) => item,
-                    StreamStep::Ended => break,
+                    StreamStep::Ended => {
+                        return Err(classify_sampling_error(SamplingError::ChatStreamInterrupted {
+                            detail: "Responses API stream ended before response.completed or response.incomplete".into(),
+                            retryable: true,
+                        }));
+                    }
                     StreamStep::IdleTimeout => {
                         return Err(CompactFailure::Transient(
                             acp::Error::internal_error().data(format!(
@@ -624,6 +628,9 @@ pub(crate) async fn generate_session_compact(
                             ResponseStreamEvent::ResponseOutputTextDelta(text_delta_event) => {
                                 timing.record_delta();
                                 content.push_str(&text_delta_event.delta);
+                            }
+                            ResponseStreamEvent::ResponseCompleted(_) => {
+                                break ("stop".to_string(), false);
                             }
                             ResponseStreamEvent::ResponseFailed(failed_event) => {
                                 let event_error = failed_event.response.error.as_ref();
@@ -662,19 +669,17 @@ pub(crate) async fn generate_session_compact(
                                     reason = %reason,
                                     "compact: response.incomplete event"
                                 );
-                                stop_reason = Some(reason);
-                                truncated = true;
+                                break (reason, true);
                             }
                             _ => {}
                         }
                     }
                     Err(e) => return Err(classify_sampling_error(e)),
                 }
-            }
+            };
             CompactOutput {
                 content,
-                // No incomplete event on a normal completion: treat as a clean stop.
-                stop_reason: stop_reason.or_else(|| Some("stop".to_string())),
+                stop_reason: Some(stop_reason),
                 truncated,
                 ttft_ms: timing.ttft_ms(),
                 stream_ms: timing.stream_ms(),
@@ -683,6 +688,12 @@ pub(crate) async fn generate_session_compact(
             }
         }
         ApiBackend::Messages => {
+            use std::collections::HashSet;
+
+            use echo_agent_sampling_types::messages::{
+                ContentBlock, MessageStreamEvent, StopReason, StreamDelta,
+            };
+
             // Messages API uses similar streaming to Responses.
             let request = ConversationRequest {
                 items: chat_history,
@@ -710,13 +721,28 @@ pub(crate) async fn generate_session_compact(
             let mut stop_reason: Option<String> = None;
             let mut content = String::new();
             let mut last_progress_at = std::time::Instant::now();
+            let mut message_started = false;
+            let mut open_blocks = HashSet::new();
+            let malformed_stream = |detail: &str| {
+                classify_sampling_error(SamplingError::ChatStreamInterrupted {
+                    detail: format!("Messages API {detail}"),
+                    retryable: false,
+                })
+            };
             loop {
                 let idle_remaining = idle_timeout.saturating_sub(last_progress_at.elapsed());
                 let chunk_result = match next_stream_step(&mut stream, idle_remaining, cancel)
                     .await?
                 {
                     StreamStep::Item(item) => item,
-                    StreamStep::Ended => break,
+                    StreamStep::Ended => {
+                        return Err(classify_sampling_error(
+                            SamplingError::ChatStreamInterrupted {
+                                detail: "Messages API stream ended before message_stop".into(),
+                                retryable: true,
+                            },
+                        ));
+                    }
                     StreamStep::IdleTimeout => {
                         return Err(CompactFailure::Transient(
                             acp::Error::internal_error().data(format!(
@@ -737,47 +763,102 @@ pub(crate) async fn generate_session_compact(
                 }
                 match chunk_result {
                     Ok(event) => {
-                        if !matches!(
-                            &event,
-                            echo_agent_sampling_types::messages::MessageStreamEvent::Ping
-                        ) {
+                        if !matches!(&event, MessageStreamEvent::Ping) {
                             last_progress_at = std::time::Instant::now();
                         }
                         match event {
-                        echo_agent_sampling_types::messages::MessageStreamEvent::ContentBlockDelta {
-                            delta: echo_agent_sampling_types::messages::StreamDelta::TextDelta { text },
-                            ..
-                        } => {
-                            timing.record_delta();
-                            content.push_str(&text);
-                        }
-                        echo_agent_sampling_types::messages::MessageStreamEvent::MessageDelta { delta, .. } => {
-                            if let Some(sr) = delta.stop_reason {
-                                truncated = matches!(
-                                    sr,
-                                    echo_agent_sampling_types::messages::StopReason::MaxTokens
-                                        | echo_agent_sampling_types::messages::StopReason::ModelContextWindowExceeded
-                                );
-                                stop_reason = Some(
-                                    match sr {
-                                        echo_agent_sampling_types::messages::StopReason::EndTurn => "end_turn".to_string(),
-                                        echo_agent_sampling_types::messages::StopReason::MaxTokens => "max_tokens".to_string(),
-                                        echo_agent_sampling_types::messages::StopReason::ToolUse => "tool_use".to_string(),
-                                        echo_agent_sampling_types::messages::StopReason::StopSequence => "stop_sequence".to_string(),
-                                        echo_agent_sampling_types::messages::StopReason::Refusal => "refusal".to_string(),
-                                        echo_agent_sampling_types::messages::StopReason::PauseTurn => "pause_turn".to_string(),
-                                        echo_agent_sampling_types::messages::StopReason::ModelContextWindowExceeded => "model_context_window_exceeded".to_string(),
-                                        // Record the wire value, not a fabricated sentinel.
-                                        echo_agent_sampling_types::messages::StopReason::Unknown(s) => s,
-                                    },
-                                );
+                            MessageStreamEvent::MessageStart { .. } => {
+                                if message_started {
+                                    return Err(malformed_stream("sent a duplicate message_start"));
+                                }
+                                message_started = true;
                             }
-                        }
-                        _ => {}
+                            MessageStreamEvent::ContentBlockStart {
+                                index,
+                                content_block,
+                            } => {
+                                if !message_started
+                                    || stop_reason.is_some()
+                                    || !open_blocks.insert(index)
+                                {
+                                    return Err(malformed_stream(
+                                        "sent an unexpected content_block_start",
+                                    ));
+                                }
+                                if let ContentBlock::Text { text, .. } = content_block
+                                    && !text.is_empty()
+                                {
+                                    timing.record_delta();
+                                    content.push_str(&text);
+                                }
+                            }
+                            MessageStreamEvent::ContentBlockDelta { index, delta } => {
+                                if !open_blocks.contains(&index) {
+                                    return Err(malformed_stream(
+                                        "sent content_block_delta without an open block",
+                                    ));
+                                }
+                                if let StreamDelta::TextDelta { text } = delta
+                                    && !text.is_empty()
+                                {
+                                    timing.record_delta();
+                                    content.push_str(&text);
+                                }
+                            }
+                            MessageStreamEvent::ContentBlockStop { index } => {
+                                if !open_blocks.remove(&index) {
+                                    return Err(malformed_stream(
+                                        "sent content_block_stop without an open block",
+                                    ));
+                                }
+                            }
+                            MessageStreamEvent::MessageDelta { delta, .. } => {
+                                if !message_started {
+                                    return Err(malformed_stream(
+                                        "sent message_delta before message_start",
+                                    ));
+                                }
+                                if let Some(sr) = delta.stop_reason {
+                                    if !open_blocks.is_empty() {
+                                        return Err(malformed_stream(
+                                            "sent stop_reason before content_block_stop",
+                                        ));
+                                    }
+                                    truncated = matches!(
+                                        sr,
+                                        StopReason::MaxTokens
+                                            | StopReason::ModelContextWindowExceeded
+                                    );
+                                    stop_reason = Some(match sr {
+                                        StopReason::EndTurn => "end_turn".to_string(),
+                                        StopReason::MaxTokens => "max_tokens".to_string(),
+                                        StopReason::ToolUse => "tool_use".to_string(),
+                                        StopReason::StopSequence => "stop_sequence".to_string(),
+                                        StopReason::Refusal => "refusal".to_string(),
+                                        StopReason::PauseTurn => "pause_turn".to_string(),
+                                        StopReason::ModelContextWindowExceeded => {
+                                            "model_context_window_exceeded".to_string()
+                                        }
+                                        StopReason::Unknown(reason) => reason,
+                                    });
+                                }
+                            }
+                            MessageStreamEvent::MessageStop => break,
+                            MessageStreamEvent::Error { error } => {
+                                return Err(classify_sampling_error(SamplingError::StreamError {
+                                    error_type: error.r#type,
+                                    message: error.message,
+                                    code: None,
+                                }));
+                            }
+                            MessageStreamEvent::Ping => {}
                         }
                     }
                     Err(e) => return Err(classify_sampling_error(e)),
                 }
+            }
+            if stop_reason.is_none() {
+                return Err(malformed_stream("sent message_stop without stop_reason"));
             }
             CompactOutput {
                 content,
@@ -792,13 +873,8 @@ pub(crate) async fn generate_session_compact(
     };
 
     if output.content.is_empty() {
-        // Empty response is treated as transient: sampling variance and
-        // mid-stream drops are both plausible and may resolve on retry.
-        // Content-filter refusals (provider returns 200 with no body) are a
-        // known counterexample but are not currently distinguishable from
-        // stream blips at this layer; revisit if stop_reason / finish_reason
-        // gets threaded through. After max_retries the caller still surfaces
-        // the error to the user.
+        // Sampling variance can produce a complete response without summary
+        // text. The caller's bounded retry loop handles it as transient.
         Err(CompactFailure::Transient(
             acp::Error::internal_error().data("compact failed: model returned empty response"),
         ))

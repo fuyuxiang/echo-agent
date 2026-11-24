@@ -53,4 +53,4 @@ Legend: rounded endpoints mark start and end, rectangles mark processing, diamon
 
 ## Next steps
 
-Read [Tasks and permissions](tasks-permissions.md), then explore [Coding](coding.md), [Office documents](knowledge-memory.md), or [Computer automation](automation.md).
+Read [Tasks and permissions](tasks-permissions.md), then explore [Code tasks and file changes](coding.md), [Office documents](knowledge-memory.md), or [Computer automation](automation.md).

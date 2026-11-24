@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -44,7 +44,15 @@ vi.mock("../PlaceholderPage", async (original) => {
 vi.mock("@/lib/agent-client", async original => ({
   ...await original<object>(), agentInit: vi.fn(), agentAuthStatus: vi.fn(), providersList: vi.fn(),
   agentListAllSessions: vi.fn(), agentListWorkspaces: vi.fn(async () => []),
-  agentLoadSession: vi.fn(async () => 'model-a'), subscribeAgentEvents: vi.fn(async () => () => {}),
+  agentListSessionHistory: vi.fn(async () => ({
+    sessions: await (await import("@/lib/agent-client")).agentListAllSessions(true),
+    nextCursor: null,
+    nextArchiveCursor: null,
+    incomplete: false,
+  })),
+  agentFindSessionSummary: vi.fn(async (sessionId: string) =>
+    (await (await import("@/lib/agent-client")).agentListAllSessions(true)).find(entry => entry.sessionId === sessionId) ?? null),
+  agentRecoverSession: vi.fn(async () => ({ modelId: 'model-a' })), subscribeAgentEvents: vi.fn(async () => () => {}),
   internalReload: vi.fn(async () => {}), pluginsList: vi.fn(async () => ({ plugins: [{ id: "user/demo", name: "本地插件", enabled: true, trusted: true }], warnings: [] })),
   pluginsAction: vi.fn(async () => ({ status: "success" })),
   agentsList: vi.fn(async () => []), skillsList: vi.fn(async () => []),
@@ -77,12 +85,18 @@ beforeEach(() => {
   });
 });
 async function start() {
-  render(<App />); await screen.findByText('首页'); await waitFor(() => expect(client.agentListAllSessions).toHaveBeenCalled());
+  render(<App />); await screen.findByText('首页');
+  await waitFor(() => expect(useSessionsStore.getState().independent.some(session => session.sessionId === 'source')).toBe(true));
   await act(async () => {}); fireEvent.click(screen.getByRole('button', { name: '打开源会话' }));
   await screen.findByText('真实会话已加载');
   act(() => useSessionStore.getState().setMessages([{ id: 'user', role: 'user', complete: true, parts: [{ kind: 'text', text: '保留当前上下文' }] }]));
 }
 describe('extension navigation preserves the live management context', () => {
+  beforeAll(async () => {
+    // The scenarios time UI transitions after module loading.
+    await Promise.all([import('../ChatView'), import('../experts-panel')]);
+  }, 60_000);
+
   it.each(['插件', '专家·技能·连接器', '专家团'])('allows local plugin toggle after %s', async route => {
     await start(); const before = useSessionStore.getState().messages;
     fireEvent.click(screen.getByRole('button', { name: `导航${route}` }));

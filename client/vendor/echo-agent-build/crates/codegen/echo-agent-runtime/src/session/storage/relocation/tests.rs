@@ -419,6 +419,24 @@ fn copy_failure_self_cleans_and_post_publication_failure_requires_recovery() {
 }
 
 #[test]
+fn loading_one_session_recovers_only_its_relocation() {
+    let temp = tempfile::tempdir().unwrap();
+    let storage = RelocationStorage::new(temp.path().into());
+    for id in ["opening", "background"] {
+        create_source(temp.path(), "/source", id, 0);
+        fs::create_dir_all(session_dir(temp.path(), "/target", id).parent().unwrap()).unwrap();
+        let journal = RelocationJournal::test_new(id, "/source", "/target", RelocationPhase::Prepared);
+        super::journal::write(temp.path(), &journal, None).unwrap();
+    }
+    let _background = storage.acquire("background").unwrap();
+    storage.recover_if_pending("opening").unwrap();
+    assert!(matches!(storage.read_journal("opening"), Err(RelocationError::JournalMissing(_))));
+    assert!(storage.read_journal("background").is_ok());
+    assert!(session_dir(temp.path(), "/source", "opening").exists());
+    storage.recover_if_pending("opening").unwrap();
+}
+
+#[test]
 fn recover_all_finalizes_every_phase() {
     for phase in [
         RelocationPhase::Prepared,

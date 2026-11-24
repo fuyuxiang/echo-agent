@@ -11,6 +11,7 @@ on:
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
+      - 'patches/**'
       - 'rust-toolchain.toml'
       - 'tsconfig*.json'
       - 'vite.config.*'
@@ -18,12 +19,14 @@ on:
       - 'app-icon.png'
       - 'public/**'
       # Validate every installer input, including platform config, embedded
-      # Runtime/IDE source and scripts included by the native validation code.
+      # Runtime source and scripts included by the native validation code.
       - 'src/**'
       - 'src-tauri/**'
       - 'scripts/**'
       - 'vendor/**'
+      - 'browser-extension/**'
       - 'LICENSE'
+      - 'LICENSES/**'
       - 'THIRD_PARTY_NOTICES.md'
   pull_request:
     paths: *packaging-paths
@@ -46,7 +49,7 @@ jobs:
           - os: macos-15-intel
             arch: x86_64
             target: darwin-x86_64
-          # The locked native addons require VS 2022; windows-latest uses VS 2026.
+          # The native packaging script selects the VS 2022 toolchain.
           - os: windows-2022
             arch: x64
             target: windows-x86_64
@@ -65,7 +68,7 @@ jobs:
         with:
           node-version: ${{ runner.os == 'Windows' && '24.22.1' || '22.23.4' }}
           cache: pnpm
-      - name: Enable Windows long paths for IDE validation
+      - name: Enable Windows long paths for Office verification
         if: runner.os == 'Windows'
         shell: pwsh
         run: New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -PropertyType DWord -Value 1 -Force
@@ -76,7 +79,6 @@ jobs:
       - name: Run frontend and script unit tests
         id: unit_tests
         run: pnpm test --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit="${{ runner.temp }}/echo-unit-tests.xml"
-      - run: npm install --global npm@11.21.1 --ignore-scripts --no-audit --no-fund
       - uses: actions/setup-python@v7
         id: python
         with:
@@ -84,6 +86,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install verified pinned protoc
         uses: ./.github/actions/setup-protoc
+      - name: Restore pinned ONNX Runtime archive
+        id: ort_archive
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ${{ runner.temp }}/echo-onnx-runtime
+          key: ort-archive-${{ matrix.target }}-${{ hashFiles('vendor/ort-sys/dist.txt') }}
+      - name: Verify and prepare pinned ONNX Runtime before compilation
+        timeout-minutes: 8
+        run: node scripts/setup-onnx-runtime.mjs
+      - name: Save pinned ONNX Runtime archive
+        if: steps.ort_archive.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ runner.temp }}/echo-onnx-runtime
+          key: ${{ steps.ort_archive.outputs.cache-primary-key }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
@@ -111,7 +128,7 @@ jobs:
           fi
           {
             df -h . "$RUNNER_TEMP"
-            du -sh src-tauri/target/release/bundle src-tauri/resources/theia
+            du -sh src-tauri/target/release/bundle src-tauri/resources/office
             hdiutil info
           } > "$diagnostics/environment-after.log" 2>&1 || true
           bundle_script="src-tauri/target/release/bundle/dmg/bundle_dmg.sh"
@@ -128,7 +145,8 @@ jobs:
           fi
           exit "$build_exit"
         env:
-          PUPPETEER_SKIP_DOWNLOAD: '1'
+          # Vite can exceed the default V8 heap on hosted macOS runners.
+          NODE_OPTIONS: --max-old-space-size=4096
       - name: Package Windows validation build
         if: runner.os == 'Windows'
         shell: powershell
@@ -145,11 +163,8 @@ jobs:
             exit $buildExit
           }
         env:
-          PUPPETEER_SKIP_DOWNLOAD: '1'
           PYTHON: ${{ steps.python.outputs.python-path }}
       - run: pnpm test:security
-      - run: node vendor/theia-platform/node_modules/playwright/cli.js install chromium
-      - run: node scripts/validate-theia-runtime.mjs
       - run: pnpm test:rust
         env:
           NATIVE_TEST_OUTPUT: ci-artifacts/native-tests
@@ -161,7 +176,7 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: '0'
           CARGO_PROFILE_TEST_DEBUG: '0'
-      - name: Start packaged macOS WebView, IDE and native IPC
+      - name: Start packaged macOS WebView, Office and native IPC
         if: runner.os == 'macOS'
         env:
           ECHO_DESKTOP_VALIDATION_OUTPUT: ${{ runner.temp }}/echo-packaged-desktop-diagnostics
@@ -176,6 +191,7 @@ jobs:
         if: runner.os == 'Windows'
         env:
           ECHO_DESKTOP_VALIDATION_OUTPUT: ${{ runner.temp }}/echo-packaged-desktop-diagnostics
+          ECHO_VALIDATE_LONG_PATHS: '1'
         shell: pwsh
         run: |
           $version = node scripts/release-version.mjs check

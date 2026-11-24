@@ -37,6 +37,7 @@ const MAX_PROPFIND_ENTRIES: usize = 5_000;
 const MAX_LOCAL_PATH_CHARS: usize = 32_768;
 const STORAGE_LOCK_ATTEMPTS: usize = 200;
 const STORAGE_LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
+const STORED_PASSWORD_MASK: &str = "••••";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -684,7 +685,7 @@ pub fn storage_providers_list() -> Result<Vec<StorageProviderConfig>, String> {
         .into_iter()
         .map(|mut p| {
             if p.password.as_deref().is_some_and(|v| !v.is_empty()) {
-                p.password = Some("••••".into());
+                p.password = Some(STORED_PASSWORD_MASK.into());
             }
             p
         })
@@ -696,7 +697,14 @@ fn apply_provider_upsert(
     mut config: StorageProviderConfig,
 ) -> Result<(), String> {
     if let Some(existing) = store.providers.iter_mut().find(|p| p.id == config.id) {
-        if config.password.as_deref() == Some("••••") {
+        if config.password.as_deref() == Some(STORED_PASSWORD_MASK) {
+            if validate(existing).is_err()
+                || target_url(existing, "/")? != target_url(&config, "/")?
+                || existing.username.as_deref().unwrap_or_default()
+                    != config.username.as_deref().unwrap_or_default()
+            {
+                return Err("WebDAV 地址或用户名已更改，请重新输入密码或清空密码后保存".into());
+            }
             config.password = existing.password.clone();
         }
         *existing = config;
@@ -704,7 +712,7 @@ fn apply_provider_upsert(
         if store.providers.len() >= MAX_STORAGE_PROVIDERS {
             return Err(format!("存储源数量超过 {MAX_STORAGE_PROVIDERS} 个的上限"));
         }
-        if config.password.as_deref() == Some("••••") {
+        if config.password.as_deref() == Some(STORED_PASSWORD_MASK) {
             return Err("新存储源不能使用密码掩码，请重新输入密码".into());
         }
         store.providers.push(config);
@@ -797,20 +805,52 @@ pub async fn storage_read_text(id: String, path: String) -> Result<String, Strin
 pub async fn storage_write_text(id: String, path: String, content: String) -> Result<(), String> {
     crate::policy::require_feature("cloud-storage")?;
     let config = provider(&id)?;
+    put_text(&config, &path, content, false).await
+}
+
+#[tauri::command]
+pub async fn storage_create_text(id: String, path: String, content: String) -> Result<(), String> {
+    crate::policy::require_feature("cloud-storage")?;
+    let config = provider(&id)?;
+    put_text(&config, &path, content, true).await
+}
+
+async fn put_text(
+    config: &StorageProviderConfig,
+    path: &str,
+    content: String,
+    create_only: bool,
+) -> Result<(), String> {
     if content.len() > MAX_TEXT_BODY_BYTES {
         return Err("文本内容超过 5MB 限制".into());
     }
-    let path = normalize_mutation_path(&path)?;
-    let response = request(&config, reqwest::Method::PUT, &path)?
+    let path = normalize_mutation_path(path)?;
+    let mut request = request(config, reqwest::Method::PUT, &path)?
         .header("Content-Type", "text/plain; charset=utf-8")
-        .body(content)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if response.status().is_success() {
+        .body(content);
+    if create_only {
+        request = request.header(reqwest::header::IF_NONE_MATCH, "*");
+    }
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    let status = response.status();
+    if create_only && status == reqwest::StatusCode::PRECONDITION_FAILED {
+        Err("同名文件或文件夹已存在，请更换文件名".into())
+    } else if create_only && status == reqwest::StatusCode::CREATED
+        || !create_only && status.is_success()
+    {
         Ok(())
+    } else if create_only && status.is_success() {
+        Err("WebDAV 服务器未确认新建文件，请刷新目录后检查".into())
     } else {
-        Err(response_error(response, "写入文件").await)
+        Err(response_error(
+            response,
+            if create_only {
+                "新建文件"
+            } else {
+                "写入文件"
+            },
+        )
+        .await)
     }
 }
 
@@ -1086,6 +1126,115 @@ mod tests {
             enabled: true,
         };
         assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn masked_password_remains_bound_to_the_saved_endpoint_and_account() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("providers.json");
+        let mut saved = test_provider("saved");
+        saved.base_url = "https://dav.test/export".into();
+        upsert_provider_at(&path, saved.clone()).unwrap();
+
+        let mut masked = saved.clone();
+        masked.password = Some(STORED_PASSWORD_MASK.into());
+        masked.base_url = "https://DAV.test:443/export/".into();
+        masked.label = "新显示名".into();
+        upsert_provider_at(&path, masked.clone()).unwrap();
+        let persisted = read_store_with_lock_at(&path).providers.remove(0);
+        assert_eq!(persisted.password, saved.password);
+        assert_eq!(persisted.label, masked.label);
+        let bytes = std::fs::read(&path).unwrap();
+
+        for endpoint in [
+            "https://other.test/export",
+            "https://dav.test:8443/export",
+            "https://dav.test/another-collection",
+        ] {
+            let mut edited = masked.clone();
+            edited.base_url = endpoint.into();
+            let error = upsert_provider_at(&path, edited).unwrap_err();
+            assert!(error.contains("重新输入密码"));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        let mut other_user = masked.clone();
+        other_user.username = Some("other".into());
+        assert!(upsert_provider_at(&path, other_user).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+        masked.base_url = "https://other.test/export".into();
+        masked.password = Some("replacement-test-value".into());
+        upsert_provider_at(&path, masked.clone()).unwrap();
+        let persisted = read_store_with_lock_at(&path).providers.remove(0);
+        assert_eq!(persisted.base_url, masked.base_url);
+        assert_eq!(persisted.password, masked.password);
+
+        masked.base_url = "https://dav.test/anonymous".into();
+        masked.password = None;
+        upsert_provider_at(&path, masked).unwrap();
+        assert!(read_store_with_lock_at(&path).providers[0]
+            .password
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn conditional_text_creation_handles_conflicts_and_keeps_editing_available() {
+        use axum::{body::Bytes, extract::State, http::HeaderMap, routing::put, Router};
+        use reqwest::StatusCode;
+        use std::sync::Arc;
+
+        let contents = Arc::new(Mutex::new(None::<Bytes>));
+        let route = put(
+            |State(contents): State<Arc<Mutex<Option<Bytes>>>>, headers: HeaderMap, body: Bytes| async move {
+                let mut content = contents.lock().unwrap();
+                if headers
+                    .get(reqwest::header::IF_NONE_MATCH)
+                    .is_some_and(|v| v == "*")
+                    && content.is_some()
+                {
+                    return StatusCode::PRECONDITION_FAILED;
+                }
+                let existed = content.replace(body).is_some();
+                if existed {
+                    StatusCode::NO_CONTENT
+                } else {
+                    StatusCode::CREATED
+                }
+            },
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = StorageProviderConfig {
+            base_url: format!("http://{}", listener.local_addr().unwrap()),
+            username: None,
+            password: None,
+            ..test_provider("isolated")
+        };
+        let router = Router::new()
+            .route("/note.txt", route)
+            .with_state(contents.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        let (first, second) = tokio::join!(
+            put_text(&config, "/note.txt", "first version".into(), true),
+            put_text(&config, "/note.txt", "second version".into(), true),
+        );
+        let expected = match (first, second) {
+            (Ok(()), Err(error)) if error.contains("同名") => "first version",
+            (Err(error), Ok(())) if error.contains("同名") => "second version",
+            result => panic!("Expected one creation and one conflict, got {result:?}"),
+        };
+        assert_eq!(
+            contents.lock().unwrap().as_deref(),
+            Some(expected.as_bytes())
+        );
+        put_text(&config, "/note.txt", "edited".into(), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            contents.lock().unwrap().as_deref(),
+            Some("edited".as_bytes())
+        );
+        server.abort();
     }
 
     #[test]

@@ -148,7 +148,6 @@ pub struct MemorySessionSummary {
     pub tool_search_count: u64,
     pub injection_count: u64,
     pub recovery_search_count: u64,
-    pub total_chunks_at_end: usize,
     pub chunks_added_this_session: usize,
     pub session_end_result: String,
     pub dream_count: u64,

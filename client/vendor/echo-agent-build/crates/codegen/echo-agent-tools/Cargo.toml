@@ -126,6 +126,7 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 workspace = true
 
 [features]
+desktop = ["echo-agent-tool-types/desktop"]
 default-bazel = ["serde"]
 default = ["serde"]
 serde = []

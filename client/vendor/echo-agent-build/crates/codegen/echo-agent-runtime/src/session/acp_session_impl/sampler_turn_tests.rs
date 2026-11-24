@@ -212,7 +212,7 @@ mod subagent_sampling_gate_tests {
 
                 let queued = tokio::time::timeout(
                     Duration::from_millis(150),
-                    subagent.submit_turn_request(Default::default()),
+                    subagent.submit_turn_request(Default::default(), false),
                 )
                 .await;
                 assert!(
@@ -228,7 +228,7 @@ mod subagent_sampling_gate_tests {
 
                 let ran = tokio::time::timeout(
                     Duration::from_millis(150),
-                    main.submit_turn_request(Default::default()),
+                    main.submit_turn_request(Default::default(), false),
                 )
                 .await;
                 assert!(

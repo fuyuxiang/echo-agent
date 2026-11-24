@@ -104,11 +104,8 @@ export function localTimeZoneLabel(): string {
     ? "北京时间（Asia/Shanghai）"
     : `本机时区（${zone}）`;
 }
-export function workspaceName(cwds: string): string {
-  const path = cwds
-    .split(",")
-    .map((x) => x.trim())
-    .find(Boolean);
+export function workspaceName(cwds: readonly string[]): string {
+  const path = cwds[0];
   return path
     ? path.split(/[\\/]/).filter(Boolean).pop() || path
     : "默认工作目录";

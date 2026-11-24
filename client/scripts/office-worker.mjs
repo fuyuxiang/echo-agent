@@ -1,9 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { marked } from "marked";
-import {
-  Document, HeadingLevel, Packer, Paragraph, Table, TableCell, TableRow, TextRun,
-  WidthType, AlignmentType,
-} from "docx";
 import ExcelJS from "exceljs";
 import pptxgen from "pptxgenjs";
 import { PDFDocument, rgb } from "pdf-lib";
@@ -86,7 +82,7 @@ function plain(value) {
   return value.tokens ? plain(value.tokens) : String(value.text ?? "");
 }
 
-function blocks(items = tokens, depth = 0) {
+function blocks(items = tokens, depth = 0, listGutters = []) {
   const out = [];
   for (const token of items) {
     if (token.type === "space") continue;
@@ -94,25 +90,34 @@ function blocks(items = tokens, depth = 0) {
     else if (token.type === "math_source") out.push({ type: "paragraph", text: plain(token) });
     else if (token.type === "paragraph" || token.type === "text") out.push({ type: "paragraph", text: plain(token.tokens ?? token.text) });
     else if (token.type === "code") out.push({ type: "code", text: token.text });
-    else if (token.type === "blockquote") out.push(...blocks(token.tokens, depth).map((block) => ({ ...block, quote: true })));
+    else if (token.type === "blockquote") out.push(...blocks(token.tokens, depth, listGutters).map((block) => ({ ...block, quote: true })));
     else if (token.type === "list") {
+      const start = Number(token.start || 1);
+      const gutter = token.ordered ? `${start + token.items.length - 1}.` : "•";
+      const itemGutters = [...listGutters, gutter];
       token.items.forEach((item, index) => {
         const itemTokens = item.tokens ?? [{ type: "text", text: item.text }];
         let first = true;
+        const marker = token.ordered ? `${start + index}.` : "•";
         // Preserve source order when a nested list sits between paragraphs.
         // List tokens have no text property and must be traversed recursively.
         for (const part of itemTokens) {
           if (part.type === "space") continue;
-          if (part.type === "list") {
-            out.push(...blocks([part], depth + 1));
-          } else if (part.type === "text" || part.type === "paragraph") {
+          if (part.type === "text" || part.type === "paragraph") {
             out.push({
               type: "list", text: plain(part.tokens ?? part.text), depth,
-              prefix: first ? (token.ordered ? `${Number(token.start || 1) + index}.` : "•") : "",
+              listGutters: itemGutters,
+              prefix: first ? marker : "",
             });
             first = false;
           } else {
-            out.push(...blocks([part], depth + 1));
+            const nested = blocks([part], depth + 1, itemGutters);
+            if (format === "pdf" && first && nested.length) {
+              if (nested[0].listGutters === itemGutters) nested[0].prefix = marker;
+              else out.push({ type: "list", text: "", depth, listGutters: itemGutters, prefix: marker });
+              first = false;
+            }
+            out.push(...nested);
           }
         }
       });
@@ -122,58 +127,11 @@ function blocks(items = tokens, depth = 0) {
     });
     else if (token.type === "hr") out.push({ type: "paragraph", text: "────────────────────" });
   }
-  return out;
+  return listGutters.length ? out.map(block => block.listGutters ? block : { ...block, listGutters }) : out;
 }
 
 const editableDocument = request.document ? normalizeDocument(request.document) : format === 'docx' ? markdownToDocument(markdown) : null;
 const content = request.document ? documentBlocks(editableDocument) : blocks();
-
-function docxTextRuns(value, options = {}) {
-  return String(value).split("\n").map((line, index) => new TextRun({
-    ...options, text: line, ...(index > 0 ? { break: 1 } : {}),
-  }));
-}
-
-async function createDocx() {
-  const children = [];
-  if (!content.some((block) => block.type === "heading" && block.level === 1)) {
-    children.push(new Paragraph({ text: title, heading: HeadingLevel.TITLE, spacing: { after: 300 } }));
-  }
-  for (const block of content) {
-    if (block.type === "table") {
-      children.push(new Table({
-        width: { size: 100, type: WidthType.PERCENTAGE },
-        rows: block.rows.map((row, index) => new TableRow({
-          tableHeader: index === 0,
-          children: row.map((cell) => new TableCell({
-            children: [new Paragraph({
-              children: docxTextRuns(cell, { bold: index === 0 }),
-              spacing: { before: 80, after: 80 },
-            })],
-          })),
-        })),
-      }));
-      continue;
-    }
-    const heading = block.type === "heading"
-      ? [HeadingLevel.HEADING_1, HeadingLevel.HEADING_2, HeadingLevel.HEADING_3][Math.min(block.level, 3) - 1]
-      : undefined;
-    children.push(new Paragraph({
-      heading,
-      children: docxTextRuns(`${block.prefix ? `${block.prefix} ` : ""}${block.text}`, { italics: Boolean(block.quote) }),
-      spacing: { after: block.type === "heading" ? 180 : 100, line: 330 },
-      indent: block.type === "list" || block.quote ? { left: 420 * ((block.depth ?? 0) + 1) } : undefined,
-      alignment: block.type === "code" ? AlignmentType.LEFT : undefined,
-    }));
-  }
-  const document = new Document({
-    creator: "EchoAgent",
-    title,
-    styles: { default: { document: { run: { font: "Noto Sans CJK SC", size: 22 } } } },
-    sections: [{ properties: { page: { margin: { top: 1150, bottom: 1150, left: 1200, right: 1200 } } }, children }],
-  });
-  await writeFile(outputPath, await Packer.toBuffer(document));
-}
 
 async function createPdf() {
   const document = await PDFDocument.create();
@@ -212,26 +170,38 @@ async function createPdf() {
     page = document.addPage([pageWidth, pageHeight]);
     y = pageHeight - 62;
   };
-  const draw = (value, size = 10.5, indent = 0, color = ink, after = 8) => {
+  const markerSize = 10.5;
+  const digitWidth = Math.max(...Array.from("0123456789", digit => font.widthOfTextAtSize(digit, markerSize)));
+  const bulletWidth = font.widthOfTextAtSize("• ", markerSize);
+  const numberSuffixWidth = font.widthOfTextAtSize(". ", markerSize);
+  const gutterWidth = label => label === "•" ? bulletWidth : digitWidth * (label.length - 1) + numberSuffixWidth;
+  const drawMarker = (marker, x, y, color) => {
+    if (marker) page.drawText(marker, { x, y, size: markerSize, font, color });
+  };
+  const draw = (value, size = 10.5, bodyLeft = left, color = ink, after = 8, marker, markerLeft) => {
     const lineHeight = size * 1.62;
-    for (const line of wrap(value, size, right - left - indent)) {
+    for (const [index, line] of wrap(value, size, right - bodyLeft).entries()) {
       if (y < 64 + lineHeight) nextPage();
-      if (line) page.drawText(line, { x: left + indent, y, size, font, color });
+      if (index === 0) drawMarker(marker, markerLeft, y, color);
+      if (line) page.drawText(line, { x: bodyLeft, y, size, font, color });
       y -= lineHeight;
     }
     y -= after;
   };
-  const drawTable = (rows) => {
+  const drawTable = (rows, bodyLeft, marker, markerLeft, color) => {
     const span = cell => typeof cell === 'object' && cell !== null ? cell.colspan ?? 1 : 1;
     const columns = Math.max(1, ...rows.map(row => row.reduce((width, cell) => width + span(cell), 0)));
-    const columnWidth = (right - left) / columns;
+    const tableWidth = right - bodyLeft;
+    const columnWidth = tableWidth / columns;
+    const cellPadding = Math.min(8, columnWidth / 6);
+    const cellFontSize = Math.min(9, columnWidth * 0.65);
     const lineHeight = 13.5;
     for (const [rowIndex, row] of rows.entries()) {
       let column=0;
       const cells = row.map(cell => {
         const width=span(cell), start=column;column+=width;
         const text=typeof cell==='object' && cell!==null ? cell.text : cell;
-        return {start,lines:wrap(text ?? '',9,columnWidth*width-16)};
+        return { start, lines: wrap(text ?? '', cellFontSize, columnWidth * width - 2 * cellPadding) };
       });
       const maxLines = Math.max(1, ...cells.map(cell => cell.lines.length));
       let offset = 0;
@@ -241,23 +211,24 @@ async function createPdf() {
         const linesThisPage = Math.min(maxLines - offset, Math.max(1, Math.floor((y - 66 - 16) / lineHeight)));
         const height = linesThisPage * lineHeight + 16;
         const top = y + 5;
+        if (rowIndex === 0 && offset === 0) drawMarker(marker, markerLeft, top - 14, color);
         if (rowIndex === 0) {
-          page.drawRectangle({ x: left, y: top - height, width: right - left, height,
+          page.drawRectangle({ x: bodyLeft, y: top - height, width: tableWidth, height,
             color: rgb(0.90, 0.94, 0.97) });
         }
-        page.drawLine({ start: { x: left, y: top }, end: { x: right, y: top },
+        page.drawLine({ start: { x: bodyLeft, y: top }, end: { x: right, y: top },
           thickness: 0.6, color: rgb(0.75, 0.80, 0.84) });
-        page.drawLine({ start: { x: left, y: top - height }, end: { x: right, y: top - height },
+        page.drawLine({ start: { x: bodyLeft, y: top - height }, end: { x: right, y: top - height },
           thickness: 0.6, color: rgb(0.75, 0.80, 0.84) });
         for (const boundary of new Set([0,...cells.map(cell=>cell.start),column,columns])) {
-          const x = left + boundary * columnWidth;
+          const x = bodyLeft + boundary * columnWidth;
           page.drawLine({ start: { x, y: top }, end: { x, y: top - height },
             thickness: 0.6, color: rgb(0.75, 0.80, 0.84) });
         }
         cells.forEach(({lines,start}) => {
           lines.slice(offset, offset + linesThisPage).forEach((line, index) => {
-            if (line) page.drawText(line, { x: left + start * columnWidth + 8,
-              y: top - 14 - index * lineHeight, size: 9, font, color: ink });
+            if (line) page.drawText(line, { x: bodyLeft + start * columnWidth + cellPadding,
+              y: top - 14 - index * lineHeight, size: cellFontSize, font, color });
           });
         });
         y = top - height - 5;
@@ -267,14 +238,20 @@ async function createPdf() {
     }
     y -= 12;
   };
-  if (!content.some((block) => block.type === "heading" && block.level === 1)) draw(title, 20, 0, ink, 20);
+  if (!content.some((block) => block.type === "heading" && block.level === 1 && !block.indentLevel && !block.quote && !block.listGutters?.length)) draw(title, 20, left, ink, 20);
   for (const block of content) {
+    const gutters = block.listGutters ?? [];
+    const indentLevel = block.indentLevel ?? gutters.length + (block.quote ? 1 : 0);
+    const inset = indentLevel * 14 + gutters.reduce((width, label) => width + gutterWidth(label), 0);
+    const bodyLeft = Math.min(left + inset, right - 120);
+    const markerLeft = bodyLeft - (gutters.length ? gutterWidth(gutters.at(-1)) : 0);
+    const color = block.quote ? muted : ink;
     if (block.type === "table") {
-      drawTable(block.rows);
+      drawTable(block.rows, bodyLeft, block.prefix, markerLeft, color);
     } else if (block.type === "heading") {
       y -= block.level === 1 ? 9 : 5;
-      draw(block.text, block.level === 1 ? 19 : block.level === 2 ? 14 : 12, 0, ink, 12);
-    } else draw(`${block.prefix ? `${block.prefix} ` : ""}${block.text}`, block.type === "code" ? 9 : 10.5, block.quote || block.type === "list" ? 14 * ((block.depth ?? 0) + 1) : 0, block.quote ? muted : ink);
+      draw(block.text, block.level === 1 ? 19 : block.level === 2 ? 14 : 12, bodyLeft, color, 12, block.prefix, markerLeft);
+    } else draw(block.text, block.type === "code" ? 9 : 10.5, bodyLeft, color, 8, block.prefix, markerLeft);
   }
   const pages = document.getPages();
   pages.forEach((item, index) => item.drawText(`${index + 1} / ${pages.length}`, {

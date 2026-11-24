@@ -1,8 +1,8 @@
 //! First-party office export. The worker is bundled with the desktop app; user
 //! documents never need a host Python, Node, LibreOffice, or an online converter.
 
+use crate::document_store::{hash_document, MAX_DOCUMENT_FILE_BYTES, MAX_EDITABLE_DOCUMENT_BYTES};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::io::{ErrorKind, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -10,7 +10,8 @@ use tauri::{AppHandle, Manager};
 use tokio::io::AsyncWriteExt;
 
 const MAX_MARKDOWN_BYTES: usize = 2 * 1024 * 1024;
-const MAX_OUTPUT_BYTES: u64 = 50 * 1024 * 1024;
+const EDITABLE_SOURCE_WARNING: &str =
+    "Word 文件已保存，应用内编辑稿未能保存。可在 Word 中继续编辑。";
 const EXPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 #[derive(Clone, Copy)]
@@ -46,6 +47,8 @@ pub struct DocumentExportReceipt {
     pub(crate) format: String,
     pub(crate) byte_size: u64,
     pub(crate) sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) editable_source_warning: Option<String>,
 }
 
 fn valid_format(format: &str) -> bool {
@@ -125,16 +128,12 @@ fn office_resource(app: &AppHandle, relative: &str) -> Result<PathBuf, String> {
 }
 
 pub(crate) fn validate_output(path: &Path, format: &str) -> Result<(u64, String), String> {
-    let metadata =
-        std::fs::symlink_metadata(path).map_err(|error| format!("文档未生成：{error}"))?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err("生成结果不是普通文件".into());
-    }
-    if metadata.len() == 0 || metadata.len() > MAX_OUTPUT_BYTES {
+    let mut file = crate::shell_fs::open_regular_file_no_follow(path)
+        .map_err(|error| format!("无法检查生成文件：{error}"))?;
+    let size = file.metadata().map_err(|error| error.to_string())?.len();
+    if size == 0 || size > MAX_DOCUMENT_FILE_BYTES {
         return Err("生成文件为空或超过 50 MiB 上限".into());
     }
-    let mut file =
-        std::fs::File::open(path).map_err(|error| format!("无法检查生成文件：{error}"))?;
     if format == "pdf" {
         let mut head = [0u8; 5];
         file.read_exact(&mut head)
@@ -142,8 +141,6 @@ pub(crate) fn validate_output(path: &Path, format: &str) -> Result<(u64, String)
         if &head != b"%PDF-" {
             return Err("生成的 PDF 文件头无效".into());
         }
-        file.rewind()
-            .map_err(|error| format!("无法计算完整文件摘要：{error}"))?;
     } else {
         let expected = match format {
             "docx" => "word/document.xml",
@@ -156,20 +153,15 @@ pub(crate) fn validate_output(path: &Path, format: &str) -> Result<(u64, String)
         if archive.by_name(expected).is_err() {
             return Err(format!("生成的 Office 文件缺少 {expected}"));
         }
-        file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        file = archive.into_inner();
     }
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let count = file
-            .read(&mut buffer)
-            .map_err(|error| format!("计算文件摘要失败：{error}"))?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
+    file.rewind()
+        .map_err(|error| format!("无法计算完整文件摘要：{error}"))?;
+    let (digest, byte_size) = hash_document(file)?;
+    if byte_size != size {
+        return Err("生成文件在核验期间发生变化，请重试".into());
     }
-    Ok((metadata.len(), format!("{:x}", hasher.finalize())))
+    Ok((byte_size, digest))
 }
 
 pub(crate) fn install_output(
@@ -177,6 +169,7 @@ pub(crate) fn install_output(
     destination: &Path,
     overwrite: bool,
 ) -> Result<(), String> {
+    crate::legacy_workspace::ensure_workspace_available(destination)?;
     let parent = destination.parent().ok_or("无效的保存目录")?;
     let stage = tempfile::Builder::new()
         .prefix(".echo-office-stage-")
@@ -193,27 +186,9 @@ pub(crate) fn install_output(
             .map_err(|e| format!("目标文件已存在或无法保存，原文件保持：{}", e.error))?;
         return Ok(());
     }
-    let (stage_file, stage_path) = stage.keep().map_err(|error| error.error.to_string())?;
-    drop(stage_file);
-    let backup = parent.join(format!(".echo-office-backup-{}", uuid::Uuid::now_v7()));
-    let had_original = destination.exists();
-    if had_original {
-        if let Err(error) = std::fs::rename(destination, &backup) {
-            let _ = std::fs::remove_file(&stage_path);
-            return Err(format!("无法保护原文件：{error}"));
-        }
-    }
-    if let Err(error) = std::fs::rename(&stage_path, destination) {
-        if had_original {
-            let _ = std::fs::rename(&backup, destination);
-        }
-        let _ = std::fs::remove_file(&stage_path);
-        return Err(format!("保存文档失败：{error}"));
-    }
-    if had_original {
-        let _ = std::fs::remove_file(&backup);
-    }
-    Ok(())
+    let stage = stage.into_temp_path();
+    crate::paths::replace_file_atomically(&stage, destination)
+        .map_err(|error| format!("保存文档失败：{error}"))
 }
 
 pub(crate) async fn generate(
@@ -223,12 +198,12 @@ pub(crate) async fn generate(
 ) -> Result<(), String> {
     let script = office_resource(app, "worker.mjs")?;
     let font = office_resource(app, "fonts/NotoSansCJKsc-Regular.otf")?;
-    let executable = crate::theia::node_executable(app);
-    let executable = crate::theia::node_compatible_path(&executable)?;
-    let script = crate::theia::node_compatible_path(&script)?;
-    let output = crate::theia::node_compatible_path(output)?;
-    let font = crate::theia::node_compatible_path(&font)?;
-    let mut worker = tokio::process::Command::new(executable);
+    let executable = office_resource(app, crate::office_node::NODE_RELATIVE)?;
+    let executable = crate::office_node::node_compatible_path(&executable)?;
+    let script = crate::office_node::node_compatible_path(&script)?;
+    let output = crate::office_node::node_compatible_output_path(output)?;
+    let font = crate::office_node::node_compatible_path(&font)?;
+    let mut worker = crate::process_supervisor::background_async_command(executable);
     worker
         .arg("--max-old-space-size=512")
         .arg(script)
@@ -238,8 +213,6 @@ pub(crate) async fn generate(
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    #[cfg(windows)]
-    worker.creation_flags(crate::process_supervisor::CREATE_NO_WINDOW);
     let mut child = worker
         .spawn()
         .map_err(|error| format!("无法启动内置文档处理程序：{error}"))?;
@@ -336,10 +309,11 @@ pub(crate) fn validate_request(request: &DocumentExportRequest) -> Result<(), St
         crate::document_store::validate(document)?;
     }
     if (request.markdown.trim().is_empty() && !structured)
-        || serde_json::to_vec(request)
-            .map_err(|e| e.to_string())?
-            .len()
-            > MAX_MARKDOWN_BYTES
+        || (request.document.is_none()
+            && serde_json::to_vec(request)
+                .map_err(|e| e.to_string())?
+                .len()
+                > MAX_MARKDOWN_BYTES)
     {
         return Err("文档内容为空或超过 2 MiB 上限".into());
     }
@@ -355,6 +329,46 @@ pub(crate) fn validate_request(request: &DocumentExportRequest) -> Result<(), St
         return Err("文档标题过长".into());
     }
     Ok(())
+}
+
+fn read_generated_source(output: &Path) -> Result<serde_json::Value, String> {
+    let source = output.with_extension("docx.document.json");
+    let bytes =
+        crate::shell_fs::read_regular_file_bounded(&source, MAX_EDITABLE_DOCUMENT_BYTES as u64)
+            .map_err(|error| format!("无法读取 Word 编辑稿：{error}"))?;
+    let model =
+        serde_json::from_slice(&bytes).map_err(|error| format!("无法读取 Word 编辑稿：{error}"))?;
+    crate::document_store::validate(&model)?;
+    Ok(model)
+}
+
+fn prepare_generated_export(
+    output: &Path,
+    destination: &Path,
+    format: String,
+    with_editable_source: bool,
+) -> Result<(DocumentExportReceipt, Option<serde_json::Value>), String> {
+    let (byte_size, sha256) = validate_output(output, &format)?;
+    let mut receipt = DocumentExportReceipt {
+        path: destination.to_string_lossy().into_owned(),
+        format,
+        byte_size,
+        sha256,
+        editable_source_warning: None,
+    };
+    let document = if with_editable_source && receipt.format == "docx" {
+        match read_generated_source(output) {
+            Ok(model) => Some(model),
+            Err(error) => {
+                tracing::warn!(%error, "Word export has no usable editable source");
+                receipt.editable_source_warning = Some(EDITABLE_SOURCE_WARNING.into());
+                None
+            }
+        }
+    } else {
+        None
+    };
+    Ok((receipt, document))
 }
 
 /// Agent creation never overwrites a destination. Identical retries are
@@ -463,21 +477,22 @@ async fn export_to_path_for_session(
     .map_err(|error| format!("无法创建文档临时目录：{error}"))?;
     let output = temp.path().join(format!("output.{}", request.format));
     generate(app, &request, &output).await?;
-    let (byte_size, sha256) = validate_output(&output, &request.format)?;
+    let (mut receipt, editable_source) =
+        prepare_generated_export(&output, destination, request.format, session_id.is_some())?;
     if let OutputPolicy::Recover { original } = policy {
         validate_recovery_destination(original, destination)?;
     }
-    let receipt = DocumentExportReceipt {
-        path: destination.to_string_lossy().into_owned(),
-        format: request.format,
-        byte_size,
-        sha256,
-    };
     // Persist the expected verified receipt before publishing the output. If
     // the final index promotion fails, history can recover the staged receipt
     // by verifying its hash against the installed file after restart.
     if let Some(session) = session_id {
-        crate::session_artifacts::stage(session, receipt.clone(), &request.title)?;
+        let mut staged = receipt.clone();
+        if editable_source.is_some() {
+            // The Word file can be installed before the draft is registered.
+            // Preserve the warning until registration succeeds or is recovered.
+            staged.editable_source_warning = Some(EDITABLE_SOURCE_WARNING.into());
+        }
+        crate::session_artifacts::stage(session, staged, &request.title)?;
         if let OutputPolicy::Create {
             identity: Some((key, digest)),
         } = policy
@@ -491,26 +506,25 @@ async fn export_to_path_for_session(
         matches!(policy, OutputPolicy::Replace),
     )?;
     if let Some(session) = session_id {
-        if let Err(error) =
-            crate::session_artifacts::record(session, receipt.clone(), &request.title)
-        {
-            tracing::warn!(%error, "export receipt staged; history will verify published output");
-        }
-    }
-    if receipt.format == "docx" {
-        let source = output.with_file_name("output.docx.document.json");
-        let source = crate::shell_fs::read_regular_file_bounded(&source, 2 * 1024 * 1024)?;
-        let model = serde_json::from_slice(&source)
-            .map_err(|error| format!("文档已生成，但编辑稿无法读取：{error}"))?;
-        if let Some(session) = session_id {
-            crate::document_workspace::register_generated(
+        if let Some(model) = editable_source {
+            if let Err(error) = crate::document_workspace::register_generated(
                 session,
                 destination,
                 &request.title,
                 model,
                 &receipt.sha256,
                 receipt.byte_size,
-            )?;
+            ) {
+                // Publication has committed. Returning an export error here
+                // would invite a duplicate or an overwrite on retry.
+                tracing::warn!(%error, "Word export published without an editable source");
+                receipt.editable_source_warning = Some(EDITABLE_SOURCE_WARNING.into());
+            }
+        }
+        if let Err(error) =
+            crate::session_artifacts::record(session, receipt.clone(), &request.title)
+        {
+            tracing::warn!(%error, "export receipt staged; history will verify published output");
         }
     }
     Ok(receipt)
@@ -544,6 +558,37 @@ pub async fn document_export(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn export_replacement_preserves_a_directory_at_the_destination() {
+        let folder = tempfile::tempdir().unwrap();
+        let generated = folder.path().join("generated.docx");
+        let destination = folder.path().join("report.docx");
+        std::fs::write(&generated, b"new document").unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(destination.join("notes.txt"), b"keep existing contents").unwrap();
+
+        assert!(install_output(&generated, &destination, true).is_err());
+        assert_eq!(
+            std::fs::read(destination.join("notes.txt")).unwrap(),
+            b"keep existing contents"
+        );
+        assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn export_replacement_publishes_the_complete_output_and_cleans_staging() {
+        let folder = tempfile::tempdir().unwrap();
+        let generated = folder.path().join("generated.docx");
+        let destination = folder.path().join("report.docx");
+        std::fs::write(&generated, b"new document").unwrap();
+        std::fs::write(&destination, b"old document").unwrap();
+
+        install_output(&generated, &destination, true).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"new document");
+        assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 2);
+    }
 
     #[test]
     fn recovered_export_requires_a_different_path_and_preserves_existing_files() {
@@ -644,6 +689,74 @@ mod tests {
         for bytes in [b"".as_slice(), b"%PDF".as_slice(), b"wrong PDF".as_slice()] {
             std::fs::write(&path, bytes).unwrap();
             assert!(validate_output(&path, "pdf").is_err());
+        }
+    }
+
+    #[test]
+    fn accepts_a_generated_editable_source_above_the_markdown_request_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("output.docx");
+        let document = serde_json::json!({
+            "type": "doc",
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "界".repeat(900_000)}]}],
+        });
+        let bytes = serde_json::to_vec(&document).unwrap();
+        assert!(bytes.len() > MAX_MARKDOWN_BYTES);
+        std::fs::write(output.with_extension("docx.document.json"), bytes).unwrap();
+        assert_eq!(read_generated_source(&output).unwrap(), document);
+        validate_request(&DocumentExportRequest {
+            title: "长文档".into(),
+            markdown: String::new(),
+            format: "docx".into(),
+            workbook: None,
+            slides: None,
+            document: Some(document),
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn verified_word_can_be_delivered_when_the_editable_source_is_unusable() {
+        use std::io::Write;
+
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("output.docx");
+        let mut archive = zip::ZipWriter::new(std::fs::File::create(&output).unwrap());
+        archive
+            .start_file(
+                "word/document.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        archive.write_all(b"<w:document/>").unwrap();
+        archive.finish().unwrap();
+
+        let sidecar = output.with_extension("docx.document.json");
+        for (index, source) in [
+            None,
+            Some(b"{nonsense}".to_vec()),
+            Some(serde_json::to_vec(&serde_json::json!({"type": "unsupported"})).unwrap()),
+            Some(vec![b'x'; MAX_EDITABLE_DOCUMENT_BYTES + 1]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if let Some(bytes) = source {
+                std::fs::write(&sidecar, bytes).unwrap();
+            }
+            let destination = directory.path().join(format!("export-{index}.docx"));
+            let (receipt, document) =
+                prepare_generated_export(&output, &destination, "docx".into(), true).unwrap();
+            assert!(document.is_none());
+            assert_eq!(
+                receipt.editable_source_warning.as_deref(),
+                Some(EDITABLE_SOURCE_WARNING)
+            );
+            install_output(&output, &destination, false).unwrap();
+            assert_eq!(
+                validate_output(&destination, "docx").unwrap(),
+                (receipt.byte_size, receipt.sha256)
+            );
         }
     }
 }

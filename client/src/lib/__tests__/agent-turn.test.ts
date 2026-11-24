@@ -30,17 +30,17 @@ function resetStores() {
 describe("beginAgentTurn", () => {
   beforeEach(resetStores);
 
-  it("records each admitted coding intent for the actual run and later correction while preserving other sessions",()=>{
+  it("records each admitted mode for the actual run and later correction while preserving other sessions",()=>{
     const store=useSessionStore.getState();
     store.setSession("s1");store.setAgentMode("default","s1");store.setAgentMode("plan","s2");
     const send=vi.fn(()=>new Promise<void>(()=>{})) as AgentTurnSender;
-    expect(beginAgentTurn({sessionId:"s1",promptText:"read only",displayText:"read only",promptId:"ask-turn",coding:{mode:"ask",documentToolBridge:true}},send)).toBe(true);
+    expect(beginAgentTurn({sessionId:"s1",promptText:"read only",displayText:"read only",promptId:"ask-turn",options:{mode:"ask"}},send)).toBe(true);
     expect(useSessionStore.getState().transcripts.s1.agentMode).toBe("ask");
     expect(useSessionStore.getState().transcripts.s2.agentMode).toBe("plan");
     store.markComplete({sessionId:"s1",promptId:"ask-turn",stopReason:"end_turn"});
-    expect(beginAgentTurn({sessionId:"s1",promptText:"implement",displayText:"implement",promptId:"agent-turn",coding:{mode:"agent",documentToolBridge:true}},send)).toBe(true);
+    expect(beginAgentTurn({sessionId:"s1",promptText:"implement",displayText:"implement",promptId:"agent-turn",options:{mode:"agent"}},send)).toBe(true);
     expect(useSessionStore.getState().agentMode).toBe("default");
-    expect(send).toHaveBeenLastCalledWith("s1","implement",[],"implement","agent-turn",{mode:"agent",documentToolBridge:true});
+    expect(send).toHaveBeenLastCalledWith("s1","implement",[],"implement","agent-turn",{mode:"agent"});
   });
 
   it("立即接纳用户消息和附件，不等待整轮 ACP 请求完成", () => {
@@ -177,6 +177,43 @@ describe("beginAgentTurn", () => {
     expect(accepted).toBe(false);
     expect(send).not.toHaveBeenCalled();
     expect(useSessionStore.getState().messages).toEqual([]);
+  });
+
+  it("上一轮请求被拒绝时保留立即发送中的轮次及其会话状态", async () => {
+    useSessionsStore.getState().upsert({ sessionId: "s1", cwd: "/tmp", title: "test" });
+    const store = useSessionStore.getState();
+    store.setSession("s1");
+    store.requestControl("s1", "pause", "earlier-prompt");
+    store.confirmControl("s1", "pause");
+    let rejectSend!: (error: Error) => void;
+    const send: AgentTurnSender = () => new Promise<void>((_resolve, reject) => {
+      rejectSend = reject;
+    });
+    const onRejected = vi.fn();
+    beginAgentTurn({
+      sessionId: "s1",
+      promptText: "请继续。",
+      displayText: "请继续。",
+      promptId: "old-prompt",
+      onRejected,
+    }, send);
+    store.requestSendNow("replacement-prompt", "s1");
+    rejectSend(new Error("上一轮传输失败"));
+
+    await waitFor(() => expect(onRejected).toHaveBeenCalledWith(expect.any(Error), "old-prompt"));
+    expect(useSessionStore.getState()).toMatchObject({
+      streaming: true,
+      sendNowPending: true,
+      error: null,
+      transcripts: { s1: { pendingSendNowPromptId: "replacement-prompt" } },
+    });
+    expect(useSessionStore.getState().control).toBeUndefined();
+    expect(useSessionsStore.getState().independent[0].status).toBe("working");
+    expect(useSessionStore.getState().messages).toContainEqual(expect.objectContaining({
+      promptId: "old-prompt",
+      complete: true,
+      stopReason: "error",
+    }));
   });
 
   it("回复替换在用户切换会话后仍精确发送到原会话", () => {

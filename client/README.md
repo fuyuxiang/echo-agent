@@ -2,7 +2,7 @@
 
 <h1 align="center">EchoAgent</h1>
 
-<p align="center">本地优先的桌面 Agent 工作台。围绕项目处理代码、文档与日常任务，跟踪进度、审批和交付结果。</p>
+<p align="center">本地优先的桌面 Agent 工作台。围绕项目处理文件、资料和办公文档，跟踪进度、审批和交付结果。</p>
 
 <p align="center"><a href="https://github.com/fuyuxiang/echo-agent-desktop/releases">下载桌面端</a> · <a href="#快速开始">快速开始</a> · <a href="docs/README.md">文档</a> · <a href="README.en.md">English</a></p>
 
@@ -18,16 +18,15 @@ EchoAgent 将会话绑定到实际工作目录。项目工作台汇总任务状�
 
 | 场景 | 当前实现 |
 | --- | --- |
-| **项目工作台** | 管理任务、资料、成果和项目决定；新任务继承项目指令和已确认决定，已有成果可作为新任务的参考资料。 |
+| **项目工作台** | 管理任务、资料、成果和项目决定。新任务继承项目指令和已确认决定，已有成果可作为新任务的参考资料。 |
 | **专家团** | 复用本地专家与已有专家团；支持中文 @成员、只读讨论、协作派发、成员结果汇总、权限审批、决定记录与交付物。 |
 | **Agent 任务** | 流式对话、计划与任务、工具调用、权限审批、会话历史、回溯与分叉、子 Agent 状态。 |
-| **代码开发** | 内嵌 Eclipse Theia IDE，提供编辑器、文件树、搜索、终端、Git 和预览；Echo Code 管理任务阶段、Diff 审阅、验证与交付。 |
-| **浏览器与桌面操作** | Browser Use 使用任务独立的浏览器资料，有副作用的操作单独确认；Computer Use 支持 macOS AX / Windows UIA 原生控件与截图坐标后备，从明确任务启动，支持按应用定向操作，统一使用消息停止与普通对话续接。能力由当前设备实时检测，实机验证状态见文档。 |
+| **浏览器与桌面操作** | Browser Use 支持会话内置浏览器、任务独立浏览器和浏览器扩展。内置浏览器的公网登录资料按账号共享，可暂停 Agent 并接手同一标签。Computer Use 支持 macOS AX / Windows UIA 原生控件与截图坐标后备，可按应用定向操作。能力由当前设备检测，实机验证状态见文档。 |
 | **模型与扩展** | 个人模型连接与组织模型；支持 MCP、Skills、Plugins、连接器与专家。 |
 | **知识与办公** | 本地知识索引、项目上下文、记忆；在任务中读取常见文件，并在本机生成 Word、PDF、Excel 和 PowerPoint。 |
 | **持续工作** | 定时任务、通知、会议录音与纪要，以及可选的微信远程会话和组织服务。 |
 
-专题指南包括 [专家与团队项目](docs/team-projects.md)、[Echo Code](docs/echo-code-theia.md)、[Browser Use / Computer Use](docs/automation-platform-support.md)、[原生桌面控件与验收](docs/desktop-control/README.md)、[办公文档](docs/office-documents.md)、[实时信息](docs/live-information.md)、[微信远程会话](docs/weixin-remote.md)和 [Skill 能力声明](docs/skill-capability-manifest.md)。
+[专家与团队项目](docs/team-projects.md) · [Browser Use / Computer Use](docs/automation-platform-support.md) · [原生桌面控件与验收](docs/desktop-control/README.md) · [办公文档](docs/office-documents.md) · [实时信息](docs/live-information.md) · [微信远程会话](docs/weixin-remote.md) · [Skill 能力声明](docs/skill-capability-manifest.md)
 
 完整专题导航见 [项目文档](docs/README.md)，共享交互和主题规则见 [产品体验约定](docs/product-experience.md) 与 [主题设计](docs/theme-design.md)。
 
@@ -39,7 +38,7 @@ EchoAgent 将会话绑定到实际工作目录。项目工作台汇总任务状�
 
 ### 从源码运行
 
-构建需要 Node.js **22.23.4+（22.x）或 24.22.1+（24.x）**、pnpm **10**、npm **11.21.1+**（内置 IDE 工具链）、Rust **1.96.0+**（stable）、Protocol Buffers 编译器 `protoc`，以及对应平台的原生工具链。macOS 需要 Xcode Command Line Tools；Windows 需要 Visual Studio 2022 C++ 构建工具和 Windows SDK。完整的内嵌 Agent Runtime 源码已经随仓库提交，无需初始化 submodule。
+构建需要 Node.js **22.23.4+（22.x）或 24.22.1+（24.x）**、pnpm **10**、Rust **1.96.0+**（stable）、Protocol Buffers 编译器 `protoc`，以及对应平台的原生工具链。macOS 需要 Xcode Command Line Tools；Windows 需要 Visual Studio 2022 C++ 构建工具和 Windows SDK。完整的内嵌 Agent Runtime 源码已经随仓库提交，无需初始化 submodule。
 
 **macOS**
 
@@ -53,6 +52,8 @@ pnpm tauri dev
 
 **Windows（PowerShell）**
 
+准备语音资源需要 Python。将 `python` 加入 PATH，或在启动前通过 `PYTHON` 指定其可执行文件。CI 使用 Python 3.12。
+
 ```powershell
 git clone https://github.com/fuyuxiang/echo-agent-desktop.git
 cd echo-agent-desktop
@@ -63,11 +64,11 @@ pnpm install --frozen-lockfile
 
 组织文档支持保留顶层文件夹、子目录和空目录上传；可通过面包屑浏览目录，搜索结果显示所在路径。已有文档保持在根目录。保留目录结构需要配套升级组织服务器；连接旧服务器时，已有文档浏览与普通文档上传保持兼容。
 
-首次启动会构建并暂存内嵌 Theia IDE、Office Worker 和 Rust Runtime，可能需要较长时间。`pnpm tauri dev` 运行完整桌面应用；`pnpm dev` 只启动 Vite 前端。
+首次启动会构建并暂存Office Worker、随包 Node.js、检索与语音资源，并编译 Rust Runtime，可能需要较长时间。`pnpm tauri dev` 运行完整桌面应用；`pnpm dev` 只启动 Vite 前端。
 
 ### 创建第一个任务
 
-在「设置 → 模型」中添加连接、模型并测试，或选用组织提供的模型。自定义连接支持 OpenAI、Anthropic 及其兼容接口；模型的工具调用等能力取决于实际服务。个人模型配置保存在本机 `~/.echo-agent/config.toml`。
+在「设置 → 模型」中添加并测试个人模型连接，或选用组织提供的模型。自定义连接支持 OpenAI、Anthropic 及其兼容接口。模型的工具调用等能力取决于实际服务。个人模型配置保存在本机 `~/.echo-agent/config.toml`。
 
 1. 在首页选择工作目录、模型和权限模式。
 2. 输入目标并发送；如果任务要读写文件，请选择实际要授权的目录。
@@ -87,16 +88,24 @@ macOS 首次使用需在系统设置中为实际运行的应用授予“辅助�
 
 ## 架构与数据流
 
-EchoAgent 使用 React 18 构建界面，Tauri 2 与 Rust 负责桌面能力、状态和进程管理。Agent Runtime 作为**进程内组件**运行，通过类型化 ACP Channel 与宿主通信。Echo Code 的 Theia 后端由宿主启动为本机进程；浏览器和电脑操作通过绑定当前任务的本地 MCP 服务交给 Runtime 使用。
+EchoAgent 使用 React 18 构建界面，Tauri 2 与 Rust 负责桌面能力、状态和进程管理。Agent Runtime 作为**进程内组件**运行，通过类型化 ACP Channel 与宿主通信。浏览器和电脑操作通过绑定当前任务的本地 MCP 服务交给 Runtime 使用。
 
-<p align="center"><img src="docs/images/echoagent-architecture.png" width="100%" alt="EchoAgent 数据流：用户与 React 界面交互；界面经 Tauri 命令和事件连接 Rust 宿主；宿主经 ACP Channel 连接 Agent Runtime 并启动 Theia；Runtime 连接模型、MCP、Skills 和任务绑定的自动化服务；宿主及 Runtime 访问工作区与本地数据" /></p>
+```mermaid
+flowchart LR
+    User["用户"] --> UI["React 界面"]
+    UI <-->|Tauri 命令与事件| Host["Rust 桌面宿主"]
+    Host <-->|ACP Channel| Runtime["内嵌 Agent Runtime"]
+    Host --> Office["Office Worker 与随包 Node.js"]
+    Host --> Workspace["工作目录与本地数据"]
+    Runtime --> Workspace
+    Runtime --> Services["模型、MCP、Skills 与桌面自动化"]
+```
 
 | 目录 | 职责 |
 | --- | --- |
 | [`src/`](src/) | React 界面、状态管理与前端领域逻辑。 |
-| [`src-tauri/src/`](src-tauri/src/) | Tauri 命令、ACP 桥接、策略、存储、代码工作台和自动化后端。 |
+| [`src-tauri/src/`](src-tauri/src/) | Tauri 命令、ACP 桥接、权限策略、存储、文档及自动化后端。 |
 | [`vendor/echo-agent-build/`](vendor/echo-agent-build/) | 锁定的内嵌 Agent Runtime 源码快照。 |
-| [`vendor/theia-platform/`](vendor/theia-platform/) | Eclipse Theia 源码及 IDE 集成。 |
 | [`scripts/`](scripts/) · [`docs/`](docs/) | 构建、验证、发行脚本与专题文档。 |
 
 插件可启用／禁用，按来源卸载受管理的安装包或移除用户配置路径。卸载前会列出同一安装包内受影响的插件，外部来源可打开目录管理。操作失败保留错误信息以便重试。
@@ -149,10 +158,10 @@ macOS 使用单色品牌标识，点击展开菜单；Windows 使用透明背景
 
 ### 数据与权限边界
 
-- 默认数据根目录是 `~/.echo-agent/`，可在启动前通过 `ECHO_AGENT_HOME` 调整。模型配置位于 `config.toml`，MCP 配置位于 `mcp.json`，会话与工作台状态存放在该根目录下的对应子目录。
+- 默认数据根目录是 `~/.echo-agent/`，可在启动前通过 `ECHO_AGENT_HOME` 调整。模型配置位于 `config.toml`，MCP 配置位于 `mcp.json`，会话等本机数据存放在该根目录下的对应子目录。[旧版工作台资料迁移](docs/desktop-recovery.md#旧版工作台数据)
 - Provider API Key 保存在本机配置文件中。请保护该文件，避免将其提交到仓库或附在公开 Issue 中。个人模型连接默认要求 HTTPS；使用 HTTP 需要明确确认。
 - “本地优先”不等于离线。发送给模型的任务内容，以及启用 Browser Use / Computer Use 后提供的网页内容或屏幕截图，会到达所选模型服务；MCP、通知、云存储和可选组织能力也可能访问外部服务。
-- 工作区授权、权限模式与操作确认共同控制 Agent 行为。Browser Use 默认限制私网访问；Computer Use 从明确的用户任务启动，任务内连续操作，不逐步弹窗。暂停、停止、切换模式和重启撤销旧执行令牌；系统权限仍按操作系统要求授予。电脑任务范围是执行上下文，不是操作系统文件沙箱。Theia 的交互终端以当前系统用户身份运行，应审查来源未知项目中的命令。
+- 工作区授权、权限模式与操作确认共同控制 Agent 行为。Browser Use 默认限制私网访问；Computer Use 从明确的用户任务启动，任务内连续操作，不逐步弹窗。暂停、停止、切换模式和重启撤销旧执行令牌；系统权限仍按操作系统要求授予。电脑任务范围是执行上下文，不是操作系统文件沙箱。
 
 详细的平台条件与操作边界见 [自动化安全说明](docs/automation-platform-support.md)。
 
@@ -160,13 +169,12 @@ macOS 使用单色品牌标识，点击展开菜单；Windows 使用透明背景
 
 | 命令 | 用途 |
 | --- | --- |
-| `pnpm tauri dev` | 启动完整桌面应用，并自动准备 Theia 与 Office Worker。 |
+| `pnpm tauri dev` | 启动完整桌面应用，并自动准备检索、语音及 Office 资源。 |
 | `pnpm test` | 运行前端和 `scripts/**/*.test.mjs` 两个 Vitest 项目。 |
 | `pnpm test:coverage` | 执行全部 ui project 测试，采集前端生产 TS/TSX 的 V8 覆盖率，包含未导入模块；scripts project 仍由 `pnpm test` 执行。报告位于 `coverage/`。 |
-| `pnpm test:scripts` | 验证浏览器快照标签、测试签名范围、IDE 状态与进程回收、日志脱敏、原生验收条件，以及桌面任务证据、分页、计时和工具入参；CI 自动运行。 |
-| `pnpm test:ide` | 构建 Theia 后验证固定 VSIX 完整性和 SCM 命令完成、失败传播。 |
-| `pnpm test:security` | 安装 Theia 依赖后验证压缩包路径保护、SCANOSS 报告输出、兼容补丁和运行时版本门槛。 |
-| `pnpm security:audit` | 使用 Python 3.11+ 联网审计前端、IDE 与全部 Rust 锁文件，保留原始报告；CI 自动运行。 |
+| `pnpm test:scripts` | 验证浏览器快照标签、测试签名范围、进程回收、日志脱敏、原生验收条件，以及桌面任务证据、分页、计时和工具入参；CI 自动运行。 |
+| `pnpm test:security` | 验证前端依赖兼容性、锁文件覆盖、Tauri 版本和办公 Node.js 版本。 |
+| `pnpm security:audit` | 使用 Python 3.11+ 联网审计前端与全部 Rust 锁文件，保留原始报告；CI 自动运行。 |
 | `pnpm test:native-guards` | 在 macOS 运行原生验收工具的合成报告、隔离和续跑条件回归；不启动桌面应用，也不代表真实界面验收。 |
 | `pnpm test:desktop-native` | 独立编译生产原生桌面模块并运行回归，不启动完整 Runtime 或派发桌面输入；macOS 事件对象测试需要可访问的图形会话。 |
 | `pnpm test:task-recovery` | 在真实 Chromium 中验证网页输入和任务恢复界面；需可用的 Playwright 与 Chromium，可用 `PLAYWRIGHT_MODULE`、`CHROME_BIN` 指定。 |
@@ -222,13 +230,13 @@ cargo clean --manifest-path src-tauri/Cargo.toml --target-dir src-tauri/target/x
 
 依赖升级、兼容补丁来源和锁文件更新步骤见 [依赖安全维护](docs/dependency-security.md)。
 
-原生验收入口为 `scripts/validate-native-review.mjs`，以及 `validate-native-browser-review.mjs`、`validate-native-core-review.mjs`、`validate-native-ide-git-review.mjs`、`validate-native-local-review.mjs`、`validate-native-webdav-review.mjs` 和 `validate-native-exit-recovery-review.mjs`。这些工具需要已构建的桌面可执行文件，使用独立临时数据目录；主验收流程包含首次启动和重启检查。涉及模型的流程需要通过 `NATIVE_REVIEW_MODEL_CONFIG` 显式提供独立的测试连接配置，定时任务验收会等待真实到点。它们不会由普通单元测试自动启动。
+原生验收从 `scripts/validate-native-review.mjs` 开始，包含首次启动和重启检查。各专题驱动、隔离数据目录和测试模型配置见 [开发与验收](docs/testing.md#原生应用与真实模型)。定时任务验收会等待任务实际到点。
 
 macOS 原生桌面任务使用 [`scripts/validate-native-desktop-controls.mjs`](scripts/validate-native-desktop-controls.mjs)，支持 `--smoke`、`--journey`、`--task-flow` 和 `--universal-flow`。桌面任务是否完成需结合真实 Runtime 日志、独立文件核验和界面证据判定；单元测试或 Windows 交叉编译通过不能替代实机验收。准备步骤和核验入口见 [桌面控制验收](docs/desktop-control/validation.md)，其他模块的验证层级及驱动见 [开发与验收](docs/testing.md)。
 
-新增原生验收工具默认将报告写入系统临时目录；可通过各入口的 `NATIVE_*_REVIEW_OUTPUT` 环境变量指定保留位置，通用桌面和会议界面验收使用 `UI_REVIEW_OUTPUT`。Code 验收中的续跑选项必须显式指定原输出目录，保留原始报告与独立临时数据目录。WebDAV 验收需在独立 Python 环境安装 `WsgiDAV` 和 `cheroot`，再用 `WEBDAV_REVIEW_PYTHON` 指定该环境的 Python；可选 `WEBDAV_REVIEW_PYTHONPATH` 用于显式依赖目录。Office 内容独立核验脚本 `validate-native-office-content.py` 另需 `python-docx`、`openpyxl`、`python-pptx` 和 `pypdf`。报告、截图、安装包和用户运行数据不属于项目源码。
+原生验收工具默认将报告写入系统临时目录。可通过各入口的 `NATIVE_*_REVIEW_OUTPUT` 环境变量指定保留位置，通用桌面和会议界面验收使用 `UI_REVIEW_OUTPUT`。WebDAV 验收需在独立 Python 环境安装 `WsgiDAV` 和 `cheroot`，再用 `WEBDAV_REVIEW_PYTHON` 指定该环境的 Python。需要显式设置依赖路径时使用 `WEBDAV_REVIEW_PYTHONPATH`。Office 内容独立核验脚本 `validate-native-office-content.py` 另需 `python-docx`、`openpyxl`、`python-pptx` 和 `pypdf`。报告、截图、安装包和用户运行数据保存在项目源码之外。
 
-图表验收复用 Theia 的可选 Playwright 安装，也可通过 `PLAYWRIGHT_MODULE` 指向独立安装的 Playwright `index.mjs`。浏览器工具仅用于开发验证。验收使用随机本地端口和实际生产 SVG 图片，检查文字与节点边界、长圆形标签、显式换行、Markdown 多行、树连接、图表类型切换后的配置隔离，以及预览、源码、复制、下载和失败恢复。可用 `CHROME_BIN` 指定 Chromium 可执行文件、`UI_REVIEW_OUTPUT` 指定截图与几何数据目录；macOS 需要 Xcode Command Line Tools，原生 WKWebView 也会检查这些标签边界及配置隔离。CI 在 Windows、macOS 和 Linux 上运行该检查。
+图表验收默认使用根开发依赖中的 Playwright，也可通过 `PLAYWRIGHT_MODULE` 指向独立安装的 Playwright `index.mjs`。浏览器工具仅用于开发验证。验收使用随机本地端口和实际生产 SVG 图片，检查文字与节点边界、长圆形标签、显式换行、Markdown 多行、树连接、图表类型切换后的配置隔离，以及预览、源码、复制、下载和失败恢复。可用 `CHROME_BIN` 指定 Chromium 可执行文件、`UI_REVIEW_OUTPUT` 指定截图与几何数据目录；macOS 需要 Xcode Command Line Tools，原生 WKWebView 也会检查这些标签边界及配置隔离。CI 在 Windows、macOS 和 Linux 上运行该检查。
 
 ## 参与贡献
 
@@ -263,7 +271,7 @@ Linux 自动化后端已有部分平台适配，但项目目前没有正式 Linu
 
 第三方组件保留各自的许可证。此前已按其他许可证授予的权利不受本次更新影响。
 
-原 MIT 声明见 [LICENSES/MIT.txt](LICENSES/MIT.txt)。内嵌 Runtime、Theia 和其他第三方组件遵循各自许可证，详见 [Third-Party Notices](THIRD_PARTY_NOTICES.md)。项目基于 [Tauri](https://tauri.app/)、[React](https://react.dev/) 和 [Eclipse Theia](https://theia-ide.org/) 构建。
+原 MIT 声明见 [LICENSES/MIT.txt](LICENSES/MIT.txt)。内嵌 Runtime、Node.js 和其他第三方组件遵循各自许可证，详见 [Third-Party Notices](THIRD_PARTY_NOTICES.md)。项目基于 [Tauri](https://tauri.app/)和 [React](https://react.dev/) 构建。
 
 
 ### 组织服务自动发布与设备回执

@@ -2,7 +2,7 @@
 
 <h1 align="center">EchoAgent</h1>
 
-<p align="center">A local-first desktop agent workspace for code, documents, and project work. Track progress, review approvals, and inspect what the agent delivers.</p>
+<p align="center">A local-first desktop agent workspace for files, documents, and project work. Track progress, handle approvals, and inspect what the agent delivers.</p>
 
 <p align="center"><a href="https://github.com/fuyuxiang/echo-agent-desktop/releases">Download Desktop</a> · <a href="#quick-start">Quick start</a> · <a href="docs/README.md">Documentation</a> · <a href="README.md">简体中文</a></p>
 
@@ -21,13 +21,12 @@ EchoAgent binds each conversation to a real working directory. The project works
 | **Project workspace** | Organize tasks, references, outputs, and decisions. New tasks inherit project instructions and confirmed decisions, and can use existing outputs as references. |
 | **Expert groups** | Reuse local experts and saved group templates; address members with @mentions, discuss with read-only tools, delegate work, collect results, review approvals, and retain decisions and deliverables. |
 | **Agent tasks** | Streaming conversations, plans and tasks, tool calls, approvals, session history, rewind and fork, and subagent status. |
-| **Coding** | Embedded Eclipse Theia IDE with an editor, file tree, search, terminal, Git, and previews; Echo Code manages task stages, diff review, verification, and delivery. |
-| **Browser and desktop control** | Browser Use has a separate profile for each task and confirms operations with side effects separately. Computer Use supports native macOS AX / Windows UIA controls with screenshot fallback, starts from an explicit desktop task, and runs continuously with pause controls. Availability is detected on the current device; see the documented real-device verification status. |
+| **Browser and desktop control** | Browser Use supports the built-in browser, isolated task profiles, and the browser extension. Built-in browser sign-ins on public sites are shared within the same EchoAgent account. Pause the agent to take over the same tab. Computer Use supports macOS AX and Windows UIA native controls, with screenshots and coordinates as a fallback. Availability depends on the device. See the platform guide for verification status. |
 | **Models and extensions** | Personal model connections and organization models; MCP, Skills, Plugins, connectors, and reusable experts. |
 | **Knowledge and documents** | Local knowledge index, project context, memory, common-file reading, and local generation of Word, PDF, Excel, and PowerPoint files. |
 | **Ongoing work** | Scheduled automations, notifications, meeting recordings and minutes, plus optional WeChat remote sessions and organization services. |
 
-Explore the guides for [experts and team projects](docs/team-projects.md), [Echo Code](docs/echo-code-theia.md), [Browser Use / Computer Use](docs/automation-platform-support.md), [native desktop controls and validation](docs/desktop-control/README.md), [office documents](docs/office-documents.md), [live information](docs/live-information.md), [WeChat remote sessions](docs/weixin-remote.md), and [Skill capability declarations](docs/skill-capability-manifest.md).
+[Experts and team projects](docs/team-projects.md) · [Browser Use / Computer Use](docs/automation-platform-support.md) · [Native desktop controls and validation](docs/desktop-control/README.md) · [Office documents](docs/office-documents.md) · [Live information](docs/live-information.md) · [WeChat remote sessions](docs/weixin-remote.md) · [Skill capability declarations](docs/skill-capability-manifest.md)
 
 The [documentation index](docs/README.md) links to all current guides. Shared interaction and visual rules are maintained in [product experience](docs/product-experience.md) and [theme design](docs/theme-design.md) (Chinese).
 
@@ -39,7 +38,7 @@ Check [GitHub Releases](https://github.com/fuyuxiang/echo-agent-desktop/releases
 
 ### Run from source
 
-You need Node.js **22.23.4+ (22.x) or 24.22.1+ (24.x)**, pnpm **10**, npm **11.21.1+** (for the embedded IDE toolchain), Rust **1.96.0+** (stable), the Protocol Buffers compiler `protoc`, and your platform's native build tools. macOS requires Xcode Command Line Tools. Windows requires the Visual Studio 2022 C++ build tools and Windows SDK. The embedded Agent Runtime source is committed in this repository; no submodule initialization is needed.
+You need Node.js **22.23.4+ (22.x) or 24.22.1+ (24.x)**, pnpm **10**, Rust **1.96.0+** (stable), the Protocol Buffers compiler `protoc`, and your platform's native build tools. macOS requires Xcode Command Line Tools. Windows requires the Visual Studio 2022 C++ build tools and Windows SDK. The embedded Agent Runtime source is committed in this repository; no submodule initialization is needed.
 
 **macOS**
 
@@ -53,6 +52,8 @@ pnpm tauri dev
 
 **Windows (PowerShell)**
 
+Speech asset preparation requires Python. Put `python` on PATH or set `PYTHON` to its executable before starting. CI uses Python 3.12.
+
 ```powershell
 git clone https://github.com/fuyuxiang/echo-agent-desktop.git
 cd echo-agent-desktop
@@ -61,11 +62,11 @@ pnpm install --frozen-lockfile
 .\dev.bat
 ```
 
-The first launch builds and stages the embedded Theia IDE, Office Worker, and Rust Runtime, so it can take longer than later builds. `pnpm tauri dev` starts the full desktop app; `pnpm dev` starts only the Vite frontend.
+The first launch prepares the Office worker, bundled Node.js, retrieval and speech assets, and compiles the Rust Runtime, so it can take longer than later builds. `pnpm tauri dev` starts the full desktop app; `pnpm dev` starts only the Vite frontend.
 
 ### Start your first task
 
-Add and test a personal connection and model under **Settings → Models**, or select a model provided by your organization. Custom connections support OpenAI, Anthropic, and compatible APIs. Tool use and other model features depend on the service. Personal model configuration is stored locally in `~/.echo-agent/config.toml`.
+Add and test a personal model connection under **Settings → Models**, or select a model provided by your organization. Custom connections support OpenAI, Anthropic, and compatible APIs. Tool use and other model features depend on the service. Personal model configuration is stored locally in `~/.echo-agent/config.toml`.
 
 1. Select a working directory, model, and permission mode on the home screen.
 2. Describe your goal and send it. For file tasks, select the directory you intend to authorize.
@@ -85,16 +86,24 @@ On first use, macOS requires Accessibility and Screen Recording permission for t
 
 ## Architecture and data flow
 
-React 18 renders the interface. Tauri 2 and Rust manage native capabilities, state, and processes. The Agent Runtime runs **in process** and communicates with the host over typed ACP channels. The host starts the Echo Code Theia backend as a local process. The Runtime accesses browser and computer automation through a local, task-bound MCP service.
+React 18 renders the interface. Tauri 2 and Rust manage native capabilities, state, and processes. The Agent Runtime runs **in process** and communicates with the host over typed ACP channels. The Runtime accesses browser and computer automation through a local, task-bound MCP service.
 
-<p align="center"><img src="docs/images/echoagent-architecture.png" width="100%" alt="EchoAgent data flow: the user interacts with React; Tauri commands and events connect the UI to the Rust host; ACP channels connect the host to the Agent Runtime; the host launches Theia; the Runtime connects to models, MCP, Skills, and task-bound automation; the host and Runtime access local workspace data" /></p>
+```mermaid
+flowchart LR
+    User --> UI["React interface"]
+    UI <-->|Tauri commands and events| Host["Rust desktop host"]
+    Host <-->|ACP Channel| Runtime["Embedded Agent Runtime"]
+    Host --> Office["Office worker and bundled Node.js"]
+    Host --> Workspace["Workspace and local data"]
+    Runtime --> Workspace
+    Runtime --> Services["Models, MCP, Skills, and desktop automation"]
+```
 
 | Directory | Responsibility |
 | --- | --- |
 | [`src/`](src/) | React UI, state management, and frontend domain logic. |
-| [`src-tauri/src/`](src-tauri/src/) | Tauri commands, ACP bridge, policy, storage, coding workbench, and automation backend. |
+| [`src-tauri/src/`](src-tauri/src/) | Tauri commands, ACP bridge, policy, storage, Office documents, and automation backend. |
 | [`vendor/echo-agent-build/`](vendor/echo-agent-build/) | Pinned embedded Agent Runtime source snapshot. |
-| [`vendor/theia-platform/`](vendor/theia-platform/) | Eclipse Theia source and IDE integration. |
 | [`scripts/`](scripts/) · [`docs/`](docs/) | Build, verification, release scripts, and detailed documentation. |
 
 ### Memory
@@ -111,10 +120,10 @@ Save reusable member, role, and model settings as templates without copying chat
 
 ### Data and permission boundaries
 
-- The default data root is `~/.echo-agent/`. Set `ECHO_AGENT_HOME` before launch to change it. Model configuration lives in `config.toml`, MCP configuration in `mcp.json`, and sessions and workbench state in subdirectories under that root.
+- The default data root is `~/.echo-agent/`. Set `ECHO_AGENT_HOME` before launch to change it. Model configuration lives in `config.toml`, MCP configuration in `mcp.json`, and sessions and other local data in subdirectories under that root. See [legacy workbench data migration](docs/desktop-recovery.md#旧版工作台数据).
 - Provider API keys are stored in a local configuration file. Protect it and do not commit it or attach it to a public issue. Personal model connections require HTTPS by default; HTTP requires explicit consent.
 - “Local-first” does not mean offline. Task content sent to a model, as well as webpage content or screenshots provided through Browser Use or Computer Use, reaches the selected model service. MCP, notifications, cloud storage, and optional organization features may also access external services.
-- Workspace authorization, permission modes, and action confirmations govern Agent activity. Browser Use restricts private-network access by default. Computer Use starts from an explicit user task and executes continuously without per-step approval. Pausing, stopping, switching modes, or restarting revokes the old execution lease; operating-system permissions remain required. Desktop task scope is execution context, not an OS filesystem sandbox. Theia's interactive terminal runs as the current OS user; review commands from unfamiliar projects.
+- Workspace authorization, permission modes, and action confirmations govern Agent activity. Browser Use restricts private-network access by default. Computer Use starts from an explicit user task and executes continuously without per-step approval. Pausing, stopping, switching modes, or restarting revokes the old execution lease; operating-system permissions remain required. Desktop task scope is execution context, not an OS filesystem sandbox.
 
 See the [automation platform and security guide](docs/automation-platform-support.md) for platform requirements and operation boundaries.
 
@@ -122,12 +131,11 @@ See the [automation platform and security guide](docs/automation-platform-suppor
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm tauri dev` | Start the full desktop app, preparing Theia and the Office Worker automatically. |
+| `pnpm tauri dev` | Start the full desktop app, preparing retrieval, speech, and Office resources automatically. |
 | `pnpm test` | Run frontend Vitest tests. |
-| `pnpm test:scripts` | Verify browser labels, test signing, IDE state and process cleanup, log redaction, native review guards, desktop task evidence, pagination, timing, and tool inputs; also run in CI. |
-| `pnpm test:ide` | After building Theia, verify pinned VSIX integrity and SCM command completion and failure propagation. |
-| `pnpm test:security` | After installing Theia dependencies, verify archive path protection, SCANOSS output, compatibility patches, and runtime version requirements. |
-| `pnpm security:audit` | Use Python 3.11+ and network access to audit frontend, IDE, and all Rust lockfiles, retaining raw reports; also run in CI. |
+| `pnpm test:scripts` | Verify browser labels, test signing, process cleanup, log redaction, native review guards, desktop task evidence, pagination, timing, and tool inputs; also run in CI. |
+| `pnpm test:security` | Check frontend dependency compatibility, Rust lockfile coverage, Tauri versions, and the Office Node.js runtime version. |
+| `pnpm security:audit` | Use Python 3.11+ and network access to audit frontend and all Rust lockfiles, retaining raw reports; also run in CI. |
 | `pnpm test:native-guards` | On macOS, run synthetic native review report, isolation, and continuation regressions without starting the desktop app; this does not qualify real UI behavior. |
 | `pnpm test:desktop-native` | Compile production native desktop modules independently and run regressions without starting the full Runtime or dispatching desktop input; macOS event-object tests require an accessible graphical session. |
 | `pnpm test:task-recovery` | Verify webpage input and task recovery UI in real Chromium; requires Playwright and Chromium, configurable with `PLAYWRIGHT_MODULE` and `CHROME_BIN`. |
@@ -182,7 +190,7 @@ See [dependency security maintenance](docs/dependency-security.md) for dependenc
 
 Native acceptance runners, starting with `scripts/validate-native-review.mjs`, use a built desktop executable and isolated temporary data. Model-based flows require an explicit private test connection supplied through `NATIVE_REVIEW_MODEL_CONFIG`; they are not started by ordinary unit tests. For macOS desktop tasks, use [`scripts/validate-native-desktop-controls.mjs`](scripts/validate-native-desktop-controls.mjs) with `--smoke`, `--journey`, `--task-flow`, or `--universal-flow`. Completion requires real Runtime logs, independent file verification, and UI evidence. Unit tests or Windows cross-compilation do not replace real-device acceptance. See the [desktop validation guide](docs/desktop-control/validation.md) for preparation and independent verification, and [development and acceptance](docs/testing.md) for other test layers and native runners (Chinese).
 
-Diagram checks reuse Theia's optional Playwright installation, or accept `PLAYWRIGHT_MODULE` pointing to an independently installed Playwright `index.mjs`. Browser tools are used only for development checks. The checks use an ephemeral local port and the production SVG image to verify text and node bounds, long circular labels, explicit line breaks, multiline Markdown, tree connections, configuration isolation between diagram kinds, preview, source, copy, download, and failure recovery. Set `CHROME_BIN` to select Chromium and `UI_REVIEW_OUTPUT` to choose the screenshot and geometry directory. Native WKWebView checks on macOS require Xcode Command Line Tools and cover the same label boundaries and configuration isolation. CI runs these checks on Windows, macOS, and Linux.
+Diagram checks use the root Playwright development dependency, or accept `PLAYWRIGHT_MODULE` pointing to an independently installed Playwright `index.mjs`. Browser tools are used only for development checks. The checks use an ephemeral local port and the production SVG image to verify text and node bounds, long circular labels, explicit line breaks, multiline Markdown, tree connections, configuration isolation between diagram kinds, preview, source, copy, download, and failure recovery. Set `CHROME_BIN` to select Chromium and `UI_REVIEW_OUTPUT` to choose the screenshot and geometry directory. Native WKWebView checks on macOS require Xcode Command Line Tools and cover the same label boundaries and configuration isolation. CI runs these checks on Windows, macOS, and Linux.
 
 ## Contributing
 
@@ -217,7 +225,7 @@ Original project code is available under the [PolyForm Noncommercial License 1.0
 
 Third-party components retain their respective licenses. This update does not revoke rights already granted under earlier licenses.
 
-Earlier MIT notice: [LICENSES/MIT.txt](LICENSES/MIT.txt). The embedded Runtime, Theia, and other third-party components retain their own licenses; see [Third-Party Notices](THIRD_PARTY_NOTICES.md). Built with [Tauri](https://tauri.app/), [React](https://react.dev/), and [Eclipse Theia](https://theia-ide.org/).
+Earlier MIT notice: [LICENSES/MIT.txt](LICENSES/MIT.txt). The embedded Runtime, Node.js, and other third-party components retain their own licenses; see [Third-Party Notices](THIRD_PARTY_NOTICES.md). Built with [Tauri](https://tauri.app/) and [React](https://react.dev/).
 
 ### Local retrieval models
 

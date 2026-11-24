@@ -23,6 +23,7 @@ use tauri_plugin_dialog::{
 
 use crate::commands::AppState;
 use crate::ext::{call_ext, call_ext_value, raw_params};
+use echo_agent_runtime::util::config::McpServerConfig;
 
 const MAX_MCP_CONFIG_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MCP_REQUEST_BYTES: usize = 1024 * 1024;
@@ -34,6 +35,7 @@ const MAX_SETUP_VALUE_BYTES: usize = 64 * 1024;
 const MAX_SETUP_TOTAL_BYTES: usize = 1024 * 1024;
 const MAX_TOOL_NAME_CHARS: usize = 256;
 const MUTATION_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const DOCUMENT_LIVE_UPDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
 static MCP_MUTATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static MIRROR_TRANSACTION: OnceLock<Mutex<()>> = OnceLock::new();
@@ -364,7 +366,7 @@ pub async fn mcp_upsert(
         confirm_stdio_execution(&app, std::slice::from_ref(&server))?;
     }
     let tx = state.tx.lock().unwrap().clone();
-    apply_upsert(tx.as_ref(), session_id.as_deref(), &server).await
+    apply_upsert(tx.as_ref(), &server).await
 }
 
 /// Delete an MCP server by name.
@@ -377,9 +379,11 @@ pub async fn mcp_delete(
     let _mutation = acquire_mcp_mutation().await?;
     reject_builtin_mcp_mutation(&name)?;
     validate_server_name(&name)?;
-    validate_optional_session(&state, session_id.as_deref())?;
+    if let Some(session_id) = session_id.as_deref() {
+        validate_session_id(session_id)?;
+    }
     let tx = state.tx.lock().unwrap().clone();
-    apply_delete(tx.as_ref(), session_id.as_deref(), &name).await
+    apply_delete(tx.as_ref(), &name).await
 }
 
 /// Enable or disable an MCP server at runtime (no restart needed).
@@ -474,129 +478,45 @@ pub async fn mcp_toggle_tool(
 
 async fn apply_upsert(
     tx: Option<&echo_agent_acp::AcpAgentTx>,
-    session_id: Option<&str>,
     server: &McpUpsertRequest,
 ) -> Result<McpMutationResult, String> {
     validate_upsert_request(server)?;
-    // A corrupt compatibility mirror must fail before any Runtime/canonical
-    // mutation; otherwise reporting the mirror error would conceal a partial
-    // update and a later operation could overwrite evidence of corruption.
     let _ = read_mirror_servers()?;
-    if server.enabled == Some(false) {
-        persist_server_config(server).await?;
-        mirror_single_server(server, false)?;
-        let mut result = McpMutationResult {
-            persisted: true,
-            applied_live: false,
-            warnings: Vec::new(),
-        };
-        if let (Some(session_id), Some(tx)) = (session_id.filter(|value| !value.is_empty()), tx) {
-            let params = raw_params(&serde_json::json!({
-                "session_id": session_id,
-                "server_name": server.name,
-                "enabled": false,
-            }));
-            let live: Result<acp::ExtResponse, _> =
-                call_ext_value(tx, "echo.agent/mcp/toggle", params).await;
-            match live {
-                Ok(_) => result.applied_live = true,
-                Err(error) => result
-                    .warnings
-                    .push(format!("配置已保存，但当前会话热停用失败：{error}")),
-            }
-        } else if session_id.is_some() {
-            result
-                .warnings
-                .push("配置已保存，但本地 Runtime 尚未初始化；将在新会话中生效".into());
-        } else {
-            result
-                .warnings
-                .push("已按停用状态保存，将对新会话生效".into());
-        }
-        return Ok(result);
+    persist_mcp_document(std::slice::from_ref(server), &[])?;
+    let mut result =
+        finish_live_mutation(tx, &server.name, server.enabled != Some(false), false).await;
+    if let Err(error) = mirror_single_server(server, false) {
+        result
+            .warnings
+            .push(format!("配置已保存，兼容镜像更新失败：{error}"));
     }
-    if let (Some(session_id), Some(tx)) = (session_id.filter(|value| !value.is_empty()), tx) {
-        let payload = build_upsert_payload(session_id, server)?;
-        let params = raw_params(&payload);
-        let live: Result<acp::ExtResponse, _> =
-            call_ext_value(tx, "echo.agent/mcp/upsert", params).await;
-        return match live {
-            Ok(_) => {
-                mirror_single_server(server, false)?;
-                Ok(McpMutationResult {
-                    persisted: true,
-                    applied_live: true,
-                    warnings: Vec::new(),
-                })
-            }
-            Err(error) => {
-                persist_server_config(server).await?;
-                mirror_single_server(server, false)?;
-                Ok(McpMutationResult {
-                    persisted: true,
-                    applied_live: false,
-                    warnings: vec![format!("配置已保存，但当前会话热加载失败：{error}")],
-                })
-            }
-        };
-    } else if session_id.is_some() {
-        persist_server_config(server).await?;
-        mirror_single_server(server, false)?;
-        return Ok(McpMutationResult {
-            persisted: true,
-            applied_live: false,
-            warnings: vec!["配置已保存，但本地 Runtime 尚未初始化；将在新会话中生效".into()],
-        });
-    }
-    persist_server_config(server).await?;
-    mirror_single_server(server, false)?;
-    Ok(McpMutationResult {
-        persisted: true,
-        applied_live: false,
-        warnings: vec!["配置已保存，将在下次创建会话时启动".into()],
-    })
+    Ok(result)
 }
 
 async fn apply_delete(
     tx: Option<&echo_agent_acp::AcpAgentTx>,
-    session_id: Option<&str>,
     name: &str,
 ) -> Result<McpMutationResult, String> {
     let _ = read_mirror_servers()?;
-    let mut warnings = Vec::new();
-    let mut applied_live = false;
-    let was_user_config = user_config_has_server(name)?;
-    if let (Some(session_id), Some(tx)) = (session_id.filter(|value| !value.is_empty()), tx) {
-        let params = raw_params(&serde_json::json!({
-            "session_id": session_id,
-            "server_name": name,
-        }));
-        let live: Result<acp::ExtResponse, _> =
-            call_ext_value(tx, "echo.agent/mcp/delete", params).await;
-        match live {
-            Ok(_) => applied_live = true,
-            Err(error) => warnings.push(format!("当前会话热卸载失败：{error}")),
+    let changes = crate::providers::update_config_checked(|root| {
+        if root
+            .get("mcp_servers")
+            .and_then(|servers| servers.get(name))
+            .is_none()
+        {
+            return Err(format!("MCP 服务「{name}」不是可删除的用户配置"));
         }
-    } else if session_id.is_some() {
-        warnings.push("本地 Runtime 尚未初始化；已删除持久化配置".into());
+        apply_mcp_document(root, &[], &[name.to_string()])
+    })?;
+    // The published config snapshot now denies this identity, including
+    // calls racing the resident-session unload or made by inherited clients.
+    let mut warnings = clean_removed_credentials(&changes);
+    if let Err(error) = mirror_delete_server(name) {
+        warnings.push(format!("配置已删除，兼容镜像更新失败：{error}"));
     }
-    // The Runtime delete persists before resolving the session. Calling this
-    // again is idempotent and also covers the no-session/stale-session path.
-    let path = runtime_config_path();
-    crate::providers::update_config(|root| apply_mcp_document(root, &[], &[name.to_string()]))
-        .map_err(|error| format!("删除 MCP 配置失败：{error}"))?;
-    if path.exists() {
-        crate::paths::harden_private_file(&path)?;
-    }
-    if !applied_live && !was_user_config {
-        return Err(format!("MCP 服务「{name}」不是可删除的用户配置"));
-    }
-    mirror_delete_server(name)?;
-    Ok(McpMutationResult {
-        persisted: true,
-        applied_live,
-        warnings,
-    })
+    let mut result = finish_live_mutation(tx, name, false, true).await;
+    result.warnings.extend(warnings);
+    Ok(result)
 }
 
 async fn apply_toggle(
@@ -612,41 +532,57 @@ async fn apply_toggle(
     if let Err(error) = mirror_toggle_server(name, enabled) {
         warnings.push(format!("启停状态已保存，MCP 镜像同步失败：{error}"));
     }
-    let mut applied_live = false;
+    let mut result = finish_live_mutation(tx, name, enabled, false).await;
+    result.warnings.extend(warnings);
+    Ok(result)
+}
+
+async fn finish_live_mutation(
+    tx: Option<&echo_agent_acp::AcpAgentTx>,
+    name: &str,
+    enabled: bool,
+    revoked_user_instances_only: bool,
+) -> McpMutationResult {
+    let mut result = McpMutationResult {
+        persisted: true,
+        applied_live: false,
+        warnings: Vec::new(),
+    };
     if let Some(tx) = tx {
         let params = raw_params(&serde_json::json!({
             "session_id": "",
             "server_name": name,
             "enabled": enabled,
             "all_sessions": true,
+            "revoked_user_instances_only": revoked_user_instances_only,
         }));
-        let result = tokio::time::timeout(
+        let ack = tokio::time::timeout(
             std::time::Duration::from_secs(30),
             call_ext::<McpToggleAck>(tx, "echo.agent/mcp/toggle", params),
         )
         .await;
-        applied_live = matches!(&result, Ok(Ok(ack)) if ack.ok);
-        if !applied_live {
-            let detail = match result {
+        result.applied_live = matches!(&ack, Ok(Ok(ack)) if ack.ok);
+        if !result.applied_live {
+            let detail = match ack {
                 Ok(Err(error)) => error.to_string(),
                 Ok(Ok(_)) => "Runtime 拒绝确认".into(),
                 Err(_) => "等待 Runtime 确认超时".into(),
             };
             let state = if enabled {
-                "启用状态已保存，仍有会话未确认恢复"
+                "配置已保存，仍有会话未确认启用"
             } else {
                 "新工具调用已阻止，仍有会话未确认卸载"
             };
-            warnings.push(format!("{state}：{detail}"));
+            result
+                .warnings
+                .push(format!("服务「{name}」：{state}。{detail}"));
         }
     } else if enabled {
-        warnings.push("启用状态已保存，将在本地 Runtime 启动后生效".into());
+        result
+            .warnings
+            .push("配置已保存，将在本地 Runtime 启动后生效".into());
     }
-    Ok(McpMutationResult {
-        persisted: true,
-        applied_live,
-        warnings,
-    })
+    result
 }
 
 #[derive(Deserialize)]
@@ -655,16 +591,13 @@ struct McpToggleAck {
 }
 
 pub(crate) fn install_desktop_dispatch_guard() {
-    echo_agent_runtime::session::mcp_servers::install_tool_dispatch_guard(|name| {
+    echo_agent_runtime::session::mcp_servers::install_tool_dispatch_guard(|name, instance_id| {
         if is_builtin_mcp(name) {
             return Ok(());
         }
         let config = crate::providers::read_config_snapshot()
             .map_err(|_| "无法验证当前的 MCP 调用权限".to_string())?;
-        if globally_disabled_mcp(&config, name) {
-            return Err(format!("MCP 服务「{name}」已在本机停用"));
-        }
-        Ok(())
+        check_desktop_dispatch(&config, name, instance_id)
     });
 }
 
@@ -675,118 +608,30 @@ fn globally_disabled_mcp(config: &toml::Value, name: &str) -> bool {
         .is_some_and(|names| names.iter().any(|value| value.as_str() == Some(name)))
 }
 
-/// Translate the frontend payload to the JSON EchoAgent's `echo.agent/mcp/upsert` expects.
-///
-/// EchoAgent's `McpUpsertRequest` (`echo-agent-runtime/src/extensions/mcp.rs`) is:
-/// ```json
-/// { "session_id": "...", "server_name": "...", <flattened McpServerConfig> }
-/// ```
-/// where `McpServerConfig` flattens a `McpServerTransportConfig`:
-/// ```toml
-/// [mcp_servers.filesystem]            # stdio
-/// command = "npx"
-/// args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
-///
-/// [mcp_servers.linear]                # streamable_http
-/// url = "https://mcp.linear.app/mcp"
-/// ```
-/// NOTE: the wire keys are snake_case (`session_id` / `server_name`) — EchoAgent's
-/// request struct has no `rename_all`, unlike `mcp/list` which takes
-/// camelCase `sessionId`.
-fn build_upsert_payload(
-    session_id: &str,
-    server: &McpUpsertRequest,
-) -> Result<serde_json::Value, String> {
-    let mut payload = serde_json::Map::new();
-    payload.insert("session_id".into(), session_id.into());
-    payload.insert("server_name".into(), server.name.clone().into());
-    match server.transport.as_str() {
-        "stdio" => {
-            payload.insert("command".into(), server.target.clone().into());
-            if !server.args.is_empty() {
-                payload.insert(
-                    "args".into(),
-                    server
-                        .args
-                        .iter()
-                        .cloned()
-                        .map(serde_json::Value::from)
-                        .collect::<Vec<_>>()
-                        .into(),
-                );
-            }
-            if !server.env.is_empty() {
-                payload.insert("env".into(), serde_json::to_value(&server.env).unwrap());
-            }
-            if let Some(cwd) = &server.cwd {
-                payload.insert("cwd".into(), cwd.clone().into());
-            }
-        }
-        "http" | "streamable_http" | "sse" => {
-            payload.insert("url".into(), server.target.clone().into());
-            if server.transport == "sse" {
-                payload.insert("type".into(), "sse".into());
-            }
-            if !server.headers.is_empty() {
-                payload.insert(
-                    "headers".into(),
-                    serde_json::to_value(&server.headers).unwrap(),
-                );
-            }
-            if let Some(value) = &server.bearer_token_env_var {
-                payload.insert("bearer_token_env_var".into(), value.clone().into());
-            }
-            if let Some(value) = &server.oauth_client_id {
-                payload.insert("oauth_client_id".into(), value.clone().into());
-            }
-            if let Some(value) = &server.oauth_client_secret_env_var {
-                payload.insert("oauth_client_secret_env_var".into(), value.clone().into());
-            }
-            if !server.oauth_scopes.is_empty() {
-                payload.insert(
-                    "oauth_scopes".into(),
-                    serde_json::to_value(&server.oauth_scopes).unwrap(),
-                );
-            }
-        }
-        other => {
-            return Err(format!(
-                "unknown transport '{other}': expected 'stdio' or 'http'"
-            ));
+fn check_desktop_dispatch(
+    config: &toml::Value,
+    name: &str,
+    instance_id: Option<&str>,
+) -> Result<(), String> {
+    if globally_disabled_mcp(config, name) {
+        return Err(format!("MCP 服务「{name}」已在本机停用"));
+    }
+    if let Some(instance_id) = instance_id {
+        let current = config
+            .get("mcp_servers")
+            .and_then(|servers| servers.get(name))
+            .and_then(toml::Value::as_table)
+            .map(|server| {
+                server
+                    .get("desktop_instance_id")
+                    .and_then(toml::Value::as_str)
+                    .unwrap_or("legacy")
+            });
+        if current != Some(instance_id) {
+            return Err(format!("MCP 服务「{name}」的连接已撤销，请使用当前配置"));
         }
     }
-    if let Some(enabled) = server.enabled {
-        payload.insert("enabled".into(), enabled.into());
-    }
-    if let Some(value) = server.startup_timeout_sec {
-        payload.insert("startup_timeout_sec".into(), value.into());
-    }
-    if let Some(value) = server.tool_timeout_sec {
-        payload.insert("tool_timeout_sec".into(), value.into());
-    }
-    if let Some(value) = &server.oauth {
-        payload.insert(
-            "oauth".into(),
-            serde_json::to_value(value).map_err(|e| format!("序列化 OAuth 配置失败：{e}"))?,
-        );
-    }
-    if let Some(value) = &server.setup {
-        payload.insert(
-            "setup".into(),
-            serde_json::to_value(value).map_err(|e| format!("序列化 Setup 配置失败：{e}"))?,
-        );
-    }
-    if !server.tool_timeouts.is_empty() {
-        payload.insert(
-            "tool_timeouts".into(),
-            serde_json::to_value(&server.tool_timeouts)
-                .map_err(|e| format!("序列化逐工具超时失败：{e}"))?,
-        );
-    }
-    if let Some(value) = server.expose_image_base64 {
-        payload.insert("expose_image_base64".into(), value.into());
-    }
-    Ok(serde_json::Value::Object(payload))
+    Ok(())
 }
 
 fn validate_server_name(name: &str) -> Result<(), String> {
@@ -1084,6 +929,7 @@ fn request_to_runtime_config(
         },
     };
     McpServerConfig {
+        desktop_instance_id: None,
         transport,
         enabled: server.enabled.unwrap_or(true),
         oauth: server.oauth.clone(),
@@ -1093,18 +939,6 @@ fn request_to_runtime_config(
         tool_timeouts: (!server.tool_timeouts.is_empty()).then(|| server.tool_timeouts.clone()),
         expose_image_base64: server.expose_image_base64,
     }
-}
-
-async fn persist_server_config(server: &McpUpsertRequest) -> Result<(), String> {
-    let path = runtime_config_path();
-    crate::providers::update_config(|root| {
-        apply_mcp_document(root, std::slice::from_ref(server), &[])
-    })
-    .map_err(|error| format!("保存 MCP 配置失败：{error}"))?;
-    if path.exists() {
-        crate::paths::harden_private_file(&path)?;
-    }
-    Ok(())
 }
 
 fn read_bounded_text(path: &Path, max_bytes: usize, label: &str) -> Result<Option<String>, String> {
@@ -1393,7 +1227,9 @@ pub async fn mcp_config_save(
     session_id: Option<String>,
 ) -> Result<McpConfigSaveResult, String> {
     let _mutation = acquire_mcp_mutation().await?;
-    validate_optional_session(&state, session_id.as_deref())?;
+    if let Some(session_id) = session_id.as_deref() {
+        validate_session_id(session_id)?;
+    }
     if content.len() > MAX_MCP_CONFIG_BYTES {
         return Err("MCP 配置超过 2MB 限制".into());
     }
@@ -1445,67 +1281,17 @@ pub async fn mcp_config_save(
     let mut previous_names: HashSet<String> = previous.keys().cloned().collect();
     previous_names.extend(existing_requests.into_iter().map(|request| request.name));
     let incoming_names: HashSet<String> = map.keys().cloned().collect();
-    let removed: Vec<String> = previous_names
+    let mut removed: Vec<String> = previous_names
         .iter()
         .filter(|name| !incoming_names.contains(*name))
         .cloned()
         .collect();
+    removed.sort();
     let tx = state.tx.lock().unwrap().clone();
-    let sid = session_id.filter(|value| !value.is_empty());
-    let mut warnings = Vec::new();
-    let mut applied_live = sid.is_some() && tx.is_some();
-
-    // Use the Runtime extension for hot delete/upsert when a session exists.
-    // Every operation is persisted again below, so stale sessions degrade to
-    // "saved for next session" rather than losing the user's configuration.
-    if let (Some(session_id), Some(tx)) = (sid.as_deref(), tx.as_ref()) {
-        for name in &removed {
-            let params = raw_params(&serde_json::json!({
-                "session_id": session_id,
-                "server_name": name,
-            }));
-            let result: Result<acp::ExtResponse, _> =
-                call_ext_value(tx, "echo.agent/mcp/delete", params).await;
-            if let Err(error) = result {
-                applied_live = false;
-                warnings.push(format!("服务「{name}」热卸载失败：{error}"));
-            }
-        }
-        for request in &requests {
-            if request.enabled == Some(false) {
-                let params = raw_params(&serde_json::json!({
-                    "session_id": session_id,
-                    "server_name": request.name,
-                    "enabled": false,
-                }));
-                let result: Result<acp::ExtResponse, _> =
-                    call_ext_value(tx, "echo.agent/mcp/toggle", params).await;
-                if let Err(error) = result {
-                    applied_live = false;
-                    warnings.push(format!("服务「{}」热停用失败：{error}", request.name));
-                }
-                continue;
-            }
-            let payload = build_upsert_payload(session_id, request)?;
-            let params = raw_params(&payload);
-            let result: Result<acp::ExtResponse, _> =
-                call_ext_value(tx, "echo.agent/mcp/upsert", params).await;
-            if let Err(error) = result {
-                applied_live = false;
-                warnings.push(format!("服务「{}」热加载失败：{error}", request.name));
-            }
-        }
-    } else if sid.is_some() {
-        warnings.push("本地 Runtime 尚未初始化；配置将在新会话中生效".into());
-    }
-
-    // Persist the complete MCP document in one shared config transaction. A
-    // per-server loop can expose intermediate states and, more importantly,
-    // lets an unrelated Runtime settings write land between snapshots.
-    persist_mcp_document(&requests, &removed)?;
-    for name in &removed {
-        echo_agent_runtime::util::config::remove_mcp_server_credentials(name);
-    }
+    // Publish the complete document before any live update. In particular,
+    // removed instances lose dispatch permission before any actor is awaited.
+    let changes = persist_mcp_document(&requests, &removed)?;
+    let mut warnings = clean_removed_credentials(&changes);
 
     let normalized = if trimmed.is_empty() {
         EMPTY_MCP_JSON.as_bytes()
@@ -1521,9 +1307,7 @@ pub async fn mcp_config_save(
             "Runtime 配置已保存，但 mcp.json 兼容镜像更新失败：{error}"
         ));
     }
-    if sid.is_none() && (!requests.is_empty() || !removed.is_empty()) {
-        warnings.push("配置已保存，将在下次创建会话时启动".into());
-    }
+    let applied_live = apply_document_live(tx.as_ref(), &changes, &mut warnings).await;
     Ok(McpConfigSaveResult {
         server_count: requests.len(),
         removed_count: removed.len(),
@@ -1532,20 +1316,83 @@ pub async fn mcp_config_save(
     })
 }
 
-fn persist_mcp_document(requests: &[McpUpsertRequest], removed: &[String]) -> Result<(), String> {
-    crate::providers::update_config(|root| apply_mcp_document(root, requests, removed))?;
-    let path = runtime_config_path();
-    if path.exists() {
-        crate::paths::harden_private_file(&path)?;
+#[derive(Default)]
+struct McpDocumentChanges {
+    updated: Vec<(String, bool)>,
+    removed: Vec<(String, toml::Value)>,
+}
+
+fn clean_removed_credentials(changes: &McpDocumentChanges) -> Vec<String> {
+    changes
+        .removed
+        .iter()
+        .filter_map(|(name, definition)| {
+            let config = definition.clone().try_into::<McpServerConfig>().ok()?;
+            echo_agent_runtime::util::config::remove_mcp_server_credentials(name, &config)
+                .err()
+                .map(|_| format!("服务「{name}」的本机 OAuth 凭据清理失败"))
+        })
+        .collect()
+}
+
+async fn apply_document_live(
+    tx: Option<&echo_agent_acp::AcpAgentTx>,
+    changes: &McpDocumentChanges,
+    warnings: &mut Vec<String>,
+) -> bool {
+    if changes.updated.is_empty() && changes.removed.is_empty() {
+        return true;
     }
-    Ok(())
+    let Some(tx) = tx else {
+        warnings.push("配置已保存，将在本地 Runtime 启动后生效".into());
+        return false;
+    };
+    let operations = changes
+        .removed
+        .iter()
+        .map(|(name, _)| (name, false, true))
+        .chain(
+            changes
+                .updated
+                .iter()
+                .map(|(name, enabled)| (name, *enabled, false)),
+        );
+    let pending =
+        futures::future::join_all(operations.map(|(name, enabled, removed)| {
+            finish_live_mutation(Some(tx), name, enabled, removed)
+        }));
+    match tokio::time::timeout(DOCUMENT_LIVE_UPDATE_TIMEOUT, pending).await {
+        Ok(results) => {
+            let live = results.iter().all(|result| result.applied_live);
+            warnings.extend(results.into_iter().flat_map(|result| result.warnings));
+            live
+        }
+        Err(_) => {
+            warnings
+                .push("配置已保存，部分已打开会话尚未确认同步。新会话将读取已保存的配置。".into());
+            false
+        }
+    }
+}
+
+fn persist_mcp_document(
+    requests: &[McpUpsertRequest],
+    removed: &[String],
+) -> Result<McpDocumentChanges, String> {
+    crate::providers::update_config_checked(|root| apply_mcp_document(root, requests, removed))
 }
 
 fn apply_mcp_document(
     root: &mut toml::Value,
     requests: &[McpUpsertRequest],
     removed: &[String],
-) -> Result<(), String> {
+) -> Result<McpDocumentChanges, String> {
+    let mut changes = McpDocumentChanges::default();
+    let disabled_before = requests
+        .iter()
+        .filter(|request| globally_disabled_mcp(root, &request.name))
+        .map(|request| request.name.as_str())
+        .collect::<HashSet<_>>();
     let table = root
         .as_table_mut()
         .ok_or_else(|| "config.toml 顶层必须是 TOML 表".to_string())?;
@@ -1557,12 +1404,38 @@ fn apply_mcp_document(
             .as_table_mut()
             .ok_or_else(|| "[mcp_servers] 必须是 TOML 表".to_string())?;
         for request in requests {
-            let serialized = toml::Value::try_from(request_to_runtime_config(request))
+            let mut serialized = toml::Value::try_from(request_to_runtime_config(request))
                 .map_err(|error| format!("MCP 服务「{}」序列化失败：{error}", request.name))?;
+            let enabled = request.enabled != Some(false);
+            let previous = servers
+                .get(&request.name)
+                .cloned()
+                .and_then(|value| value.try_into::<McpServerConfig>().ok());
+            let same_definition = previous
+                .map(|mut previous| {
+                    previous.desktop_instance_id = None;
+                    toml::Value::try_from(previous).is_ok_and(|value| value == serialized)
+                })
+                .unwrap_or(false);
+            if !same_definition || disabled_before.contains(request.name.as_str()) == enabled {
+                changes.updated.push((request.name.clone(), enabled));
+            }
+            if same_definition {
+                continue;
+            }
+            serialized
+                .as_table_mut()
+                .ok_or("MCP 服务配置必须为 TOML 表")?
+                .insert(
+                    "desktop_instance_id".into(),
+                    uuid::Uuid::now_v7().to_string().into(),
+                );
             servers.insert(request.name.clone(), serialized);
         }
         for name in removed {
-            servers.remove(name);
+            if let Some(definition) = servers.remove(name) {
+                changes.removed.push((name.clone(), definition));
+            }
         }
     }
     if table
@@ -1616,7 +1489,7 @@ fn apply_mcp_document(
             table.remove("disabled_mcp_tools");
         }
     }
-    Ok(())
+    Ok(changes)
 }
 
 /// Remove a reserved, application-owned MCP bridge from the durable Runtime
@@ -1625,7 +1498,10 @@ fn apply_mcp_document(
 /// cleans registrations written by older desktop releases at startup.
 pub(crate) fn remove_internal_server_registration(name: &str) -> Result<(), String> {
     validate_server_name(name)?;
-    crate::providers::update_config(|root| apply_mcp_document(root, &[], &[name.to_string()]))
+    crate::providers::update_config_checked(|root| {
+        apply_mcp_document(root, &[], &[name.to_string()])
+    })
+    .map(|_| ())
 }
 
 fn apply_mcp_toggle(root: &mut toml::Value, name: &str, enabled: bool) -> Result<(), String> {
@@ -2273,6 +2149,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn deleted_mcp_instances_stay_revoked_when_the_name_is_reused() {
+        let present = "[mcp_servers.fixture]\nurl = 'https://fixture.invalid/mcp'";
+        let mut config: toml::Value = present.parse().unwrap();
+        assert!(check_desktop_dispatch(&config, "fixture", Some("legacy")).is_ok());
+        apply_mcp_document(&mut config, &[], &["fixture".into()]).unwrap();
+        assert!(check_desktop_dispatch(&config, "fixture", Some("legacy")).is_err());
+        assert!(
+            check_desktop_dispatch(&config, "fixture", None).is_ok(),
+            "same-named connector from another source does not share the revoked identity"
+        );
+        config = format!("{present}\ndesktop_instance_id = 'replacement'")
+            .parse()
+            .unwrap();
+        assert!(check_desktop_dispatch(&config, "fixture", Some("legacy")).is_err());
+        assert!(check_desktop_dispatch(&config, "fixture", Some("replacement")).is_ok());
+    }
+
+    #[test]
     fn global_dispatch_policy_tracks_durable_connector_toggle() {
         let mut config: toml::Value = r#"
 disabled_mcp_servers = ["other"]
@@ -2443,6 +2337,66 @@ url = "https://fixture.example/mcp"
             .expect("re-enabled connector must be callable without restarting the Runtime");
         }
         assert_eq!(calls.load(Ordering::SeqCst), 8);
+        // A delete issued without a focused session must still unload both
+        // original sessions, additional residents, and the agent pool.
+        let request = read_user_config_requests()
+            .unwrap()
+            .into_iter()
+            .find(|request| request.name == "fixture")
+            .unwrap();
+        let credentials_path = crate::paths::echo_agent_home_dir().join("mcp_credentials.json");
+        let user_key = format!("fixture:{target}");
+        let project_key = "fixture:https://project.example.test/mcp";
+        let fixture_credentials = json!({
+            (user_key.as_str()): { "client_id": "test-user", "token_response": null },
+            (project_key): { "client_id": "test-project", "token_response": null },
+        });
+        crate::paths::write_private_file(
+            &credentials_path,
+            &serde_json::to_vec(&fixture_credentials).unwrap(),
+        )
+        .unwrap();
+        let deleted = apply_delete(Some(&runtime.tx), "fixture").await.unwrap();
+        assert!(
+            deleted.persisted && deleted.applied_live && deleted.warnings.is_empty(),
+            "{deleted:?}"
+        );
+        assert!(!user_config_has_server("fixture").unwrap());
+        let credentials: Value =
+            serde_json::from_slice(&std::fs::read(credentials_path).unwrap()).unwrap();
+        assert!(credentials.get(&user_key).is_none());
+        assert_eq!(credentials[project_key]["client_id"], "test-project");
+        for session in [
+            Some(a.as_str()),
+            Some(b.as_str()),
+            Some(c.as_str()),
+            Some(d.as_str()),
+            None,
+        ] {
+            assert!(call(session).await.is_err());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 8);
+        let rebuilt = apply_upsert(Some(&runtime.tx), &request).await.unwrap();
+        assert!(
+            rebuilt.applied_live && rebuilt.warnings.is_empty(),
+            "{rebuilt:?}"
+        );
+        // A late teardown for the deleted definition must leave the replacement alone.
+        let ack = finish_live_mutation(Some(&runtime.tx), "fixture", false, true).await;
+        assert!(ack.applied_live, "{ack:?}");
+        for session in [Some(b.as_str()), None] {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    if call(session).await.is_ok() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("replacement should be callable in existing sessions");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 10);
         let mut shutdown = runtime.shutdown_complete;
         runtime.cancel.cancel();
         tokio::time::timeout(
@@ -2682,7 +2636,17 @@ old = ["legacy"]
             expose_image_base64: None,
         };
 
-        apply_mcp_document(&mut root, &[replacement], &["old".into()]).unwrap();
+        let changes = apply_mcp_document(
+            &mut root,
+            std::slice::from_ref(&replacement),
+            &["old".into()],
+        )
+        .unwrap();
+        assert_eq!(changes.updated, [("replacement".to_owned(), false)]);
+        assert_eq!(changes.removed[0].0, "old");
+        let unchanged = apply_mcp_document(&mut root, &[replacement], &[]).unwrap();
+        assert!(unchanged.updated.is_empty());
+        assert!(unchanged.removed.is_empty());
 
         assert_eq!(root["custom"]["keep"].as_str(), Some("hand-written"));
         assert_eq!(

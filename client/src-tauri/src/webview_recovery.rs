@@ -32,6 +32,30 @@ struct Recovery {
     monitor_tick: Instant,
     recording_interrupted: bool,
 }
+
+impl Recovery {
+    fn acknowledge_recovery(&mut self, document_id: &str) -> bool {
+        if !self.awaiting_ready || self.failed_document.as_deref() == Some(document_id) {
+            return false;
+        }
+        let Some(generation) = self.policy.current() else {
+            return false;
+        };
+        self.policy.finish(generation);
+        self.status.phase = "restored";
+        self.status.message =
+            "界面已恢复，已保存的任务和草稿仍保留。已执行的操作不会自动重放。".into();
+        if std::mem::take(&mut self.recording_interrupted) {
+            self.status
+                .message
+                .push_str(" 麦克风录音已中断，请在会议中核对已保存内容。");
+        }
+        self.awaiting_ready = false;
+        tracing::info!(generation, "desktop renderer recovered");
+        true
+    }
+}
+
 pub struct RendererRecovery(Mutex<Recovery>);
 impl Default for RendererRecovery {
     fn default() -> Self {
@@ -158,25 +182,7 @@ pub fn desktop_renderer_heartbeat(
         return Err("旧窗口的恢复回执已忽略".into());
     }
     recovery.heartbeat = Instant::now();
-    let mut changed = false;
-    if recovery.awaiting_ready && recovery.failed_document.as_deref() != Some(document_id.as_str())
-    {
-        if let Some(generation) = recovery.policy.current() {
-            recovery.policy.finish(generation);
-            recovery.status.phase = "restored";
-            recovery.status.message =
-                "界面已恢复，已保存的任务和草稿仍保留。已执行的操作不会自动重放。".into();
-            if recovery.recording_interrupted {
-                recovery
-                    .status
-                    .message
-                    .push_str(" 麦克风录音已中断，请在会议中核对已保存内容。");
-            }
-            recovery.awaiting_ready = false;
-            changed = true;
-            tracing::info!(generation, "desktop renderer recovered");
-        }
-    }
+    let changed = recovery.acknowledge_recovery(&document_id);
     recovery.document = Some(document_id);
     let status = recovery.status.clone();
     drop(recovery);
@@ -488,4 +494,34 @@ pub fn start_monitor(app: tauri::AppHandle) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_interruption_is_reported_only_for_its_recovery() {
+        let mut recovery = RendererRecovery::default().0.into_inner().unwrap();
+        assert!(matches!(
+            recovery.policy.begin(Instant::now()),
+            Decision::Retry { .. }
+        ));
+        recovery.awaiting_ready = true;
+        recovery.failed_document = Some("first-document".into());
+        recovery.recording_interrupted = true;
+
+        assert!(!recovery.acknowledge_recovery("first-document"));
+        assert!(recovery.acknowledge_recovery("second-document"));
+        assert!(recovery.status.message.contains("麦克风录音已中断"));
+
+        assert!(matches!(
+            recovery.policy.begin(Instant::now()),
+            Decision::Retry { .. }
+        ));
+        recovery.awaiting_ready = true;
+        recovery.failed_document = Some("second-document".into());
+        assert!(recovery.acknowledge_recovery("third-document"));
+        assert!(!recovery.status.message.contains("麦克风录音已中断"));
+    }
 }

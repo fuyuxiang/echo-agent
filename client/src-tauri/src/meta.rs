@@ -130,6 +130,8 @@ pub struct EchoAgentState {
     /// User task description, never an execution token. Restoring it stays paused.
     #[serde(default)]
     pub session_desktop_tasks: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub(crate) session_browser_sources: HashMap<String, crate::automation::TaskBrowserSource>,
     /// Last lifecycle state: session_id → SessionLifecycle.
     #[serde(default)]
     pub session_statuses: HashMap<String, SessionLifecycle>,
@@ -149,6 +151,7 @@ impl Default for EchoAgentState {
             session_workspaces: HashMap::new(),
             session_projects: HashMap::new(),
             session_desktop_tasks: HashMap::new(),
+            session_browser_sources: HashMap::new(),
             session_statuses: HashMap::new(),
             session_continuations: HashMap::new(),
         }
@@ -247,6 +250,7 @@ fn validate_state(state: &EchoAgentState) -> Result<(), String> {
         || state.session_workspaces.len() > MAX_SESSION_ENTRIES
         || state.session_projects.len() > MAX_SESSION_ENTRIES
         || state.session_desktop_tasks.len() > MAX_SESSION_ENTRIES
+        || state.session_browser_sources.len() > MAX_SESSION_ENTRIES
         || state.session_statuses.len() > MAX_SESSION_ENTRIES
         || state.session_continuations.len() > MAX_SESSION_ENTRIES
     {
@@ -290,6 +294,13 @@ fn validate_state(state: &EchoAgentState) -> Result<(), String> {
         if !valid_session_id(id) || scope.is_empty() || scope.len() > 16384 {
             return Err("电脑任务范围无效".into());
         }
+    }
+    if state
+        .session_browser_sources
+        .keys()
+        .any(|id| !valid_session_id(id))
+    {
+        return Err("浏览器来源包含无效会话 ID".into());
     }
     for (session_id, lifecycle) in &state.session_statuses {
         if !valid_session_id(session_id) {
@@ -429,6 +440,20 @@ fn sanitize_state(mut state: EchoAgentState) -> EchoAgentState {
     state
         .session_desktop_tasks
         .retain(|id, scope| valid_session_id(id) && !scope.is_empty() && scope.len() <= 16384);
+    state
+        .session_browser_sources
+        .retain(|id, _| valid_session_id(id));
+    if state.session_browser_sources.len() > MAX_SESSION_ENTRIES {
+        let mut ids = state
+            .session_browser_sources
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        ids.sort();
+        for id in ids.into_iter().skip(MAX_SESSION_ENTRIES) {
+            state.session_browser_sources.remove(&id);
+        }
+    }
     state.session_projects.retain(|id, project| {
         valid_session_id(id) && crate::projects::validate_project_id(project).is_ok()
     });
@@ -843,6 +868,30 @@ pub(crate) fn clear_project_reservations(
 pub fn desktop_task_scope(session_id: &str) -> Option<String> {
     read_state().session_desktop_tasks.get(session_id).cloned()
 }
+
+pub(crate) fn task_browser_source(
+    session_id: &str,
+) -> Option<crate::automation::TaskBrowserSource> {
+    read_state()
+        .session_browser_sources
+        .get(session_id)
+        .copied()
+}
+
+pub(crate) fn set_task_browser_source(
+    session_id: &str,
+    source: crate::automation::TaskBrowserSource,
+) -> Result<(), String> {
+    if !valid_session_id(session_id) {
+        return Err("浏览器来源包含无效会话 ID".into());
+    }
+    update_state_at(&state_path(), |state| {
+        let previous = state
+            .session_browser_sources
+            .insert(session_id.into(), source);
+        Ok(((), previous != Some(source)))
+    })
+}
 /// Save context without replacing the main agent's manually selected profile.
 /// Execution grants remain process-local and are never restored from this text.
 pub fn set_desktop_task_scope(session_id: &str, scope: &str) -> Result<(), String> {
@@ -966,6 +1015,7 @@ fn clear_session_metadata_at(path: &Path, session_id: &str) -> Result<bool, Stri
         changed |= state.session_workspaces.remove(session_id).is_some();
         changed |= state.session_projects.remove(session_id).is_some();
         changed |= state.session_desktop_tasks.remove(session_id).is_some();
+        changed |= state.session_browser_sources.remove(session_id).is_some();
         changed |= state.session_statuses.remove(session_id).is_some();
         changed |= state.session_continuations.remove(session_id).is_some();
         Ok((changed, changed))
@@ -1070,17 +1120,8 @@ mod tests {
     #[test]
     fn pinned_set_converts_to_hashset() {
         let state = EchoAgentState {
-            version: 1,
             pinned_sessions: vec!["s1".into(), "s2".into(), "s1".into()],
-            archived_sessions: vec![],
-            expert_sessions: HashMap::new(),
-            session_permission_modes: HashMap::new(),
-            session_agent_modes: HashMap::new(),
-            session_workspaces: HashMap::new(),
-            session_projects: HashMap::new(),
-            session_desktop_tasks: HashMap::new(),
-            session_statuses: HashMap::new(),
-            session_continuations: HashMap::new(),
+            ..Default::default()
         };
         let set = state.pinned_set();
         assert_eq!(set.len(), 2); // deduplicated
@@ -1091,17 +1132,8 @@ mod tests {
     #[test]
     fn archived_set_converts_to_hashset() {
         let state = EchoAgentState {
-            version: 1,
-            pinned_sessions: vec![],
             archived_sessions: vec!["a1".into(), "a2".into()],
-            expert_sessions: HashMap::new(),
-            session_permission_modes: HashMap::new(),
-            session_agent_modes: HashMap::new(),
-            session_workspaces: HashMap::new(),
-            session_projects: HashMap::new(),
-            session_desktop_tasks: HashMap::new(),
-            session_statuses: HashMap::new(),
-            session_continuations: HashMap::new(),
+            ..Default::default()
         };
         let set = state.archived_set();
         assert_eq!(set.len(), 2);
@@ -1130,6 +1162,10 @@ mod tests {
             session_workspaces: HashMap::new(),
             session_projects: HashMap::new(),
             session_desktop_tasks: HashMap::new(),
+            session_browser_sources: HashMap::from([(
+                "s1".into(),
+                crate::automation::TaskBrowserSource::Isolated,
+            )]),
             session_statuses: HashMap::from([(
                 "s1".into(),
                 SessionLifecycle {
@@ -1144,6 +1180,10 @@ mod tests {
         assert_eq!(parsed.version, 1);
         assert_eq!(parsed.pinned_sessions, vec!["s1"]);
         assert_eq!(parsed.archived_sessions, vec!["a1", "a2"]);
+        assert_eq!(
+            parsed.session_browser_sources.get("s1"),
+            Some(&crate::automation::TaskBrowserSource::Isolated)
+        );
         assert_eq!(
             parsed
                 .session_permission_modes

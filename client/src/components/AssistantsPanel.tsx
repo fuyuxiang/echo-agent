@@ -10,7 +10,6 @@ import {
   AddCircleIcon,
   RefreshCwIcon,
   SparklesIcon,
-  Code2Icon,
   FileTextIcon,
   GlobeIcon,
   BriefcaseIcon,
@@ -67,17 +66,6 @@ const MODEL_TAGS: { key: string; label: string; desc: string }[] = [
 ];
 
 const ASSISTANT_TEMPLATES = [
-  {
-    id: "code-expert",
-    name: "代码专家",
-    description: "专注于代码编写、调试和优化",
-    icon: Code2Icon,
-    color: "var(--echo-brand)",
-    systemPrompt: "你是一名代码专家，专注于代码编写、调试和优化。请给出简洁、正确、可运行的代码，并解释关键设计决策。",
-    defaultAvatar: 3,
-    defaultTags: ["default", "reasoning"],
-    category: "开发",
-  },
   {
     id: "doc-writer",
     name: "文档助手",

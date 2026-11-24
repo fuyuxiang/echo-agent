@@ -66,6 +66,7 @@ describe("aggregateFileChanges", () => {
     expect(s.files[0].name).toBe("a.ts");
     expect(s.files[0].added).toBe(1); // new "z" → 1 行
     expect(s.files[0].removed).toBe(2); // old "x\ny" → 2 行
+    expect(s.files[0].approximate).toBe(true);
     expect(s.files[0].edits).toBe(1);
     expect(s.files[0].ext).toBe(".ts");
   });
@@ -78,6 +79,17 @@ describe("aggregateFileChanges", () => {
     ]);
     expect(s.files[0].added).toBe(3);
     expect(s.files[0].removed).toBe(2);
+    expect(s.files[0].approximate).toBe(false);
+  });
+
+  it("只在累计变更含整文件替换估算时标记行数", () => {
+    const s = aggregateFileChanges([
+      diffMsg("a.ts", "", "initial"),
+      diffMsg("a.ts", "initial", "updated"),
+      diffMsg("a.ts", "updated", ""),
+      diffMsg("b.ts", "", "added"),
+    ]);
+    expect(s.files.map(file => file.approximate)).toEqual([true, false]);
   });
 
   it("同文件多次 edit 累加 + edits 计数", () => {

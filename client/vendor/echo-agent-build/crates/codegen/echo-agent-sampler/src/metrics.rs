@@ -32,8 +32,8 @@ pub fn compute_percentiles(sorted: &[u64]) -> (u64, u64, u64, u64, u64) {
 pub struct InferenceLatencyStats {
     /// Time to first content token (ms)
     pub time_to_first_token_ms: Option<u64>,
-    /// Time to last byte / stream end (ms). Measured at stream exhaustion,
-    /// not at the last content chunk, so it includes trailing metadata chunks.
+    /// Time to last byte / stream end (ms), including metadata consumed
+    /// by the protocol decoder before it finalizes the response.
     pub time_to_last_byte_ms: u64,
     /// Number of content chunks received
     pub chunk_count: u32,
@@ -72,8 +72,8 @@ impl InferenceLatencyStats {
     /// # Arguments
     /// * `stream_start` - `Instant::now()` captured before initiating the stream.
     /// * `chunk_timestamps` - `Instant` recorded on each content-bearing chunk.
-    /// * `stream_end` - `Instant::now()` captured after the stream is fully exhausted
-    ///   (after trailing metadata/`[DONE]` chunks). Used for TTLB.
+    /// * `stream_end` - `Instant::now()` captured when the protocol decoder finishes
+    ///   the response. Used for TTLB.
     pub fn from_timestamps(
         stream_start: Instant,
         chunk_timestamps: &[Instant],
