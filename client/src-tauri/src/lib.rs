@@ -949,6 +949,7 @@ pub fn run() {
             backup::backup_archive_legacy_ui,
             backup::backup_defer_restored_ui,
             backup::backup_has_deferred_ui,
+            backup::backup_has_legacy_ui,
             backup::backup_export_ui_archive,
             backup::backup_last_error,
             // session lifecycle

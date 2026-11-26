@@ -400,6 +400,30 @@ impl SessionActor {
             );
         }
     }
+    /// Apply catalog capability edits at the start of a turn. Keep the
+    /// session's sampling and credentials stable for the rest of that turn.
+    pub(super) async fn refresh_model_capabilities(&self) {
+        let Some((key, previous)) = self.live_model_capabilities.borrow().clone() else {
+            return;
+        };
+        let Some((resolved_key, latest)) = self.models_manager.live_model_capabilities(&key) else {
+            return;
+        };
+        if key != resolved_key || latest == previous || !latest.same_route(&previous) {
+            return;
+        }
+        let Some(mut config) = self.chat_state_handle.get_sampling_config().await else {
+            return;
+        };
+        let mut snapshot = self.live_model_capabilities.borrow_mut();
+        if snapshot.as_ref() != Some(&(key.clone(), previous.clone())) {
+            return;
+        }
+        latest.apply_change(&previous, &mut config);
+        self.chat_state_handle.update_sampling_config(config);
+        *snapshot = Some((key, latest));
+    }
+
     /// Reconstruct a full `SamplerConfig` (with credentials) by combining
     /// the actor's `SamplingConfig` and `Credentials`. Folds in the
     /// URL-derived headers (cli-chat-proxy auth, the staging auth header)
@@ -434,6 +458,7 @@ impl SessionActor {
                 context_window: std::num::NonZeroU64::new(256_000).unwrap(),
                 reasoning_effort: None,
                 stream_tool_calls: None,
+                supports_tool_calls: None,
             });
         let creds = self.chat_state_handle.get_credentials().await;
         let model_facts = self.model_auth_facts(cfg.model.as_str());
@@ -507,6 +532,7 @@ impl SessionActor {
             force_http1: false,
             max_retries: Some(self.max_retries),
             stream_tool_calls: cfg.stream_tool_calls.unwrap_or(false),
+            supports_tool_calls: cfg.supports_tool_calls,
             idle_timeout_secs: None,
             client_identifier: self.client_identifier.clone(),
             deployment_id: crate::managed_config::resolve_deployment_id(

@@ -201,7 +201,7 @@ export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", 
   return <section ref={panelRef} className={`personal-memory personal-memory--${view}`} aria-label="个人记忆管理">
     {view !== "overview" && <Button size="compact" variant="ghost" className="personal-memory__back" disabled={locked} onClick={() => navigate(view === "manage" ? "overview" : "manage")}><ArrowLeft size={14} />{view === "manage" ? "返回记忆设置" : "返回管理记忆"}</Button>}
     <header className="personal-memory__header" data-setting-id={view === "support" ? "local-retrieval" : view === "manage" ? "memory-management" : undefined}>
-      <PageHeading title={title} level={2} description={view === "manage" ? "可编辑或忘记记忆。" : view === "history" ? "已完成、已过期和已忘记的内容不会再自动参考。" : undefined} />
+      <PageHeading title={title} level={2} description={view === "manage" ? "查看和调整已保存的记忆。" : view === "history" ? "已完成、过期或忘记的记忆不再自动使用。" : undefined} />
       {view === "manage" && <ActionMenu label="更多" menuLabel="记忆操作" resetKey={cwd} busy={locked || !!draft || importing} menuZIndex="var(--echo-layer-dialog-popover)" triggerClassName="settings-btn personal-memory__more" trigger={<>更多<ChevronDown size={14} /></>}>
         {({ close }) => <>
           <button type="button" role="menuitem" className="topbar-actions__item" disabled={loading} onClick={() => { close(); setCopyFallback(undefined); setImporting(true); setImportCwd(cwd); setImportWorkspaceAvailable(workspaceAvailable); setPreviews([]); }}>导入记忆</button>
@@ -218,15 +218,14 @@ export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", 
     {view === "overview" ? <>
       <div className="personal-memory__preferences">
         <MemorySettingsPanel compact onBusyChange={setSettingsBusy} onConfigChange={onConfigChange} />
-        <div className="personal-memory__manage-entry"><div><p className="personal-memory__entry-title">管理已保存的记忆</p><p className="personal-memory__entry-description">查看、更正或忘记 Echo 保存的内容。</p></div><Button size="compact" disabled={locked} onClick={() => navigate("manage")}>管理<ChevronRight size={14} /></Button></div>
+        <div className="personal-memory__manage-entry"><div><p className="personal-memory__entry-title">管理已保存的记忆</p><p className="personal-memory__entry-description">可更正或忘记已保存的内容。</p></div><Button size="compact" disabled={locked} onClick={() => navigate("manage")}>管理<ChevronRight size={14} /></Button></div>
       </div>
-      <p className="personal-memory__privacy"><LockKeyhole size={14} aria-hidden="true" />记忆保存在本机，自动整理会使用所配置的模型服务。</p>
+      <p className="personal-memory__privacy"><LockKeyhole size={14} aria-hidden="true" />记忆保存在本机，自动整理会使用已配置的模型服务。</p>
     </> : <>
       {error && <div className="panel-inline-error" role="alert"><span>{error}</span><Button size="compact" disabled={locked} onClick={() => void reload()}>重新加载</Button></div>}
       {(view === "manage" || view === "history") && <>
-        {cwd && <p className="personal-memory__status personal-memory__scope">{workspaceAvailable ? `当前目录为 ${cwd}。同一 Git 仓库（按 origin 识别）的检出目录共用工作目录记忆。` : "当前目录是临时目录，可使用个人记忆。"}个人记忆可跨目录使用。</p>}
         {importing && <section className="personal-memory__import personal-memory__editor" aria-label="导入记忆">
-          <h3>导入记忆</h3><p>粘贴 JSON 备份，或逐行输入。先预览，再保存。</p>
+          <h3>导入记忆</h3><p>粘贴 JSON 备份或逐行输入，预览后保存。</p>
           {importWorkspaceAvailable && <p role="note">备份里的目录记忆将保存到 {importCwd}</p>}
           <textarea ref={importRef} disabled={locked} className="form-control" aria-label="待导入的记忆" rows={5} value={importText} onChange={e => { setImportText(e.target.value); setPreviews([]); }} />
           <Button size="compact" disabled={locked || !importText.trim()} onClick={() => { try { const items = parseMemoryImport(importText); if (!items.length) throw new Error("未识别到有效记忆，请检查内容"); if (!importWorkspaceAvailable && items.some(value => value.scope === "workspace")) throw new Error("这些记忆需要持久工作目录，请切换目录后重新打开导入"); setPreviews(items.map(input => ({ input, deriveKeyFromContent: !input.keyIsCustom && isContentDerivedMemoryTitle(input.key, input.content) }))); setError(""); } catch (e) { setError(message(e)); } }}>预览导入</Button>
@@ -240,7 +239,13 @@ export function PersonalMemoryPanel({ cwd, sessionId, initialView = "overview", 
         {copyFallback && <section className="personal-memory__editor" aria-label={copyFallback.label}><label>{copyFallback.label}（可复制）<textarea className="form-control" rows={4} readOnly value={copyFallback.text} onFocus={e => e.target.select()} /></label><Button size="compact" onClick={() => setCopyFallback(undefined)}>关闭</Button></section>}
         {(records.length > 0 || query.trim()) && <label className="personal-memory__search"><Search size={16} /><input className="form-control" aria-label="查找个人记忆" placeholder="查找记忆" value={query} disabled={!!draft || importing || locked} onChange={e => setQuery(e.target.value)} /></label>}
         {loading && <p role="status" className="personal-memory__status">正在加载记忆…</p>}
-        {!loading && !error && filtered.length === 0 && !draft && <div className="personal-memory__empty"><Brain size={24} aria-hidden="true" /><p>{query ? "没有找到匹配的记忆" : view === "history" ? "暂无历史记录" : "还没有保存的记忆"}</p><span>{query.trim() ? "试试其他关键词，或清空搜索。" : view === "history" ? "已完成、过期或忘记的内容会显示在这里。" : snapshot?.enabled === false ? "开启记忆后，Echo 会自动记住有用的偏好和工作背景。" : "在对话中让 Echo 记住你的偏好。"}</span></div>}
+        {!loading && !error && filtered.length === 0 && !draft && <div className="personal-memory__empty">
+          <Brain size={24} aria-hidden="true" />
+          <p>{query ? "没有找到匹配的记忆" : view === "history" ? "暂无历史记录" : "还没有保存的记忆"}</p>
+          {query.trim() ? <span>可更换关键词或清空搜索。</span> : view !== "history" && <span>{snapshot?.enabled === false
+            ? "开启记忆后，可自动保存偏好和工作背景。"
+            : "在对话中让 Echo 记住你的偏好。"}</span>}
+        </div>}
         <div className="personal-memory__list">
           {draft && !filtered.slice(0, visibleLimit).some(isDraftRecord) && editor}
           {filtered.slice(0, visibleLimit).map(record => isDraftRecord(record) ? <div className="personal-memory__card" key={`${record.scope}:${record.id}`}>{editor}</div> : <article className="personal-memory__card" key={`${record.scope}:${record.id}`} aria-label={record.key}>

@@ -229,6 +229,7 @@ impl ShellToolsetConfig {
             force_http1: false,
             max_retries: None,
             stream_tool_calls: false,
+            supports_tool_calls: None,
             idle_timeout_secs: None,
             client_identifier: None,
             deployment_id: None,

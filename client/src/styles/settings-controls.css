@@ -6,6 +6,7 @@
 
 .settings-modal__content { background: var(--ui-surface-muted); }
 .settings-modal__toolbar { position: relative; z-index: 3; background: var(--echo-surface-canvas); }
+.settings-modal__toolbar--actions-only { justify-content: flex-end; }
 .settings-modal__location { flex: 1 1 auto; }
 .settings-modal__location > span { flex-shrink: 0; }
 .settings-preference-state { color: var(--echo-text-medium); font-size: .75rem; font-weight: 550; line-height: 1.5; }
@@ -124,8 +125,6 @@
 }
 .settings-disclosure__body > .settings-hint { margin: 0; overflow-wrap: anywhere; }
 .settings-inline-link { display: inline-flex; align-items: center; gap: 6px; color: var(--echo-text-brand); font-size: .8125rem; }
-.settings-modal .model-connections__detail > .settings-disclosure { margin-top: 24px; }
-.settings-modal .model-connections__facts { margin: 0; }
 .settings-modal .quota-panel__stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .settings-modal .quota-panel__stats--details { grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 0; }
 .settings-modal .quota-panel > .settings-disclosure { margin: 18px 0 0; }

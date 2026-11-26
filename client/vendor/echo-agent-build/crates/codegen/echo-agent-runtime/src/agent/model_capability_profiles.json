@@ -1,0 +1,14 @@
+[
+  {
+    "model": "MiniMax-M3.1-Flash",
+    "endpoints": {
+      "chat_completions": ["https://api.minimax.cn/v1", "https://api.minimax.io/v1"],
+      "messages": ["https://api.minimax.cn/anthropic", "https://api.minimax.cn/anthropic/v1", "https://api.minimax.io/anthropic", "https://api.minimax.io/anthropic/v1"]
+    },
+    "tools": true,
+    "images": true,
+    "alwaysThinks": true,
+    "providerDefaultEffort": "max",
+    "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"]
+  }
+]

@@ -695,6 +695,10 @@ pub(crate) struct SessionActor {
     /// its id, keying on the id alone is insufficient: each model/credential
     /// chokepoint must clear this memo (`replace(None)`).
     pub(crate) model_auth_memo: std::cell::RefCell<Option<ModelAuthMemo>>,
+    pub(crate) live_model_capabilities: std::cell::RefCell<Option<(
+        acp::ModelId,
+        crate::agent::model_capabilities::LiveModelCapabilities,
+    )>>,
     /// 401-attribution callback. Joined with the bearer the
     /// sampler sends on the wire to emit an `auth 401 attribution`
     /// event at each of the six `OaiCompatClient` 401 arms in

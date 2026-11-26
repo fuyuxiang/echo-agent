@@ -218,7 +218,7 @@ export function UsageQuotaPanel() {
       <div className="quota-panel__head">
         <div>
           <h3 className="quota-panel__title">用量概览</h3>
-          <p className="quota-panel__subtitle">仅统计本机记录的调用，自动按所选周期汇总。</p>
+          <p className="quota-panel__subtitle">按所选周期汇总本机的模型用量。</p>
         </div>
         <div className="quota-panel__actions">
           <button type="button" className="settings-btn quota-panel__action" onClick={refresh} title="刷新" aria-label="刷新用量"><RefreshCw size={14} /></button>
@@ -259,7 +259,7 @@ export function UsageQuotaPanel() {
           <div className="quota-panel__quota-bar" role="progressbar" aria-valuenow={Math.min(100, quota.pct)} aria-valuemin={0} aria-valuemax={100}>
             <div className={`quota-panel__quota-fill${quota.exceeded ? " exceeded" : quota.nearLimit ? " near" : ""}`} style={{ width: `${Math.min(100, quota.pct)}%` }} />
           </div>
-          <p className="quota-panel__config-note">仅限制本机手动发送；自动化和其他客户端不受此限制。</p>
+          <p className="quota-panel__config-note">限额仅适用于本机手动发送，自动化和其他客户端可继续使用。</p>
           {(quota.exceeded || quota.nearLimit) && <span className="quota-panel__quota-warn">{quota.exceeded ? "已达上限" : "已达 80%"}</span>}
         </div>
       )}
@@ -307,21 +307,21 @@ export function UsageQuotaPanel() {
         </div>
       )}
 
-      <SettingsDisclosure title="用量提醒与限额" description={config.tokenLimit > 0 ? `${config.period === "daily" ? "每日" : "每月"} ${formatTokens(config.tokenLimit)} Token · ${config.enforcement === "block" ? "达到上限暂停手动发送" : "达到上限提醒"}` : "未设置上限 · 可选的本机手动发送限制"}>
+      <SettingsDisclosure title="用量提醒与限额" description={config.tokenLimit > 0 ? `${config.period === "daily" ? "每日" : "每月"} ${formatTokens(config.tokenLimit)} Token · ${config.enforcement === "block" ? "达到上限暂停手动发送" : "达到上限提醒"}` : "未设置上限"}>
       <div className="quota-panel__section quota-panel__config">
         <div className="quota-panel__config-grid">
           <label className="quota-panel__config-row"><span>配额周期</span><Select className="form-control" value={config.period} onChange={(event) => persistConfig({ ...config, period: event.target.value as Period }, true)}><option value="daily">每日</option><option value="monthly">每月</option></Select></label>
           <label className="quota-panel__config-row"><span>Token 上限</span><input className="form-control" type="number" min="0" value={config.tokenLimit > 0 ? config.tokenLimit : ""} placeholder="不限" onChange={(event) => persistConfig({ ...config, tokenLimit: Math.max(0, Number.parseInt(event.target.value, 10) || 0) })} /></label>
           <label className="quota-panel__config-row"><span>达到上限</span><Select className="form-control" value={config.enforcement ?? "warn"} onChange={(event) => persistConfig({ ...config, enforcement: event.target.value as "warn" | "block" })}><option value="warn">仅提醒</option><option value="block">暂停手动发送</option></Select></label>
         </div>
-        <p className="quota-panel__config-note">配额只限制本桌面端的手动发送；自动化和其他客户端仍可继续消耗服务商配额。</p>
+        {!quota && <p className="quota-panel__config-note">限额仅适用于本机手动发送。</p>}
       </div>
 
       </SettingsDisclosure>
-      <SettingsDisclosure title="成本估算费率" description="可选 · 为没有返回成本的模型设置本地估算价格">
+      <SettingsDisclosure title="成本估算费率" description="服务未提供可用费用时，按本机费率估算。">
       <div className="quota-panel__section quota-panel__rates">
-        <p>仅在运行时没有返回可信成本时使用，单位为 USD / 百万 Token；修改后会即时重新估算历史记录。</p>
-        {modelIds.length === 0 ? <div className="quota-panel__empty">完成一次模型调用后，这里会列出可配置的模型。</div> : (
+        <p>费率单位为美元 / 百万 Token，保存后会重新估算历史费用。</p>
+        {modelIds.length === 0 ? <div className="quota-panel__empty">调用模型后可为它设置费率。</div> : (
           <>
             <div className="quota-panel__rate-table">
               <div className="quota-panel__rate-row quota-panel__rate-row--head"><span>模型</span><span>输入 $/M</span><span>输出 $/M</span></div>
@@ -339,7 +339,7 @@ export function UsageQuotaPanel() {
       </div>
 
       </SettingsDisclosure>
-      <SettingsDisclosure title="用量明细与导出" description={`已记录 ${records.length} 个轮次 · 查看最近记录、导出 JSON 或清空本机记录`}>
+      <SettingsDisclosure title="用量明细与导出" description={`本机已记录 ${records.length} 个轮次`}>
       <div className="quota-panel__stats quota-panel__stats--details">
         <div className="quota-panel__stat"><strong>{formatTokens(summary.modelCalls)}</strong><span>模型调用</span></div>
         <div className="quota-panel__stat"><strong>{summary.requestCount.toLocaleString()}</strong><span>用户轮次</span></div>

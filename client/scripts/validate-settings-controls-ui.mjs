@@ -51,7 +51,7 @@ async function inspect(page, context) {
         clipped:element.scrollWidth > element.clientWidth + 2,
       };
     });
-    const exceptions = ".settings-search__results > button,.personal-memory__toolbar [role=tab],.settings-navigation__item,.settings-view-tabs__item,.settings-modal__close,.model-connections__source,.model-settings__connection,.model-settings__manage-entry,.models-settings-panel__editor-close,.model-connection-editor__chips button,.models-settings-panel__advanced-toggle,.theme-toggle__btn,.resources-panel__tab,.memory-editor__close,.archived-settings__scope,.notification-filter,.notification-row__mark,.notification-row__session,.notify-advanced__toggle,.quota-panel__period-btn,.storage-panel__entry-name--button,.help-card";
+    const exceptions = ".settings-search__results > button,.personal-memory__toolbar [role=tab],.settings-navigation__item,.settings-view-tabs__item,.settings-modal__close,.provider-card__badge--error,.models-settings-panel__editor-close,.model-connection-editor__chips button,.theme-toggle__btn,.resources-panel__tab,.memory-editor__close,.archived-settings__scope,.notification-filter,.notification-row__mark,.notification-row__session,.notify-advanced__toggle,.quota-panel__period-btn,.storage-panel__entry-name--button,.help-card";
     const unmanaged = [...root.querySelectorAll("button")].filter(visible).filter(element => !element.matches(`.settings-btn,.form-button,.echo-button,.btn,${exceptions}`)).map(element => ({name:element.textContent.trim(),classes:element.className}));
     const fields = [...root.querySelectorAll("input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=hidden]),select,textarea")].filter(visible).filter(element => !element.closest(".archived-settings__search")).map(element => {
       const css = getComputedStyle(element);
@@ -104,7 +104,7 @@ try {
       assert(Math.abs(await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize)) - 16*font/13) < .01,`${surface}: requested reading size was reset`);
       await inspect(page,{surface,width,height,theme,font});
       if(width===1440 && ["model","agent-mail","weixin-unconnected","notify-channels","general","personalize","memory","usage","data","security","help","agent-settings","weixin-connected","cloud-storage"].includes(surface)) {
-        await page.locator(".settings-modal__location").click();
+        await page.evaluate(() => document.activeElement?.blur());
         await page.screenshot({path:join(output,`${surface}-${theme}.png`)});
       }
       if (width === 1024 && ["general", "usage", "security"].includes(surface)) await page.screenshot({path:join(output,`${surface}-${theme}-1024.png`)});
@@ -112,20 +112,20 @@ try {
         await page.getByRole("combobox", { name: "选择云存储源" }).selectOption("review-dav");
         await page.getByText("浏览云端文件", { exact: true }).waitFor();
       }
+      if (surface === "data") {
+        await page.getByRole("button", { name: "打开文件夹", exact: true }).waitFor();
+        assert(await page.getByText("/Users/review/.echo-agent", { exact: true }).isVisible());
+        assert.equal(await page.getByText("查看备份范围", { exact: true }).count(), 0);
+        assert.equal(await page.getByText("旧版工作台资料", { exact: true }).count(), 0);
+      }
       const secondarySelector = {
-        model: ".model-connections__facts",
         memory: ".personal-memory__legacy .resources-panel",
         security: ".permission-rule-builder",
-        data: ".settings-path-value",
         "agent-settings": 'input[id="advanced-monitor-endpoint"]',
         usage: ".quota-panel__config-grid",
         "cloud-storage": ".storage-panel__breadcrumb",
       }[surface];
       if (secondarySelector) assert.equal(await page.locator(secondarySelector).isVisible(),false,`${surface}: secondary details crowd the initial page`);
-      if (surface === "model") {
-        await page.getByRole("button",{name:"管理模型连接",exact:true}).click();
-        await page.getByRole("group",{name:"模型连接",exact:true}).getByRole("button").first().click();
-      }
       if (surface === "memory") {
         await page.getByRole("button",{name:"管理",exact:true}).click();
         await page.getByRole("button",{name:"更多",exact:true}).click();
@@ -140,11 +140,13 @@ try {
       if (secondarySelector) assert.equal(await page.locator(secondarySelector).isVisible(),true,`${surface}: secondary controls cannot be reached`);
       if (await disclosures.count()) await inspect(page,{surface:`${surface}-details`,width,height,theme,font});
       if(surface==="model") {
-        await page.getByRole("button",{name:"返回连接管理",exact:true}).click();
-        await page.getByRole("button",{name:"添加模型连接",exact:true}).click();
-        await inspect(page,{surface:"model-editor",width,height,theme,font});
-        await page.getByRole("dialog",{name:"添加模型连接",exact:true}).getByRole("button",{name:"更多设置",exact:true}).click();
-        await inspect(page,{surface:"model-editor-advanced",width,height,theme,font});
+        await page.getByRole("button",{name:"添加模型",exact:true}).click();
+        const modelEditor = page.getByRole("dialog",{name:"添加模型",exact:true});
+        await modelEditor.getByLabel("供应商",{exact:true}).waitFor();
+        await inspect(page,{surface:"model-provider-select",width,height,theme,font});
+        await modelEditor.getByLabel("供应商",{exact:true}).selectOption("custom");
+        await modelEditor.getByLabel("接口地址",{exact:true}).waitFor();
+        await inspect(page,{surface:"model-editor-new",width,height,theme,font});
       }
       if(surface==="cloud-storage") {
         await page.getByRole("button",{name:"添加存储源",exact:true}).click();

@@ -946,13 +946,29 @@ export interface ModelEntry {
   maxOutputTokens?: number;
   /** Explicitly remove a saved maximum response length; omitted values keep it. */
   clearMaxOutputTokens?: boolean;
+  /** Model-specific declarations to update. Omitted capabilities retain their existing configuration. */
+  capabilityOverrides?: ModelCapabilities;
   managed?: boolean;
+}
+
+export type ModelReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface ModelCapabilities {
+  tools?: boolean;
+  images?: boolean;
+  reasoning?: boolean;
+  reasoningEffort?: ModelReasoningEffort;
+  reasoningEfforts?: ModelReasoningEffort[];
+  clearReasoningEffort?: boolean;
 }
 
 /** Result of providers_list: every provider + every model, joined by providerId. */
 export interface ProviderListModel {
   providers: ModelProviderEntry[];
   models: ModelEntry[];
+  /** Explicit model or connection declarations keyed by local model ID. */
+  modelCapabilities?: Record<string, ModelCapabilities>;
+  providerCapabilities?: Record<string, ModelCapabilities>;
 }
 
 /**
@@ -1046,8 +1062,8 @@ export async function providersSaveModel(model: ModelEntry): Promise<string> {
   return invoke<string>("providers_save_model", { model });
 }
 
-export async function providersDeleteProvider(id: string): Promise<void> {
-  await invoke<void>("providers_delete_provider", { id });
+export async function providersDeleteProvider(id: string, onlyIfEmpty = false): Promise<void> {
+  await invoke<void>("providers_delete_provider", { id, onlyIfEmpty });
 }
 
 export async function providersDeleteModel(modelId: string): Promise<void> {

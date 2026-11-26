@@ -69,9 +69,9 @@ describe("设置中的任务浏览器管理",()=>{
     fireEvent.change(select(),{target:{value:"b"}});await waitFor(()=>expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(client.automationClearBrowserData).not.toHaveBeenCalled();
   });
-  it("没有任务时提供选择提示，不发送空会话查询",async()=>{
+  it("没有任务时显示空状态，不发送空会话查询",async()=>{
     useSessionStore.setState({sessionId:null});useSessionsStore.setState({independent:[]});render(<BrowserTaskSettings/>);
-    expect(screen.getByText("选择需要管理的任务，其他任务的浏览器数据不受影响。")).toBeInTheDocument();
+    expect(screen.getByText("暂无可管理的任务。")).toBeInTheDocument();
     expect(client.automationStatus).not.toHaveBeenCalled();
   });
   it("未打开的后台任务仍在运行时也禁用清理",async()=>{
@@ -109,11 +109,11 @@ describe("设置中的任务浏览器管理",()=>{
 
   it("配对前说明网络边界，生成地址后可主动取消并使用任务浏览器",async()=>{
     render(<BrowserTaskSettings/>);
-    expect(await screen.findByText(/所连接的网页沿用原浏览器的网络权限/)).toBeVisible();
+    expect(await screen.findByText(/沿用原浏览器的网络权限/)).toBeVisible();
     fireEvent.click(screen.getByRole("button",{name:"连接已登录浏览器"}));
     expect(await screen.findByRole("textbox",{name:"浏览器连接地址"})).toHaveValue("ws://127.0.0.1:12345/owned-ticket");
     expect(screen.getByRole("checkbox",{name:/允许导航到本机与内网页面/})).not.toBeChecked();
-    expect(screen.getByText(/网页自身的请求沿用原浏览器的网络权限/)).toBeVisible();
+    expect(screen.getByText(/页面自身的请求不受此开关限制/)).toBeVisible();
     expect(client.automationUseIsolatedBrowser).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button",{name:"使用任务浏览器"}));
     await waitFor(()=>expect(client.automationUseIsolatedBrowser).toHaveBeenCalledWith("a"));

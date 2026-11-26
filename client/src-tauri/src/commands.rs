@@ -802,7 +802,7 @@ pub(crate) async fn select_automation_execution_model(
     if pinned.is_some() && !automation.cross_provider_fallback {
         return Ok(primary);
     }
-    let catalog = crate::providers::providers_list();
+    let catalog = crate::providers::providers_list()?;
     let (configured, _) = crate::providers::usable_model_ids();
     let status = auth_status(state);
     let eligible = configured
@@ -3294,6 +3294,8 @@ mod tests {
             }
         }
         let catalog = ProviderListModel {
+            model_capabilities: Default::default(),
+            provider_capabilities: Default::default(),
             providers: [("first", false), ("second", false), ("org", true)]
                 .into_iter()
                 .map(|(id, managed)| ModelProviderEntry {

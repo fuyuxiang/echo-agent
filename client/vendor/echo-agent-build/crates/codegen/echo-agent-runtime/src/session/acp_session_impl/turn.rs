@@ -535,6 +535,7 @@ impl SessionActor {
         request: TurnInputRequest,
     ) -> PromptTurnResult {
         let _active = echo_agent_telemetry::activity::TURNS_ACTIVE.enter();
+        self.refresh_model_capabilities().await;
         let TurnInputRequest {
             prompt_id,
             input_origin,

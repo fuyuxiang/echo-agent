@@ -45,7 +45,7 @@ describe("本地检索模型准备",()=>{
   it("内置资源异常时提供修复，保持关键词回退且不自动联网",async()=>{
     render(<LocalRetrievalModels/>);
     expect(await screen.findByRole("button",{name:"修复本地模型"})).toBeEnabled();
-    expect(screen.getByText(/关键词搜索仍可使用/)).toBeInTheDocument();
+    expect(screen.getByText(/可使用关键词搜索/)).toBeInTheDocument();
     expect(api.invoke).toHaveBeenCalledWith("retrieval_models_status");
     expect(api.invoke).not.toHaveBeenCalledWith("retrieval_models_prepare",expect.anything());
   });
@@ -81,7 +81,7 @@ describe("本地检索模型准备",()=>{
     api.invoke.mockResolvedValue({...missing,state:"ready",source:"bundled",embeddingReady:true,rerankerReady:true});
     const view=render(<LocalRetrievalModels/>);
     expect(await screen.findByText("本地语义检索已就绪")).toBeInTheDocument();
-    expect(screen.getByText(/用于回答的资料会交给当前对话模型/)).toBeInTheDocument();
+    expect(screen.getByText(/用于回答的资料会发送给当前对话模型/)).toBeInTheDocument();
     expect(screen.getByText(/客户端已内置模型，无需下载/)).toBeInTheDocument();
     expect(api.invoke.mock.calls.every(([command])=>command==="retrieval_models_status")).toBe(true);
     const maintenance=screen.getByText("模型维护").closest("details");

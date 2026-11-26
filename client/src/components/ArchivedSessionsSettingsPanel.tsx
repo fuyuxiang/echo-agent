@@ -1,5 +1,5 @@
 import type { SessionHistoryControls } from "@/lib/types";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ArchiveRestore,
   CheckSquare2,
@@ -16,6 +16,7 @@ import { useSessionsStore } from "@/stores/sessions-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import type { SessionStatus } from "@/lib/types";
 import { useAppDialog } from "./AppDialog";
+import { SettingsSection } from "./SettingsSections";
 
 type ArchiveScope = "all" | "standalone" | "project";
 type BulkAction = "restore" | "delete";
@@ -32,6 +33,7 @@ interface ArchivedSessionEntry {
 }
 
 interface ArchivedSessionsSettingsPanelProps {
+  navigation: ReactNode;
   sessionHistory?: SessionHistoryControls;
   onRestoreSession?: (sessionId: string, archived: boolean, cwd?: string) => Promise<void>;
   onDeleteSession?: (sessionId: string, cwd?: string) => Promise<void>;
@@ -69,12 +71,8 @@ function formatRecentActivity(value?: string): string {
   }).format(date)}`;
 }
 
-/**
- * Canonical archive manager. Archive is persisted session content rather than
- * an application preference, but Settings > Data & Support is the predictable
- * low-frequency management surface used by ChatGPT-class clients.
- */
 export function ArchivedSessionsSettingsPanel({
+  navigation,
   onRestoreSession,
   sessionHistory,
   onDeleteSession,
@@ -330,25 +328,21 @@ export function ArchivedSessionsSettingsPanel({
   };
 
   return (
-    <div className="settings-section archived-settings" aria-busy={bulkBusy}>
-      <header className="settings-section__header archived-settings__header">
-        <div className="settings-section__heading">
-          <h2 className="settings-section__title">已归档会话</h2>
-          <p className="settings-section__desc">已归档会话会保留完整历史。你可以在这里恢复并继续任务，也可以确认永久删除。</p>
-        </div>
+    <SettingsSection navigation={navigation} title="已归档会话" busy={bulkBusy}
+      desc="恢复会话可让它重新出现在原任务或项目中。"
+      actions={archived.length > 0 && (
         <button
           type="button"
           className="settings-btn"
           onClick={toggleSelectionMode}
-          disabled={archived.length === 0 || bulkBusy}
+          disabled={bulkBusy}
           aria-pressed={selectionMode}
         >
           {selectionMode ? <X size={15} /> : <ListChecks size={15} />}
           {selectionMode ? "完成" : "批量管理"}
         </button>
-      </header>
-
-      <div className="archived-settings__toolbar">
+      )}>
+      {archived.length > 0 && <div className="archived-settings__toolbar">
         <label className="archived-settings__search">
           <Search size={16} aria-hidden="true" />
           <input
@@ -378,7 +372,7 @@ export function ArchivedSessionsSettingsPanel({
             </button>
           ))}
         </div>
-      </div>
+      </div>}
 
       {selectionMode && archived.length > 0 && (
         <div className="archived-settings__bulk-bar" aria-label="批量管理已归档会话">
@@ -513,6 +507,6 @@ export function ArchivedSessionsSettingsPanel({
         <button type="button" className="settings-btn" disabled={sessionHistory.loading} onClick={sessionHistory.refresh}>刷新历史</button>
       )}
       {dialog}
-    </div>
+    </SettingsSection>
   );
 }

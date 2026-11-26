@@ -60,6 +60,7 @@ impl SessionActor {
                 context_window: new_context_window,
                 reasoning_effort: sampling_config.reasoning_effort,
                 stream_tool_calls: Some(sampling_config.stream_tool_calls),
+                supports_tool_calls: sampling_config.supports_tool_calls,
             });
         let existing = self.chat_state_handle.get_credentials().await;
         let session_key = self
@@ -78,6 +79,7 @@ impl SessionActor {
                 client_version: sampling_config.client_version.clone(),
             });
         self.invalidate_model_auth_memo();
+        self.live_model_capabilities.replace(self.models_manager.live_model_capabilities(&model_id));
         self.signals_handle()
             .record_model_usage(&sampling_config.model);
         if apply_prompt_override && !skip_prompt_rewrite {

@@ -34,7 +34,8 @@ describe("安全与权限设置", () => {
     const { container } = render(<SecuritySettingsPanel />);
     expect(await screen.findByText("已授权")).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "浏览器操作状态" })).toHaveTextContent("已就绪");
-    expect(screen.getByText(/在聊天中说明电脑任务即可开始/)).toBeVisible();
+    expect(screen.getByText(/在对话中描述电脑任务/)).toBeVisible();
+    expect(screen.queryByText(/移动鼠标不会暂停任务|可能发送给当前模型/)).not.toBeInTheDocument();
     expect(container.querySelectorAll("details[open]")).toHaveLength(0);
     openRules();
     const list = screen.getByRole("list", { name: "权限规则列表" });
@@ -49,7 +50,7 @@ describe("安全与权限设置", () => {
     actions.request.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
     render(<SecuritySettingsPanel />);
     expect(await screen.findByText("需要授权")).toBeInTheDocument();
-    expect(screen.getByRole("group", { name: "电脑操作状态" })).toHaveTextContent("缺少系统权限：屏幕录制、辅助功能");
+    expect(screen.getByRole("group", { name: "电脑操作状态" })).toHaveTextContent("需要屏幕录制、辅助功能权限");
     expect(actions.request).not.toHaveBeenCalled();
     const button = screen.getByRole("button", { name: "前往授权" });
     fireEvent.click(button); fireEvent.click(button);

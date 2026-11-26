@@ -65,6 +65,11 @@ export function localLegacyWorkspaceUi(): Record<string, string> {
   }));
 }
 
+export async function hasLegacyWorkspaceArchive(): Promise<boolean> {
+  const { archive } = splitLegacyWorkspaceUi(localLegacyWorkspaceUi());
+  return Object.keys(archive).length > 0 || await invoke<boolean>("backup_has_legacy_ui");
+}
+
 export async function exportLegacyWorkspaceArchive(): Promise<string | null> {
   const { archive } = splitLegacyWorkspaceUi(localLegacyWorkspaceUi());
   return invoke("backup_export_ui_archive", { kind: "legacyWorkspace", records: archive });

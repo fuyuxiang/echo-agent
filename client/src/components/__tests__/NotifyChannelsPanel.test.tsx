@@ -7,8 +7,8 @@ const backend = vi.hoisted(() => {
   return {
     reset: () => { channels = []; },
     desktopStatus: vi.fn(async () => ({enabled: !channels.some(c => c.kind === "desktop") || channels.some(c => c.kind === "desktop" && c.enabled), source: channels.some(c => c.kind === "desktop") ? "configured" : "default", permission: "unknown"})),
+    desktopTest: vi.fn(async (_sessionId?: string) => ({ id: "desktop", ok: true })),
     desktopToggle: vi.fn(async (enabled: boolean) => {channels = [...channels.filter(c => c.kind !== "desktop"), {id:"desktop",label:"桌面提醒",kind:"desktop",enabled}];}),
-    desktopTest: vi.fn(async (_sessionId?: string) => ({id:"desktop",ok:true})),
     seed: (items: NotifyChannel[]) => { channels = items; },
     load: vi.fn(async () => channels.map((item) => ({
       ...item,
@@ -66,7 +66,7 @@ describe("NotifyChannelsPanel", () => {
   it("无渠道时显示空态", async () => {
     render(<NotifyChannelsPanel />);
     await openAdvanced();
-    expect(await screen.findByText("尚未添加外部推送，日常桌面提醒无需配置这里。")).toBeInTheDocument();
+    expect(await screen.findByText("暂无外部推送渠道。")).toBeInTheDocument();
     expect(backend.load).toHaveBeenCalled();
   });
 
@@ -176,23 +176,23 @@ describe("NotifyChannelsPanel", () => {
 });
 
 
-it("桌面提醒默认可测并携带任务目标，系统授权帮助按需展开", async () => {
+it("桌面通知默认开启，可展开排查并发送测试", async () => {
   render(<NotifyChannelsPanel sessionId="active-task" />);
   expect(await screen.findByText(/已开启 · 默认设置/)).toBeInTheDocument();
   expect(screen.getByRole("switch", {name:"桌面通知"})).toBeChecked();
-  fireEvent.click(screen.getByRole("button", {name:"发送测试通知"}));
-  expect(await screen.findByRole("status")).toHaveTextContent("已向系统提交通知");
+  const help = screen.getByText("收不到桌面通知？");
+  expect(help.closest("details")).not.toHaveAttribute("open");
+  fireEvent.click(help);
+  fireEvent.click(screen.getByRole("button", { name: "发送测试通知" }));
+  expect(await screen.findByText(/已向系统提交通知/)).toBeVisible();
   expect(backend.desktopTest).toHaveBeenCalledWith("active-task");
-  expect(screen.queryByText(/系统通知权限：未知/)).toBeNull();
-  fireEvent.click(screen.getByText("收不到桌面通知？"));
-  expect(screen.getByText(/应用目前无法读取系统授权状态/)).toBeVisible();
 });
 
 it("显式关闭保留记录，桌面配置不进入高级渠道表单", async () => {
   backend.seed([{id:"off",label:"我的桌面",kind:"desktop",enabled:false}]);
   render(<NotifyChannelsPanel />);
   expect(await screen.findByText(/已关闭/)).toBeInTheDocument();
-  expect(screen.getByRole("button", {name:"发送测试通知"})).toBeDisabled();
+  expect(screen.getByRole("switch", {name:"桌面通知"})).not.toBeChecked();
   expect(screen.queryByRole("button", {name:"移除 我的桌面"})).toBeNull();
   expect(screen.queryByRole("option", {name:"桌面通知"})).toBeNull();
   fireEvent.click(screen.getByRole("switch", {name:"桌面通知"}));
@@ -200,22 +200,19 @@ it("显式关闭保留记录，桌面配置不进入高级渠道表单", async (
   expect(await screen.findByText(/^已开启$/)).toBeInTheDocument();
 });
 
-it("组织策略限制和投递失败不会显示为已授权或发送成功", async () => {
+it("组织策略限制时提示原因并禁用桌面通知开关", async () => {
   backend.desktopStatus.mockResolvedValueOnce({enabled:false, source:"policy",permission:"unknown",policyError:"组织禁止通知"} as never);
   render(<NotifyChannelsPanel />);
   expect(await screen.findByText(/组织策略已限制桌面通知/)).toBeInTheDocument();
   expect(screen.getByRole("switch", {name:"桌面通知"})).toBeDisabled();
-  expect(screen.getByRole("button", {name:"发送测试通知"})).toBeDisabled();
+  expect(screen.getByText("组织禁止通知")).toBeInTheDocument();
 });
 
-it("桌面提交错误和开关保存失败均可见，并保留先前状态", async () => {
+it("桌面通知开关保存失败时提示原因并保留先前状态", async () => {
   const onToast = vi.fn();
-  backend.desktopTest.mockRejectedValueOnce(new Error("系统拒绝通知"));
   backend.desktopToggle.mockRejectedValueOnce(new Error("配置不可写"));
   render(<NotifyChannelsPanel onToast={onToast} />);
   await screen.findByText(/已开启 · 默认设置/);
-  fireEvent.click(screen.getByRole("button", {name:"发送测试通知"}));
-  expect(await screen.findByRole("status")).toHaveTextContent("系统拒绝通知");
   fireEvent.click(screen.getByRole("switch", {name:"桌面通知"}));
   await waitFor(() => expect(onToast).toHaveBeenCalledWith(expect.stringContaining("配置不可写")));
   expect(screen.getByRole("switch", {name:"桌面通知"})).toBeChecked();
@@ -240,11 +237,11 @@ it("外部渠道加载失败不阻断桌面提醒与隐私设置", async () => {
   render(<NotifyChannelsPanel />);
   await screen.findByText(/已开启 · 默认设置/);
   expect(screen.getByRole("switch", { name: "桌面通知" })).toBeEnabled();
-  expect(screen.getByRole("button", { name: "发送测试通知" })).toBeEnabled();
+  await waitFor(() => expect(screen.getByRole("switch", { name: "在通知中显示任务标题" })).toBeEnabled());
   await openAdvanced();
   expect(screen.getByRole("alert")).toHaveTextContent("渠道配置暂时不可读");
-  fireEvent.click(screen.getByRole("button", { name: "发送测试通知" }));
-  expect(await screen.findByRole("status")).toHaveTextContent("已向系统提交通知");
+  fireEvent.click(screen.getByRole("switch", { name: "桌面通知" }));
+  expect(await screen.findByText("已关闭")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "重试" }));
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
 });

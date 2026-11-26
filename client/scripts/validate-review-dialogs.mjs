@@ -83,13 +83,16 @@ try {
     for (const form of ["project", "expert", "model"]) {
       const surface = form === "project" ? "page&label=项目" : form === "expert" ? "capabilities" : "model";
       await page.goto(`http://127.0.0.1:1439/__ui-review?surface=${surface}&theme=${theme}`);
-      await page.getByRole("button", { name: form === "project" ? "新建项目" : form === "expert" ? "创建专家" : "添加模型连接", exact: true }).first().click();
+      await page.getByRole("button", { name: form === "project" ? "新建项目" : form === "expert" ? "创建专家" : baseline ? "添加模型连接" : "添加模型", exact: true }).first().click();
       const shell = form === "model" ? ".model-connection-editor" : ".create-colleague-dialog";
       await page.locator(shell).waitFor();
       const header = form === "model" ? ".models-settings-panel__editor-header" : ".create-colleague-header";
       const body = form === "model" ? ".model-connection-editor__body" : ".create-colleague-body";
       const footer = form === "model" ? ".models-settings-panel__editor-footer" : ".create-colleague-footer";
-      if (form === "model") await page.getByRole("button", { name: "更多设置", exact: true }).click();
+      if (form === "model" && baseline) await page.getByRole("button", { name: "更多设置", exact: true }).click();
+      if (form === "model" && !baseline) {
+        await page.getByLabel("供应商", { exact: true }).selectOption("custom");
+      }
       if (form !== "model") await page.locator(`${shell} textarea`).first().fill("项目约束、结果要求与操作说明。".repeat(45));
       await inspect(`form-${form}-${width}-${theme}`, shell, header, footer, body);
       if (form === "project") {
@@ -107,7 +110,7 @@ try {
       if (!baseline) {
         await page.locator(body).evaluate(el => { el.scrollTop = el.scrollHeight; });
         await inspect(`form-${form}-scrolled-${width}-${theme}`, shell, header, footer, body);
-        const field = form === "model" ? page.getByLabel(/^连接名称/) : form === "expert" ? page.getByRole("textbox", { name: "专家名称", exact: true }) : page.getByPlaceholder("请输入项目名称", { exact: true });
+        const field = form === "model" ? page.getByLabel("模型名称", { exact: true }) : form === "expert" ? page.getByRole("textbox", { name: "专家名称", exact: true }) : page.getByPlaceholder("请输入项目名称", { exact: true });
         await field.fill("回归草稿");
         await page.keyboard.press("Escape");
         await page.getByRole("alertdialog", { name: "舍弃未保存的修改？" }).waitFor();
@@ -120,30 +123,25 @@ try {
     await page.setViewportSize({ width: 1024, height: 680 });
     for (const state of ["loading", "empty", "load-error", "save-error"]) {
       await page.goto(`http://127.0.0.1:1439/__ui-review?surface=model&modelState=${state}&theme=dark`);
-      await page.getByRole("button", { name: "同步模型", exact: true }).click();
-      const dialog = page.getByRole("dialog", { name: "同步模型", exact: true });
-      await dialog.waitFor();
-      if (state === "loading") await dialog.getByRole("status").waitFor();
-      if (state === "empty") await dialog.getByText("服务端没有返回模型，请关闭后使用“手动添加”。").waitFor();
-      if (state === "load-error") await dialog.getByRole("alert").waitFor();
+      await page.getByRole("button", { name: "添加模型", exact: true }).click();
+      const dialog = page.getByRole("dialog", { name: "添加模型", exact: true });
+      await dialog.getByLabel("供应商", { exact: true }).selectOption("saved:review-model-provider");
+      const discover = dialog.getByRole("button", { name: "从服务获取模型", exact: true });
+      await discover.click();
+      if (state === "loading") assert(await discover.isDisabled());
+      if (state === "empty") await dialog.getByText("服务未返回可添加的模型，可手动填写模型 ID。").waitFor();
+      if (state === "load-error") await dialog.getByRole("status").filter({ hasText: "模型目录暂不可用" }).waitFor();
       if (state === "save-error") {
-        await dialog.getByRole("checkbox").first().check();
-        await dialog.getByRole("button", { name: "添加 1 个模型", exact: true }).click();
+        await dialog.getByRole("radio", { name: "review-model-1", exact: true }).check();
+        await dialog.getByRole("button", { name: "保存模型", exact: true }).click();
         await dialog.getByRole("alert").scrollIntoViewIfNeeded();
-        assert.equal(await dialog.getByRole("checkbox").count(), 36, "save failure hides the editable model list");
-        assert.ok(await dialog.getByRole("checkbox").first().isChecked(), "save failure discards the selected model");
+        assert.equal(await dialog.getByRole("radio").count(), 36, "save failure hides the discovered models");
+        assert.ok(await dialog.getByRole("radio", { name: "review-model-1", exact: true }).isChecked(), "save failure discards the selected model");
       }
-      await inspect(`model-import-${state}-1024-dark`, ".models-settings-panel__editor", ".models-settings-panel__editor-header", ".models-settings-panel__editor-footer", ".models-settings-panel__editor-body");
+      await inspect(`model-discovery-${state}-1024-dark`, ".model-connection-editor", ".models-settings-panel__editor-header", ".models-settings-panel__editor-footer", ".model-connection-editor__body");
       if (state === "load-error") {
-        await dialog.getByRole("button", { name: "重试获取模型", exact: true }).click();
-        await dialog.getByRole("checkbox").first().waitFor();
-        assert.equal(await dialog.getByRole("alert").count(), 0, "successful retry retains the load error");
-      }
-      if (state === "save-error") {
-        await dialog.getByRole("checkbox").first().uncheck();
-        await dialog.getByRole("checkbox").nth(1).check();
-        assert.equal(await dialog.getByRole("alert").count(), 0, "editing after failure retains a stale save error");
-        assert.ok(await dialog.getByRole("button", { name: "添加 1 个模型", exact: true }).isEnabled());
+        await discover.click();
+        await dialog.getByRole("radio").first().waitFor();
       }
     }
     await page.setViewportSize({ width: 1024, height: 680 });

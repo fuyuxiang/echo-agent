@@ -36,7 +36,14 @@ impl ModelsManager {
         let Some(effort) = effort else {
             return;
         };
-        if !self.model_supports_reasoning_effort(&sampling.model) {
+        let profile = crate::agent::model_capabilities::model_capability_profile(
+            &sampling.model,
+            &sampling.base_url,
+            &sampling.api_backend,
+        );
+        if !self.model_supports_reasoning_effort(&sampling.model)
+            || profile.is_some_and(|profile| !profile.reasoning_efforts.contains(&effort))
+        {
             // SummaryClient stays silent on unsupported; the spawn/switch path already warns the same hint.
             if matches!(target, EffortTarget::NewSession | EffortTarget::ModelSwitch) {
                 tracing::warn!(

@@ -1241,7 +1241,7 @@ export function Composer({
         "echo-composer-wrap" + (homeLayout ? " echo-composer-wrap--home" : "")
       }
     >
-      {Object.keys(storageErrors).length > 0 && <div role="alert" className="composer-storage-error">本机保存失败，当前输入仍保留在窗口中。请先复制内容或到「设置 → 数据管理 → 备份与目录」导出备份，再重试保存。{Object.values(storageErrors)[0]}</div>}
+      {Object.keys(storageErrors).length > 0 && <div role="alert" className="composer-storage-error">本机保存失败，当前输入仍保留在窗口中。请先复制内容或到「设置 → 数据管理 → 本机数据」导出备份，再重试保存。{Object.values(storageErrors)[0]}</div>}
       <section
         className={composerCls}
         onClick={(event) => {

@@ -208,7 +208,7 @@ export function SearchOverlay({
         throw new Error("会话不存在、已归档，或当前无权访问");
       }
       if (summary.archived) {
-        throw new Error("该会话已归档，请前往“设置 → 数据管理 → 已归档”恢复");
+        throw new Error("该会话已归档，请前往「设置 → 数据管理 → 已归档会话」恢复");
       }
       if (summary.hidden) {
         throw new Error("该记录属于子代理，请从所属主任务的子代理面板打开");

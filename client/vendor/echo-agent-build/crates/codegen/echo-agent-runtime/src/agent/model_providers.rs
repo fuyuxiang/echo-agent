@@ -23,6 +23,11 @@ pub struct ModelProviderConfig {
     pub auth_provider: Option<String>,
     pub auth: Option<crate::auth::AuthProviderConfig>,
     pub context_window: Option<u64>,
+    pub supports_tool_calls: Option<bool>,
+    pub supports_images: Option<bool>,
+    pub supports_reasoning_effort: Option<bool>,
+    pub reasoning_effort: Option<echo_agent_sampling_types::ReasoningEffort>,
+    pub reasoning_efforts: Vec<echo_agent_sampling_types::ReasoningEffortOption>,
     // EchoAgent Desktop annotations. Keeping them in the parsed shape avoids
     // false unknown-field warnings while the Runtime intentionally ignores UI
     // labels and organization lifecycle metadata.
@@ -206,6 +211,13 @@ impl ConfigModelOverride {
         merged.api_backend = merged.api_backend.or_else(|| api_backend.clone());
         merged.auth_scheme = merged.auth_scheme.or(*auth_scheme);
         merged.context_window = merged.context_window.or(*context_window);
+        merged.supports_tool_calls = merged.supports_tool_calls.or(provider.supports_tool_calls);
+        merged.supports_images = merged.supports_images.or(provider.supports_images);
+        merged.supports_reasoning_effort = merged.supports_reasoning_effort.or(provider.supports_reasoning_effort);
+        merged.reasoning_effort = merged.reasoning_effort.or(provider.reasoning_effort);
+        if merged.reasoning_efforts.is_none() && !provider.reasoning_efforts.is_empty() {
+            merged.reasoning_efforts = Some(provider.reasoning_efforts.clone());
+        }
         // Inherited wholesale only when the model sets none of its own.
         if merged.extra_headers.is_empty() {
             merged.extra_headers = extra_headers.clone();

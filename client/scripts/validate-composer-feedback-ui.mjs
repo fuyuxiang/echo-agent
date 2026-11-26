@@ -103,14 +103,14 @@ try {
   await page.goto(`${base}/__ui-review?surface=notify-channels`, {waitUntil:"networkidle"});
   const desktop = page.getByRole("switch", {name:"桌面通知", exact:true});
   assert(await desktop.isChecked());
-  await page.getByRole("button",{name:"发送测试通知", exact:true}).click();
-  await page.getByRole("status").filter({hasText:"已向系统提交通知"}).waitFor();
   // The native checkbox is visually replaced by its labelled switch track.
   await desktop.locator("..").click();
   await page.getByText("已关闭", {exact:true}).waitFor();
   assert(!await desktop.isChecked());
-  assert(await page.getByRole("button",{name:"发送测试通知", exact:true}).isDisabled());
   await page.screenshot({path:join(output,"notifications.png")});
+  await desktop.locator("..").click();
+  await page.getByText("已开启", {exact:true}).waitFor();
+  assert(await desktop.isChecked());
   writeFileSync(join(output,"geometry.json"),JSON.stringify({centered:centeredEvidence,layouts:evidence,selections:selectionEvidence},null,2));
   console.log(`Passed ${centeredEvidence.length} centered home layouts, ${evidence.length} long-draft layouts and desktop notification interaction; evidence: ${output}`);
 } finally { await browser?.close(); await server.close(); }

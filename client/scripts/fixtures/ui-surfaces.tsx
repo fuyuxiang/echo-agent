@@ -544,6 +544,11 @@ Object.assign(window, {
         case "agents_defaults_get": return { defaultModel: "", defaultPermission: "ask", rememberToolApprovals: true };
         case "agent_auth_status": return { ready: false, providers: [], runtimeReady: false, synchronized: true, runtimeModels: [], reason: "尚未配置可用模型" };
         case "desktop_preferences_get": return { closeToTray, showNotificationTaskTitle: notificationTitlePreview };
+        case "echo_agent_data_dir": return "/Users/review/.echo-agent";
+        case "open_echo_agent_data_dir": return;
+        case "backup_last_error": return null;
+        case "backup_has_deferred_ui":
+        case "backup_has_legacy_ui": return false;
         case "desktop_preferences_save": closeToTray = args.closeToTray; return { closeToTray, showNotificationTaskTitle: notificationTitlePreview };
         case "desktop_notification_preview_save": notificationTitlePreview = args.showTaskTitle; return { closeToTray, showNotificationTaskTitle: notificationTitlePreview };
         case "notification_list": return notificationEntries;

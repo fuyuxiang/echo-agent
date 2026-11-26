@@ -17,7 +17,6 @@
 .security-settings__badge { display: inline-flex; align-items: center; flex-shrink: 0; padding: 4px 9px; border-radius: 999px; color: var(--echo-text-medium); background: var(--echo-bg-secondary); font-size: var(--echo-caption-size); line-height: 1.5; white-space: nowrap; }
 .security-settings__badge--ready { color: var(--echo-status-success); background: var(--echo-status-success-soft); }
 .security-settings__badge--attention { color: var(--echo-status-warning); background: var(--echo-status-warning-soft); }
-.security-settings__privacy { margin: 0; padding-top: 14px; border-top: 1px solid var(--echo-border-default); color: var(--echo-text-medium); font-size: var(--echo-caption-size); line-height: 1.7; }
 .security-settings__feedback { margin: 0 0 14px; color: var(--echo-text-medium); font-size: var(--echo-caption-size); line-height: 1.7; }
 .security-settings .settings-disclosure { margin: 0; }
 .security-settings .settings-disclosure__heading > span { color: var(--echo-text-medium); font-size: var(--echo-caption-size); }

@@ -6,6 +6,15 @@ import "@testing-library/jest-dom/vitest";
 vi.mock("@/lib/backup-client", async original => ({
   ...await original<typeof import("@/lib/backup-client")>(),
   exportBackup: vi.fn(),
+  inspectBackup: vi.fn(),
+  restoreBackup: vi.fn(),
+}));
+
+vi.mock("@/lib/legacy-workspace", async original => ({
+  ...await original<typeof import("@/lib/legacy-workspace")>(),
+  hasLegacyWorkspaceArchive: vi.fn().mockResolvedValue(false),
+  exportLegacyWorkspaceArchive: vi.fn(),
+  pendingExternalOperations: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/lib/agent-client", () => ({
@@ -19,6 +28,7 @@ vi.mock("@/lib/agent-client", () => ({
   commandsList: vi.fn().mockResolvedValue([]),
   exportTextFile: vi.fn().mockResolvedValue("/tmp/usage.csv"),
   echoAgentDataDir: vi.fn().mockResolvedValue("/tmp/.echo-agent"),
+  openEchoAgentDataDir: vi.fn().mockResolvedValue(undefined),
   desktopPreferencesGet: vi.fn().mockResolvedValue({ closeToTray: true, showNotificationTaskTitle: false }),
   desktopPreferencesSave: vi.fn(async (closeToTray: boolean) => ({ closeToTray, showNotificationTaskTitle: false })),
   desktopNotificationPreviewSave: vi.fn(async (showTaskTitle: boolean) => ({ closeToTray: true, showNotificationTaskTitle: showTaskTitle })),
@@ -66,14 +76,15 @@ vi.mock("@/lib/notify-channels", async (original) => ({
   ...await original<object>(),
   loadNotifyChannels: vi.fn(async () => []),
   loadDesktopNotifyStatus: vi.fn(async () => ({enabled:true,source:"default",permission:"unknown"})),
-  testDesktopNotify: vi.fn(async () => ({id:"desktop",ok:true})),
 }));
-import { testDesktopNotify } from "@/lib/notify-channels";
-import { exportBackup } from "@/lib/backup-client";
+import { exportLegacyWorkspaceArchive, hasLegacyWorkspaceArchive } from "@/lib/legacy-workspace";
+import { exportBackup, inspectBackup, restoreBackup } from "@/lib/backup-client";
 import { SettingsPanel } from "../SettingsPanel";
 import { ThemeProvider } from "../ThemeProvider";
 import {
   providersList,
+  echoAgentDataDir,
+  openEchoAgentDataDir,
   memoryConfigGet,
   memoryConfigSave,
   memoryList,
@@ -92,6 +103,7 @@ import {
 } from "@/lib/agent-client";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useProjectsStore } from "@/stores/projects-store";
+import { resetOrgSessionMirror, useOrgSessionStore } from "@/stores/org-session-store";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -240,10 +252,10 @@ describe("Settings navigation and search", () => {
     fireEvent.click(screen.getByRole("button", { name: "通知记录" }));
     fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "取消" }));
     fireEvent.change(screen.getByRole("combobox", { name: "搜索设置" }), { target: { value: "备份" } });
-    fireEvent.click(screen.getByRole("option", { name: /数据备份与恢复/ }));
+    fireEvent.click(screen.getByRole("option", { name: /备份与恢复/ }));
     fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "取消" }));
     expect(screen.getByRole("textbox", { name: "通知渠道显示名" })).toHaveValue("日报");
-    fireEvent.click(within(screen.getByText(/将任务事件发送到已配置的外部应用/)).getByRole("button", { name: "微信连接" }));
+    fireEvent.click(within(screen.getByRole("region", { name: "通知设置" })).getByRole("button", { name: "微信连接" }));
     fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "舍弃修改" }));
     await screen.findByRole("heading", { name: "微信连接", level: 2 });
   });
@@ -436,7 +448,7 @@ describe("SettingsPanel", () => {
     const pages = [
       ["通用", "通用"], ["通知", "通知设置"], ["微信连接", "微信连接"],
       ["模型", "模型"], ["高级设置", "高级设置"], ["记忆", "记忆"],
-      ["模型用量", "模型用量"], ["云存储", "云存储"], ["数据管理", "备份与恢复"],
+      ["模型用量", "模型用量"], ["云存储", "云存储"], ["数据管理", "本机数据"],
       ["安全与权限", "安全与权限"], ["帮助与更新", "帮助与更新"],
     ];
     for (const [label, heading] of pages) {
@@ -497,7 +509,7 @@ describe("SettingsPanel", () => {
 
     expect(await screen.findByRole("heading", { name: "操作权限", level: 3 }))
       .toBeInTheDocument();
-    expect(screen.getByText(/在聊天中说明电脑任务即可开始/)).toBeInTheDocument();
+    expect(screen.getByText(/在对话中描述电脑任务/)).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: /默认.*操作电脑/ })).toBeNull();
   });
 
@@ -686,16 +698,28 @@ describe("SettingsPanel", () => {
 
   it("点击模型导航返回首页前保护连接草稿", async () => {
     render(<ThemeProvider><SettingsPanel open initialSection="model" onClose={() => {}} /></ThemeProvider>);
-    fireEvent.click(await screen.findByRole("button", { name: "添加模型连接" }));
-    fireEvent.change(screen.getByLabelText("模型 ID"), { target: { value: "keep-draft" } });
+    fireEvent.click(await screen.findByRole("button", { name: "添加模型" }));
+    fireEvent.change(screen.getByLabelText("供应商"), { target: { value: "deepseek" } });
+    fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "keep-draft" } });
     fireEvent.click(within(screen.getByRole("navigation")).getByRole("button", { name: "模型" }));
     const warning = await screen.findByRole("alertdialog", { name: "舍弃未保存的修改？" });
     fireEvent.click(within(warning).getByRole("button", { name: "取消" }));
-    expect(screen.getByLabelText("模型 ID")).toHaveValue("keep-draft");
+    expect(screen.getByLabelText("模型名称")).toHaveValue("keep-draft");
     fireEvent.click(within(screen.getByRole("navigation")).getByRole("button", { name: "模型" }));
     fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "舍弃修改" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "添加模型连接" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "添加模型" })).toBeNull());
     expect(screen.getByRole("heading", { name: "模型", level: 2 })).toBeInTheDocument();
+  });
+
+  it("从通用搜索输入框时直接定位通用页的输入建议", async () => {
+    render(<ThemeProvider><SettingsPanel open initialSection="model" onClose={() => {}} /></ThemeProvider>);
+    await screen.findByRole("heading", { name: "模型", level: 2 });
+    expect(screen.queryByRole("switch", { name: "显示输入建议" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "搜索设置" }), { target: { value: "输入框" } });
+    fireEvent.click(await screen.findByRole("option", { name: /输入建议/ }));
+    const suggestions = await screen.findByRole("switch", { name: "显示输入建议" });
+    expect(suggestions.closest("[data-setting-id]")).toHaveAttribute("data-setting-id", "composer-predictions");
+    expect(screen.getByRole("heading", { name: "通用", level: 2 })).toBeVisible();
   });
 
   it.each(["navigation", "search"] as const)("模型直达后通过 %s 返回模型首页不再重复定位旧模型", async route => {
@@ -703,10 +727,11 @@ describe("SettingsPanel", () => {
       providers: [{ id: "review", providerKind: "custom" as const, source: "personal" as const, label: "工作连接", baseUrl: "https://review.invalid/v1", credentialConfigured: true }],
       models: [{ modelId: "review/a", providerId: "review" }, { modelId: "review/b", providerId: "review" }],
     };
-    vi.mocked(providersList).mockResolvedValueOnce(catalog).mockResolvedValueOnce(catalog);
+    // Model page, general page (composer suggestions), then model page again.
+    vi.mocked(providersList).mockResolvedValueOnce(catalog).mockResolvedValueOnce(catalog).mockResolvedValueOnce(catalog);
     const props = { open: true, initialSection: "model" as const, initialModelId: "review/a", onClose: () => {} };
     const view = render(<ThemeProvider><SettingsPanel {...props} /></ThemeProvider>);
-    await screen.findByRole("heading", { name: "连接详情" });
+    await screen.findByRole("region", { name: "模型目录" });
     await waitFor(() => expect(document.querySelector('[data-model-id="review/a"]')).toHaveFocus());
     fireEvent.click(screen.getByRole("button", { name: "通用" }));
     if (route === "navigation") fireEvent.click(within(screen.getByRole("navigation")).getByRole("button", { name: "模型" }));
@@ -714,12 +739,12 @@ describe("SettingsPanel", () => {
       fireEvent.change(screen.getByRole("combobox", { name: "搜索设置" }), { target: { value: "模型与连接" } });
       fireEvent.click(await screen.findByRole("option", { name: /模型与连接/ }));
     }
-    expect(await screen.findByRole("combobox", { name: "默认模型" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "添加模型" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "模型" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "连接详情" })).toBeNull();
     // A later explicit direct link still locates its requested model.
     view.rerender(<ThemeProvider><SettingsPanel {...props} initialModelId="review/b" /></ThemeProvider>);
-    expect(await screen.findByRole("heading", { name: "连接详情" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "模型目录" })).toBeInTheDocument();
     await waitFor(() => expect(document.querySelector('[data-model-id="review/b"]')).toHaveFocus());
   });
 
@@ -879,6 +904,39 @@ describe("SettingsPanel", () => {
     fireEvent.click(exportButton);
     expect(await within(backup).findByRole("status")).toHaveTextContent("备份已保存到 /tmp/echoagent-backup.zip");
     expect(within(backup).queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("校验通过后说明恢复影响，只有确认才启动恢复", async () => {
+    const preview = { token: "validated-backup", createdAt: "2026-11-01T10:00:00Z", fileCount: 3, totalBytes: 1024, uiKeys: [] };
+    vi.mocked(inspectBackup).mockRejectedValueOnce(new Error("ZIP 文件无法读取"))
+      .mockResolvedValueOnce(preview).mockResolvedValueOnce(preview);
+    vi.mocked(restoreBackup).mockResolvedValueOnce(undefined);
+    render(<ThemeProvider><SettingsPanel open initialSection="data" onClose={() => {}} /></ThemeProvider>);
+    const choose = screen.getByRole("button", { name: "选择备份文件" });
+    fireEvent.click(choose);
+    expect(await screen.findByRole("alert")).toHaveTextContent("备份校验失败：ZIP 文件无法读取");
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    fireEvent.click(choose);
+    const confirmation = await screen.findByRole("alertdialog", { name: "恢复备份并重启？" });
+    expect(confirmation).toHaveTextContent("替换同名记录");
+    expect(confirmation).toHaveTextContent("定时任务和待发送消息会暂停");
+    fireEvent.click(within(confirmation).getByRole("button", { name: "取消" }));
+    expect(restoreBackup).not.toHaveBeenCalled();
+    fireEvent.click(choose);
+    fireEvent.click(await screen.findByRole("button", { name: "恢复并重启" }));
+    await waitFor(() => expect(restoreBackup).toHaveBeenCalledExactlyOnceWith(preview.token));
+  });
+
+  it("本地数据目录直接可见，读取失败后可就地重试并打开", async () => {
+    vi.mocked(echoAgentDataDir).mockRejectedValueOnce(new Error("目录暂不可读"));
+    render(<ThemeProvider><SettingsPanel open initialSection="data" onClose={() => {}} /></ThemeProvider>);
+    const storage = screen.getByText("本地数据目录", { exact: true }).closest<HTMLElement>("[data-setting-id=data-directory]")!;
+    expect(await within(storage).findByRole("alert")).toHaveTextContent("目录暂不可读");
+    expect(screen.getByRole("button", { name: "导出备份" })).toBeEnabled();
+    fireEvent.click(within(storage).getByRole("button", { name: "重试读取" }));
+    expect(await within(storage).findByText("/tmp/.echo-agent")).toBeVisible();
+    fireEvent.click(within(storage).getByRole("button", { name: "打开文件夹" }));
+    await waitFor(() => expect(openEchoAgentDataDir).toHaveBeenCalledTimes(1));
   });
 
   it("保存规则后收起面板仍会展开失败提示并保留规则", async () => {
@@ -1083,15 +1141,77 @@ describe("SettingsPanel", () => {
     expect(screen.getByRole("checkbox", { name: "选择 恢复失败归档" })).toBeChecked();
     expect(onToast).toHaveBeenCalledWith("已恢复 1 个，1 个恢复失败");
   });
+
+  it("本机数据可直接导出独立旧档案", async () => {
+    vi.mocked(hasLegacyWorkspaceArchive).mockResolvedValueOnce(true);
+    vi.mocked(exportLegacyWorkspaceArchive).mockResolvedValueOnce("/tmp/旧版档案.json");
+    const internals = Object.getOwnPropertyDescriptor(window, "__TAURI_INTERNALS__");
+    if (!internals) Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+    try {
+      render(<ThemeProvider><SettingsPanel open initialSection="data" onClose={() => {}} /></ThemeProvider>);
+      fireEvent.click(await screen.findByRole("button", { name: "导出旧版草稿和队列" }));
+      expect(await screen.findByText("旧版工作台资料已保存到 /tmp/旧版档案.json")).toBeVisible();
+    } finally {
+      if (!internals) Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+    }
+  });
+
+  it("建议模型读取失败后可在通用设置重试", async () => {
+    vi.mocked(providersList).mockRejectedValueOnce(new Error("暂时不可读"))
+      .mockResolvedValueOnce({ providers: [], models: [] });
+    render(<ThemeProvider><SettingsPanel open initialSection="general" onClose={() => {}} /></ThemeProvider>);
+    const toggle = screen.getByRole("switch", { name: "显示输入建议" });
+    if (!(toggle as HTMLInputElement).checked) fireEvent.click(toggle);
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveTextContent("建议模型读取失败");
+    expect(screen.getByRole("combobox", { name: "建议模型" })).toBeDisabled();
+    fireEvent.click(within(error).getByRole("button", { name: "重试读取" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "建议模型" })).toBeEnabled());
+    expect(screen.getByText("没有可手动选择的模型，可保留自动选择。")).toBeVisible();
+  });
+
+  it("通用页的输入建议只列出可用模型，组织登录过期时排除组织模型", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        { id: "mine", providerKind: "custom", source: "personal", baseUrl: "https://mine.invalid/v1", credentialConfigured: true },
+        { id: "org", providerKind: "custom", source: "organization", managed: true },
+      ],
+      models: [{ modelId: "mine/a", providerId: "mine", name: "个人 A" }, { modelId: "org/b", providerId: "org", name: "组织 B" }],
+    });
+    useOrgSessionStore.setState({ session: { loggedIn: true, requiresReauthentication: true } as never, hydrated: true });
+    try {
+      render(<ThemeProvider><SettingsPanel open initialSection="general" onClose={() => {}} /></ThemeProvider>);
+      const select = await screen.findByRole("combobox", { name: "建议模型" });
+      await waitFor(() => expect(select).toBeEnabled());
+      expect(within(select).getByRole("option", { name: "个人 A" })).toBeInTheDocument();
+      expect(within(select).queryByRole("option", { name: "组织 B" })).toBeNull();
+    } finally {
+      resetOrgSessionMirror();
+    }
+  });
+
+  it("通用页的输入建议为同名模型标注所属连接", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        { id: "work", providerKind: "custom", source: "personal", label: "工作连接", baseUrl: "https://work.invalid/v1", credentialConfigured: true },
+        { id: "home", providerKind: "custom", source: "personal", label: "家庭连接", baseUrl: "https://home.invalid/v1", credentialConfigured: true },
+      ],
+      models: [{ modelId: "work/m", providerId: "work", name: "同名模型" }, { modelId: "home/m", providerId: "home", name: "同名模型" }],
+    });
+    render(<ThemeProvider><SettingsPanel open initialSection="general" onClose={() => {}} /></ThemeProvider>);
+    const select = await screen.findByRole("combobox", { name: "建议模型" });
+    await waitFor(() => expect(select).toBeEnabled());
+    expect(within(select).getByRole("option", { name: "同名模型 · 工作连接" })).toHaveValue("work/m");
+    expect(within(select).getByRole("option", { name: "同名模型 · 家庭连接" })).toHaveValue("home/m");
+  });
 });
 
 
-it("通知一级入口直接提供桌面提醒和带当前任务目标的测试", async () => {
-  render(<ThemeProvider><SettingsPanel open onClose={() => {}} sessionId="active-task" /></ThemeProvider>);
+it("通知一级入口提供桌面通知开关和通知记录", async () => {
+  render(<ThemeProvider><SettingsPanel open onClose={() => {}} /></ThemeProvider>);
   fireEvent.click(screen.getByRole("button", {name:"通知"}));
   expect(await screen.findByText(/已开启 · 默认设置/)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", {name:"发送测试通知"}));
-  await waitFor(() => expect(testDesktopNotify).toHaveBeenCalledWith("active-task"));
+  expect(screen.getByRole("switch", { name: "桌面通知" })).toBeChecked();
   fireEvent.click(screen.getByRole("button", {name:"通知记录"}));
   expect(await screen.findByRole("heading", {name:"通知记录"})).toBeInTheDocument();
   expect(screen.getByRole("button", {name:"通知"})).toHaveAttribute("aria-current", "page");

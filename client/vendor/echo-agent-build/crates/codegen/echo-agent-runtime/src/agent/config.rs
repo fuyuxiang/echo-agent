@@ -3696,8 +3696,57 @@ pub(crate) fn resolve_model_list(
     }
     apply_global_extra_headers(&mut resolved, &cfg.models);
     apply_global_scalar_defaults(&mut resolved, &cfg.models);
-    for entry in resolved.values_mut() {
+    for (key, entry) in &mut resolved {
+        let configured = cfg.config_models.get(key);
+        let provider = configured
+            .and_then(|model| model.model_provider.as_ref())
+            .and_then(|id| cfg.model_providers.get(id));
+        let profile = super::model_capabilities::model_capability_profile(
+            &entry.info.model,
+            entry.api_base_url.as_deref().unwrap_or(&entry.info.base_url),
+            &entry.info.api_backend,
+        );
+        entry.info.supports_tool_calls = entry
+            .info
+            .supports_tool_calls
+            .or_else(|| profile.and_then(|profile| profile.tools));
+        let supports_effort = configured
+            .and_then(|model| model.supports_reasoning_effort)
+            .or_else(|| provider.and_then(|provider| provider.supports_reasoning_effort));
+        let declared_options = configured
+            .and_then(|model| model.reasoning_efforts.as_ref())
+            .or_else(|| provider.map(|provider| &provider.reasoning_efforts).filter(|options| !options.is_empty()));
+        if supports_effort == Some(false) || declared_options.is_some_and(Vec::is_empty) {
+            entry.info.supports_reasoning_effort = false;
+            entry.info.reasoning_effort = None;
+            entry.info.reasoning_efforts.clear();
+            continue;
+        }
+        if let Some(profile) = profile {
+            entry.info.reasoning_efforts.retain(|option| profile.reasoning_efforts.contains(&option.value));
+        }
         entry.info.derive_reasoning_effort_fields();
+        if configured.is_some_and(|model| model.reasoning_effort_auto == Some(true))
+            || profile.is_some_and(|profile| entry.info.reasoning_effort
+                .is_some_and(|effort| !profile.reasoning_efforts.contains(&effort)))
+        {
+            entry.info.reasoning_effort = None;
+        }
+        if entry.info.reasoning_efforts.is_empty()
+            && let Some(profile) = profile.filter(|profile| !profile.reasoning_efforts.is_empty())
+        {
+            // The known levels enable the selector without supplying an upstream default.
+            entry.info.supports_reasoning_effort = true;
+            entry.info.reasoning_efforts = profile.reasoning_efforts.iter().map(|&value| {
+                ReasoningEffortOption {
+                    id: value.as_str().to_owned(),
+                    label: value.as_str().to_owned(),
+                    value,
+                    description: None,
+                    default: false,
+                }
+            }).collect();
+        }
     }
     resolved
 }
@@ -4032,9 +4081,8 @@ fn is_default_laziness_detector(cfg: &LazinessDetectorPerModelConfig) -> bool {
 }
 /// A `[model.foo]` entry from config.toml, parsed directly from raw TOML
 /// (bypassing deep merge). Scalar fields are `Option` so absent means "inherit
-/// from defaults/prefetched"; the collection fields (`extra_headers`,
-/// `reasoning_efforts`) merge only when non-empty and so cannot express
-/// "override to empty."
+/// from defaults/prefetched". An explicit empty reasoning menu clears the
+/// inherited menu. Other collection fields merge only when non-empty.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ConfigModelOverride {
@@ -4079,8 +4127,12 @@ pub struct ConfigModelOverride {
     pub hidden: Option<bool>,
     pub supported_in_api: Option<bool>,
     pub reasoning_effort: Option<ReasoningEffort>,
+    pub supports_tool_calls: Option<bool>,
+    /// Read by the desktop attachment admission check.
+    pub supports_images: Option<bool>,
+    pub reasoning_effort_auto: Option<bool>,
     pub supports_reasoning_effort: Option<bool>,
-    pub reasoning_efforts: Vec<ReasoningEffortOption>,
+    pub reasoning_efforts: Option<Vec<ReasoningEffortOption>>,
     pub supports_backend_search: Option<bool>,
     /// Aliases must be registered in `config_model_override_parse::ALIASES`;
     /// serde rejects a table that contains both spellings otherwise.
@@ -4167,15 +4219,16 @@ impl ConfigModelOverride {
         if self.reasoning_effort.is_some() {
             entry.info.reasoning_effort = self.reasoning_effort;
         }
+        if let Some(v) = self.supports_tool_calls {
+            entry.info.supports_tool_calls = Some(v);
+        }
         if let Some(v) = self.supports_reasoning_effort {
             entry.info.supports_reasoning_effort = v;
-        } else if !entry.info.supports_reasoning_effort
-            && matches!(entry.info.api_backend, ApiBackend::Messages)
-        {
+        } else if self.reasoning_effort.is_some() || matches!(entry.info.api_backend, ApiBackend::Messages) {
             entry.info.supports_reasoning_effort = true;
         }
-        if !self.reasoning_efforts.is_empty() {
-            entry.info.reasoning_efforts = self.reasoning_efforts.clone();
+        if let Some(options) = &self.reasoning_efforts {
+            entry.info.reasoning_efforts.clone_from(options);
         }
         if let Some(v) = self.supports_backend_search {
             entry.info.supports_backend_search = v;
@@ -4273,6 +4326,8 @@ pub struct ModelInfo {
     pub reasoning_effort: Option<ReasoningEffort>,
     /// When true, the UI shows effort controls for this model.
     pub supports_reasoning_effort: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_tool_calls: Option<bool>,
     /// Per-model reasoning-effort menu (source of truth); legacy fields derived from it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_efforts: Vec<ReasoningEffortOption>,
@@ -4329,6 +4384,7 @@ impl ModelInfo {
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            supports_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
         }
     }
@@ -4368,6 +4424,7 @@ impl ModelInfo {
             compaction_at_tokens: entry.compaction_at_tokens,
             show_model_fingerprint: entry.show_model_fingerprint,
             stream_tool_calls: entry.stream_tool_calls,
+            supports_tool_calls: None,
             laziness_detector: entry.laziness_detector.clone(),
         }
     }
@@ -5150,6 +5207,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 compaction_at_tokens: None,
                 show_model_fingerprint: false,
                 stream_tool_calls: None,
+                supports_tool_calls: None,
                 laziness_detector: LazinessDetectorPerModelConfig::default(),
             },
             api_key: Some(bearer),
@@ -5295,10 +5353,11 @@ pub(crate) fn sampling_config_for_model(
         env_http_headers: info.env_http_headers.clone(),
         context_window: info.context_window.get(),
         client_version,
-        reasoning_effort: info.reasoning_effort,
+        reasoning_effort: info.reasoning_effort.filter(|_| info.supports_reasoning_effort),
         force_http1: false,
         max_retries: info.max_retries,
         stream_tool_calls: info.stream_tool_calls.unwrap_or(false),
+        supports_tool_calls: info.supports_tool_calls,
         idle_timeout_secs: None,
         client_identifier: None,
         deployment_id,
@@ -5388,6 +5447,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            supports_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
         },
         api_key: None,

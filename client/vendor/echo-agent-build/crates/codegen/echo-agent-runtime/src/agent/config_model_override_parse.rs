@@ -717,18 +717,21 @@ mod tests {
             supported_in_api: Some(true),
             reasoning_effort: Some(ReasoningEffort::High),
             supports_reasoning_effort: Some(true),
-            reasoning_efforts: vec![ReasoningEffortOption {
+            reasoning_efforts: Some(vec![ReasoningEffortOption {
                 id: "deep".to_string(),
                 value: ReasoningEffort::High,
                 label: "Deep".to_string(),
                 description: Some("Deep reasoning".to_string()),
                 default: true,
-            }],
+            }]),
             supports_backend_search: Some(false),
             compactions_remaining: Some(CompactionsRemaining::Fixed(1)),
             compaction_at_tokens: Some(CompactionAtTokens::Fixed(100_000)),
             show_model_fingerprint: Some(true),
             stream_tool_calls: Some(false),
+            supports_tool_calls: None,
+            supports_images: None,
+            reasoning_effort_auto: None,
         }
     }
 

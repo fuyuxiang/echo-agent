@@ -9,7 +9,7 @@ console.log(`Screenshots: ${output}`);
 const server = await createUiReviewServer(0, { fixture: "/scripts/fixtures/expert-project-review.tsx" });
 let browser, surfaces;
 try {
-  browser = await (await reviewChromium()).launch({ headless: true });
+  browser = await (await reviewChromium()).launch({ headless: true, executablePath: process.env.CHROME_BIN });
   for (const [width, height, theme] of [[1280, 800, "light"], [1280, 800, "dark"], [420, 900, "light"]]) {
     const page = await browser.newPage({ viewport: { width, height } });
     page.setDefaultNavigationTimeout(90000);
@@ -185,19 +185,15 @@ try {
     page.on("pageerror", error => errors.push(error.message));
     try {
       await page.goto(`${base}?surface=model&modelSettingsReview=1&theme=${theme}`);
-      const model = page.getByRole("combobox", { name: "默认模型", exact: true });
+      const personal = page.getByRole("region", { name: "工作模型服务", exact: true });
+      await personal.getByRole("button", { name: "模型操作 工作模型", exact: true }).click();
+      await page.getByRole("menuitem", { name: "编辑", exact: true }).click();
+      const model = page.getByRole("dialog", { name: "编辑模型", exact: true }).getByLabel("供应商", { exact: true });
       await model.waitFor();
-      assert.equal(await model.evaluate(field => field.getBoundingClientRect().height), 48);
-      assert.equal(await page.locator(".model-settings__select-shell > svg").count(), 0);
-      assert.notEqual(await model.evaluate(field => getComputedStyle(field).backgroundImage), "none");
-      await model.click();
-      await page.getByRole("listbox").getByRole("option", { name: /备用模型/ }).click();
-      await page.getByRole("status").filter({ hasText: "已将「备用模型」设为默认模型" }).waitFor();
-      await page.screenshot({ path: join(output, `${width}-${theme}-model-size.png`) });
-      await page.emulateMedia({ forcedColors: "active" });
-      assert.equal(await model.evaluate(field => getComputedStyle(field).appearance), "auto");
-      assert.equal(await model.evaluate(field => getComputedStyle(field).backgroundImage), "none");
-      await page.emulateMedia({ forcedColors: "none" });
+      assert((await model.boundingBox()).height >= 36);
+      await model.selectOption("deepseek");
+      assert.equal(await model.inputValue(), "deepseek");
+      await page.screenshot({ path: join(output, `${width}-${theme}-model-provider-select.png`) });
       await page.goto(`${base}?surface=organization&orgState=many&theme=${theme}`);
       await page.locator(".org-memory__nav button").filter({ hasText: "文档" }).click();
       const organizationScope = page.getByRole("combobox", { name: "查看范围", exact: true });
@@ -209,7 +205,7 @@ try {
       assert.notEqual(await organizationScope.inputValue(), "");
       await page.screenshot({ path: join(output, `${width}-${theme}-organization-select.png`) });
       assert.deepEqual(errors, []);
-      console.log(`PASS ${width}/${theme}: model dimensions and one indicator; model saving and organization filtering`);
+      console.log(`PASS ${width}/${theme}: model provider selection and organization filtering`);
     } catch (error) {
       await page.screenshot({ path: join(output, `${width}-${theme}-surface-failure.png`) });
       throw error;

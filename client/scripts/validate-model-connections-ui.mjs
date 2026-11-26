@@ -26,7 +26,7 @@ try {
       };
     }, font);
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__ui-review?surface=model&theme=${theme}&modelTesting=1&initialModelId=test-personal/b`);
-    const detail = page.getByRole("region", { name: "我的网关连接详情" });
+    const detail = page.getByRole("region", { name: "我的网关" });
     await detail.waitFor();
     await page.evaluate(font => { document.documentElement.style.fontSize = `${font}px`; }, font);
     const row = detail.locator('[data-model-id="test-personal/b"]');
@@ -35,35 +35,37 @@ try {
       focused: document.activeElement === element,
       outline: getComputedStyle(element).outlineStyle,
       outlineWidth: getComputedStyle(element).outlineWidth,
-      sameBorder: getComputedStyle(element).borderColor === getComputedStyle(element.previousElementSibling).borderColor,
-    })), { focused: true, outline: "solid", outlineWidth: "2px", sameBorder: true });
+    })), { focused: true, outline: "solid", outlineWidth: "2px" });
     const test = detail.getByRole("button", { name: "测试模型 备用模型", exact: true });
+    // The first keyboard stop in the row is the test action.
     await page.keyboard.press("Tab");
     assert.equal(await test.evaluate(element => element.matches(":focus-visible")), true);
+    await row.hover();
     await test.click();
     assert.equal(await test.isDisabled(), true);
     assert.equal(await detail.getByRole("button", { name: "测试模型 个人模型", exact: true }).isEnabled(), true);
-    await row.getByRole("status").waitFor();
-    assert.match(await row.getByRole("status").textContent(), /上次测试失败.*429/s);
+    await row.getByRole("status").filter({ hasText: "失败" }).waitFor();
+    assert.match(await row.getByRole("status").textContent(), /失败/);
+    await row.getByRole("button", { name: "查看 备用模型 的测试错误", exact: true }).click();
+    assert.match(await row.textContent(), /429/);
     await row.scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(output, `failure-${width}-${theme}.png`) });
+    await row.hover();
     await test.click();
-    await row.getByRole("status").waitFor();
+    await row.getByRole("status").filter({ hasText: /[0-9]+\.[0-9]s/ }).waitFor();
     const success = await row.getByRole("status").textContent();
-    assert.match(success, /测试通过 · 耗时 [0-9]+\.[0-9] 秒/);
-    assert.ok(Number(success.match(/耗时 ([0-9.]+) 秒/)[1]) >= 1.1);
+    assert.match(success, /([0-9]+\.[0-9])s/);
+    assert.ok(Number(success.match(/([0-9]+\.[0-9])s/)[1]) >= 1.1);
     assert.doesNotMatch(await row.textContent(), /429/);
     for (const [connection, name, providerId, modelId] of [["研发团队", "团队模型", "test-org", "team-a"]]) {
-      await page.getByRole("button",{name:"返回连接管理",exact:true}).click();
-      await page.getByRole("group",{name:"模型连接",exact:true}).getByRole("button").filter({hasText:connection}).click();
-      await page.getByRole("button", { name: `测试模型 ${name}`, exact: true }).click();
-      await page.getByRole("status").filter({ hasText: "测试通过" }).waitFor();
-      assert.equal(await page.getByRole("button", { name: "编辑连接", exact: true }).count(), 0);
+      const team = page.getByRole("region", { name: connection, exact: true });
+      await team.locator(".provider-card__model").first().hover();
+      await team.getByRole("button", { name: `测试模型 ${name}`, exact: true }).click();
+      await team.getByRole("status").filter({ hasText: /[0-9.]+s|不足 0\.1s/ }).waitFor();
+      assert.equal(await team.getByRole("button", { name: `编辑模型 ${name}`, exact: true }).count(), 0);
       assert.ok(await page.evaluate(({providerId,modelId}) => window.modelTestCalls.some(call => call.providerId === providerId && call.modelId === modelId), {providerId,modelId}));
     }
-    await page.getByRole("button",{name:"返回连接管理",exact:true}).click();
-    await page.getByRole("group",{name:"模型连接",exact:true}).getByRole("button").filter({hasText:"我的网关"}).click();
-    assert.match(await row.getByRole("status").textContent(), /测试通过/);
+    assert.match(await row.getByRole("status").textContent(), /[0-9.]+s|不足 0\.1s/);
     const layout = await page.locator(".model-connections").evaluate(root => ({
       fits: root.scrollWidth <= root.clientWidth + 1,
       pageFits: document.documentElement.scrollWidth <= innerWidth + 1,

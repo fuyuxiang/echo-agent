@@ -509,12 +509,12 @@ export function CloudStoragePanel({ onToast, onUnsavedChange }: {
 
       {/* 文件列表 */}
       {!configLoading && !configError && !selectedProvider && !showConfig && (
-        <div className="storage-panel__empty">{providerOptions.length ? "选择存储源以管理连接，或展开文件浏览。" : "连接 WebDAV 存储源，即可浏览、上传和下载云端文件。"}</div>
+        <div className="storage-panel__empty">{providerOptions.length ? "选择存储源后可管理连接和文件。" : "添加 WebDAV 存储源后可浏览和传输文件。"}</div>
       )}
       {selectedProvider && !selectedEnabled && (
-        <div className="storage-panel__empty">此存储源已禁用，可编辑配置重新启用或移除配置。</div>
+        <div className="storage-panel__empty">存储源已停用，可在配置中重新启用。</div>
       )}
-      {selectedEnabled && <SettingsDisclosure title="浏览云端文件" description="查看目录，上传、下载或编辑文件" defaultOpen={Boolean(preview || browseError)}>
+      {selectedEnabled && <SettingsDisclosure title="浏览云端文件" description="查看目录并管理文件。" defaultOpen={Boolean(preview || browseError)}>
       {/* 面包屑 */}
       {selectedProvider && selectedEnabled && (
         <div className="storage-panel__breadcrumb">

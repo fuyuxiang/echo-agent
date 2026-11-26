@@ -100,7 +100,7 @@ fn check_operations(operations: &[ExternalOperation], path: &Path) -> Result<(),
         .find(|lease| !lease.terminal && related_path(path, &lease.workspace))
     {
         return Err(format!(
-            "旧版外部操作状态待核验，目录 {} 暂停执行和写入。请在「设置 → 备份与恢复 → 旧版工作台资料」核验。",
+            "旧版外部操作状态待核验，目录 {} 暂停执行和写入。请在「设置 → 数据管理 → 本机数据」中核验待处理操作。",
             operation.workspace.display()
         ));
     }

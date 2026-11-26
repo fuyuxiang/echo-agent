@@ -1620,6 +1620,15 @@ fn archived_ui_paths(home: &Path, kind: UiArchiveKind) -> Result<Vec<PathBuf>, S
 }
 
 #[tauri::command]
+pub(crate) fn backup_has_legacy_ui() -> Result<bool, String> {
+    Ok(!archived_ui_paths(
+        &crate::paths::echo_agent_home_dir(),
+        UiArchiveKind::LegacyWorkspace,
+    )?
+    .is_empty())
+}
+
+#[tauri::command]
 pub(crate) fn backup_has_deferred_ui() -> Result<bool, String> {
     Ok(!archived_ui_paths(
         &crate::paths::echo_agent_home_dir(),

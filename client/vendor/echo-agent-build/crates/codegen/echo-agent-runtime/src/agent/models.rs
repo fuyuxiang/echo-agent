@@ -563,6 +563,19 @@ impl ModelsManager {
         models.get(key.0.as_ref()).map(f)
     }
 
+    pub(crate) fn live_model_capabilities(
+        &self,
+        model_id: &acp::ModelId,
+    ) -> Option<(acp::ModelId, super::model_capabilities::LiveModelCapabilities)> {
+        if !cfg!(feature = "desktop") {
+            return None;
+        }
+        let catalog = self.inner.catalog.read();
+        let key = resolve_catalog_key(&catalog.models, model_id)?;
+        let model = catalog.models.get(key.0.as_ref())?;
+        Some((key, model.into()))
+    }
+
     /// Whether the given model supports reasoning effort according to the catalog.
     pub(crate) fn model_supports_reasoning_effort(&self, model_id: &str) -> bool {
         self.with_catalog_entry(model_id, |e| e.info().supports_reasoning_effort)

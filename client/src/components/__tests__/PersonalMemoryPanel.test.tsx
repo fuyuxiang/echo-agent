@@ -44,6 +44,7 @@ describe("记忆设置与二级管理", () => {
     const rename = "年度「预算」\n说明";
     await renderManager("/project-a");
     expect(screen.getByRole("heading", { name: record.key })).toBeVisible();
+    expect(screen.queryByText(/当前目录为|个人记忆可跨目录使用/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: `编辑 ${record.key}` }));
     fireEvent.change(screen.getByLabelText("记忆键名（选填）"), { target: { value: rename } });
     fireEvent.click(screen.getByRole("button", { name: "保存记忆" }));

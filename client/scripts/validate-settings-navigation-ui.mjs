@@ -24,6 +24,7 @@ try {
     for (const [query, title, target] of [
       ["字号", "字体大小", "font-size"],
       ["后台运行", "关闭窗口后继续运行", "background"],
+      ["输入框", "输入建议", "composer-predictions"],
       ["Webhook", "推送到其他应用", "external-notifications"],
       ["OTLP", "接入监控服务", "diagnostics"],
       ["数据目录", "本地数据目录", "data-directory"],
@@ -98,7 +99,7 @@ try {
     const pattern = page.getByPlaceholder("例如 git *");
     await pattern.fill("git status");
     await search.fill("备份");
-    await page.getByRole("option").filter({ hasText: "数据备份与恢复" }).click();
+    await page.getByRole("option").filter({ hasText: "备份与恢复" }).click();
     const confirmation = page.getByRole("alertdialog", { name: "舍弃未保存的修改？" });
     await confirmation.getByRole("button", { name: "取消", exact: true }).click();
     assert.equal(await pattern.inputValue(), "git status");
@@ -122,8 +123,8 @@ try {
     await page.getByRole("status").filter({ hasText: "规则已保存" }).waitFor();
     await busyFeedback.waitFor({ state: "hidden" });
     await search.fill("备份");
-    await page.getByRole("option").filter({ hasText: "数据备份与恢复" }).click();
-    await page.getByRole("button", { name: "从备份恢复", exact: true }).waitFor();
+    await page.getByRole("option").filter({ hasText: "备份与恢复" }).click();
+    await page.getByRole("button", { name: "选择备份文件", exact: true }).waitFor();
     assert.equal(await page.getByRole("alertdialog").count(), 0);
     await page.screenshot({ path: join(output, `data-${width}-${theme}.png`) });
     assert.deepEqual(errors, []);

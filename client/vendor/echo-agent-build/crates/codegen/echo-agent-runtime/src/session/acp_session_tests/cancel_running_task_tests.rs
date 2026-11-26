@@ -56,6 +56,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 force_http1: false,
                 max_retries: None,
                 stream_tool_calls: false,
+                supports_tool_calls: None,
                 idle_timeout_secs: None,
                 client_identifier: None,
                 reasoning_effort: None,
@@ -102,6 +103,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                     context_window: std::num::NonZeroU64::new(100_000).unwrap(),
                     reasoning_effort: None,
                     stream_tool_calls: None,
+                    supports_tool_calls: None,
                 },
                 Box::new(
                     crate::session::chat_persistence::ChannelChatPersistence::new(
@@ -116,6 +118,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 session_info,
                 auth_method_id: test_auth_method_id("test-auth"),
                 model_auth_memo: std::cell::RefCell::new(None),
+                live_model_capabilities: Default::default(),
                 attribution_callback: None,
                 auth_manager: None,
                 is_chat_kind: false,
@@ -391,6 +394,7 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                     force_http1: false,
                     max_retries: None,
                     stream_tool_calls: false,
+                    supports_tool_calls: None,
                     idle_timeout_secs: None,
                     client_identifier: None,
                     reasoning_effort: None,
@@ -440,6 +444,7 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                     context_window: std::num::NonZeroU64::new(100_000).unwrap(),
                     reasoning_effort: None,
                     stream_tool_calls: None,
+                    supports_tool_calls: None,
                 },
                 Box::new(
                     crate::session::chat_persistence::ChannelChatPersistence::new(
@@ -528,6 +533,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 force_http1: false,
                 max_retries: None,
                 stream_tool_calls: false,
+                supports_tool_calls: None,
                 idle_timeout_secs: None,
                 client_identifier: None,
                 reasoning_effort: None,
@@ -579,6 +585,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     context_window: std::num::NonZeroU64::new(100_000).unwrap(),
                     reasoning_effort: None,
                     stream_tool_calls: None,
+                    supports_tool_calls: None,
                 },
                 Box::new(
                     crate::session::chat_persistence::ChannelChatPersistence::new(
@@ -611,6 +618,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 session_info: session_info.clone(),
                 auth_method_id: test_auth_method_id("test-auth"),
                 model_auth_memo: std::cell::RefCell::new(None),
+                live_model_capabilities: Default::default(),
                 attribution_callback: None,
                 auth_manager: None,
                 is_chat_kind: false,
@@ -927,6 +935,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 },
                 auth_method_id: test_auth_method_id("test-auth"),
                 model_auth_memo: std::cell::RefCell::new(None),
+                live_model_capabilities: Default::default(),
                 attribution_callback: None,
                 auth_manager: None,
                 is_chat_kind: false,
@@ -2390,6 +2399,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 force_http1: false,
                 max_retries: Some(0),
                 stream_tool_calls: false,
+                supports_tool_calls: None,
                 idle_timeout_secs: Some(60),
                 client_identifier: None,
                 reasoning_effort: None,
@@ -2469,6 +2479,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 },
                 auth_method_id: test_auth_method_id("test-auth"),
                 model_auth_memo: std::cell::RefCell::new(None),
+                live_model_capabilities: Default::default(),
                 attribution_callback: None,
                 auth_manager: None,
                 is_chat_kind: false,

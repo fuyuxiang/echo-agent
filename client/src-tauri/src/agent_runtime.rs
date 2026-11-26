@@ -2131,7 +2131,7 @@ mod tests {
         let proof = cwd.join("recovery-proof.txt");
         let binding = home.join("first-session");
         if first {
-            let catalog = crate::providers::providers_list();
+            let catalog = crate::providers::providers_list().unwrap();
             let eligible = catalog
                 .models
                 .iter()

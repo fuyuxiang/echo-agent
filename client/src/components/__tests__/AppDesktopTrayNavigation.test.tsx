@@ -101,9 +101,11 @@ describe('catalog search navigation', () => {
     expect(vi.mocked(listen).mock.calls.some(([event]) => event.startsWith("coding://"))).toBe(false);
     expect(localStorage.getItem("echo-coding-workspaces")).toBe(workspaces);
     fireEvent.click(screen.getByRole("button", { name: "查看迁移资料" }));
-    const migration = await screen.findByText("旧版工作台资料", { selector: "summary strong" });
-    await waitFor(() => expect(migration.closest("details")).toHaveAttribute("open"));
+    expect(await screen.findByRole("heading", { name: "旧版工作台资料" })).toBeVisible();
     expect(screen.getByRole("button", { name: "导出旧版草稿和队列" })).toBeVisible();
+    const tabs = screen.getByRole("group", { name: "数据视图" });
+    fireEvent.click(within(tabs).getByRole("button", { name: "本机数据" }));
+    expect(screen.queryByRole("heading", { name: "旧版工作台资料" })).not.toBeInTheDocument();
   });
 
   it('keeps the actual search open after a native load failure and retries the selected task', async () => {

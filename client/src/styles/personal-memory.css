@@ -51,7 +51,6 @@
 .personal-memory__empty p { margin:0; color:var(--echo-text-strong); }
 .personal-memory__empty span { display:block; max-width:400px; margin:8px auto 0; font-size:var(--echo-caption-size); line-height:1.7; }
 .personal-memory__status { margin:0; font-size:var(--echo-caption-size); color:var(--echo-text-medium); }
-.personal-memory__scope { line-height:1.6; overflow-wrap:anywhere; }
 .personal-memory__health { padding:14px 16px; border:1px solid var(--echo-border-default); border-radius:var(--echo-radius-card); background:var(--echo-bg-primary); color:var(--echo-text-medium); font-size:var(--echo-caption-size); overflow-wrap:anywhere; }
 .personal-memory__health > div { display:flex; flex-direction:column; align-items:flex-start; gap:10px; }
 .personal-memory__health p { margin:0; line-height:1.7; }

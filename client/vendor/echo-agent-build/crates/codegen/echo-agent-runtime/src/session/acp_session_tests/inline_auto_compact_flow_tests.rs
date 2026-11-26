@@ -62,6 +62,7 @@ async fn create_test_actor(
                 .expect("test context_window must be non-zero"),
             reasoning_effort: None,
             stream_tool_calls: None,
+            supports_tool_calls: None,
         },
         Box::new(echo_agent_chat_state::NullChatPersistence),
         event_tx,
@@ -77,6 +78,7 @@ async fn create_test_actor(
         rebuild_spec: crate::session::agent_rebuild::test_rebuild_spec_default(),
         auth_method_id: test_auth_method_id("test-auth"),
         model_auth_memo: std::cell::RefCell::new(None),
+        live_model_capabilities: Default::default(),
         attribution_callback: None,
         auth_manager: None,
         is_chat_kind: false,
@@ -531,6 +533,7 @@ async fn create_test_actor_with_memory(
                 .expect("test context_window must be non-zero"),
             reasoning_effort: None,
             stream_tool_calls: None,
+            supports_tool_calls: None,
         },
         Box::new(echo_agent_chat_state::NullChatPersistence),
         event_tx,
@@ -550,6 +553,7 @@ async fn create_test_actor_with_memory(
         rebuild_spec: crate::session::agent_rebuild::test_rebuild_spec_default(),
         auth_method_id: test_auth_method_id("test-auth"),
         model_auth_memo: std::cell::RefCell::new(None),
+        live_model_capabilities: Default::default(),
         attribution_callback: None,
         auth_manager: None,
         is_chat_kind: false,
@@ -1322,6 +1326,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                     context_window: std::num::NonZeroU64::new(200_000).unwrap(),
                     reasoning_effort: None,
                     stream_tool_calls: None,
+                    supports_tool_calls: None,
                 },
                 Box::new(echo_agent_chat_state::NullChatPersistence),
                 event_tx,
@@ -1343,6 +1348,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 rebuild_spec: crate::session::agent_rebuild::test_rebuild_spec_default(),
                 auth_method_id: test_auth_method_id("cached_token"),
                 model_auth_memo: std::cell::RefCell::new(None),
+                live_model_capabilities: Default::default(),
                 auth_manager: {
                     let dir = tempfile::tempdir().unwrap();
                     let mgr = std::sync::Arc::new(crate::auth::AuthManager::new(

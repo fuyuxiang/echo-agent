@@ -116,6 +116,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                     context_window: std::num::NonZeroU64::new(200_000).unwrap(),
                     reasoning_effort: None,
                     stream_tool_calls: None,
+                    supports_tool_calls: None,
                 },
                 Box::new(echo_agent_chat_state::NullChatPersistence),
                 chat_event_tx,
@@ -137,6 +138,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 attribution_callback: None,
                 auth_method_id: test_auth_method_id("cached_token"),
                 model_auth_memo: std::cell::RefCell::new(None),
+                live_model_capabilities: Default::default(),
                 auth_manager: {
                     let dir = tempfile::tempdir().unwrap();
                     let mgr = std::sync::Arc::new(crate::auth::AuthManager::new(

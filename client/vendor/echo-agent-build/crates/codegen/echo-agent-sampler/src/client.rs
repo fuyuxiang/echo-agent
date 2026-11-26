@@ -515,6 +515,7 @@ struct ClientDefaults {
     api_backend: ApiBackend,
     auth_scheme: AuthScheme,
     stream_tool_calls: bool,
+    supports_tool_calls: Option<bool>,
     extra_response_includes: Vec<String>,
     doom_loop_recovery: Option<echo_agent_sampling_types::DoomLoopRecoveryPolicy>,
 }
@@ -530,6 +531,18 @@ enum EndpointTemplate {
     /// `?` and folds any base-URL params, with a configured key winning over the
     /// same key in `base_url` (percent-encoded, no duplicates).
     WithQuery { prefix: String, suffix: String },
+}
+
+/// The official MiniMax Anthropic SDK base omits the version that the SDK
+/// appends. Our transport appends the resource path to an already-versioned base.
+pub fn normalize_messages_base_url(base_url: &str) -> std::borrow::Cow<'_, str> {
+    let base = base_url.trim().trim_end_matches('/');
+    match base {
+        "https://api.minimax.cn/anthropic" | "https://api.minimax.io/anthropic" => {
+            std::borrow::Cow::Owned(format!("{base}/v1"))
+        }
+        _ => std::borrow::Cow::Borrowed(base),
+    }
 }
 
 impl EndpointTemplate {
@@ -825,11 +838,17 @@ impl SamplingClient {
             api_backend: config.api_backend,
             auth_scheme: config.auth_scheme,
             stream_tool_calls: config.stream_tool_calls,
+            supports_tool_calls: config.supports_tool_calls,
             extra_response_includes: config.extra_response_includes,
             doom_loop_recovery: config.doom_loop_recovery,
         };
 
-        let endpoint = EndpointTemplate::new(&config.base_url, &config.query_params);
+        let base_url = if defaults.api_backend == ApiBackend::Messages {
+            normalize_messages_base_url(&config.base_url)
+        } else {
+            std::borrow::Cow::Borrowed(config.base_url.as_str())
+        };
+        let endpoint = EndpointTemplate::new(&base_url, &config.query_params);
 
         Ok(Self {
             http,
@@ -994,6 +1013,11 @@ impl SamplingClient {
     }
 
     fn apply_defaults(&self, mut request: ChatCompletionRequest) -> Result<ChatCompletionRequest> {
+        if self.defaults.supports_tool_calls == Some(false) {
+            request.tools = None;
+            request.tool_choice = None;
+            request.parallel_tool_calls = None;
+        }
         if request.model.is_none() {
             request.model = Some(self.defaults.model.clone());
         }
@@ -2011,6 +2035,11 @@ impl SamplingClient {
                 .apply(request)
                 .map_err(SamplingError::InvalidConfiguration)?;
         }
+        if self.defaults.supports_tool_calls == Some(false) {
+            request.tools.clear();
+            request.hosted_tools.clear();
+            request.tool_choice = None;
+        }
         if request.model.is_none() {
             request.model = Some(self.defaults.model.clone());
         }
@@ -2395,6 +2424,7 @@ mod tests {
             force_http1: false,
             max_retries: None,
             stream_tool_calls: false,
+            supports_tool_calls: None,
             idle_timeout_secs: None,
             reasoning_effort: None,
             origin_client: None,
@@ -2409,6 +2439,63 @@ mod tests {
             compaction_at_tokens: None,
             doom_loop_recovery: None,
             header_injector: None,
+        }
+    }
+
+    #[test]
+    fn messages_transport_uses_the_versioned_minimax_resource() {
+        for base_url in [
+            "https://api.minimax.cn/anthropic",
+            "https://api.minimax.cn/anthropic/v1/",
+        ] {
+            let client = SamplingClient::new(SamplerConfig {
+                base_url: base_url.to_owned(),
+                api_backend: echo_agent_sampling_types::ApiBackend::Messages,
+                ..minimal_config()
+            }).unwrap();
+            assert_eq!(client.endpoint("messages"), "https://api.minimax.cn/anthropic/v1/messages");
+        }
+        assert_eq!(
+            normalize_messages_base_url("https://gateway.example.test/anthropic"),
+            "https://gateway.example.test/anthropic"
+        );
+    }
+
+    #[test]
+    fn disabled_model_tools_are_omitted_from_the_wire() {
+        use echo_agent_sampling_types::conversation::{ConversationToolChoice, HostedTool, ToolSpec};
+        let request = ConversationRequest {
+            tools: vec![ToolSpec {
+                name: "test_tool".into(),
+                description: None,
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+            hosted_tools: vec![HostedTool::WebSearch { options: None }],
+            tool_choice: Some(ConversationToolChoice::Auto),
+            reasoning_effort: Some(echo_agent_sampling_types::ReasoningEffort::High),
+            ..Default::default()
+        };
+        for supports_tool_calls in [None, Some(true), Some(false)] {
+            let client = SamplingClient::new(SamplerConfig {
+                supports_tool_calls,
+                ..minimal_config()
+            })
+            .unwrap();
+            let mut request = request.clone();
+            client.apply_conversation_defaults(&mut request).unwrap();
+            let disabled = supports_tool_calls == Some(false);
+            assert_eq!(request.hosted_tools.is_empty(), disabled);
+            assert_eq!(request.tool_choice.is_none(), disabled);
+
+            let responses = serde_json::to_value(rs::CreateResponse::from(&request)).unwrap();
+            let messages = serde_json::to_value(build_messages_request(&request)).unwrap();
+            let chat = serde_json::to_value(ChatCompletionRequest::from(request)).unwrap();
+            assert_eq!(chat["reasoning_effort"], "high");
+            assert_eq!(responses["reasoning"]["effort"], "high");
+            assert_eq!(messages["output_config"]["effort"], "high");
+            for wire in [chat, responses, messages] {
+                assert_eq!(wire.get("tools").is_none(), disabled);
+            }
         }
     }
 

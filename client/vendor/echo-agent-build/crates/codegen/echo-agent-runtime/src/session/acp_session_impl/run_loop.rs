@@ -969,6 +969,7 @@ pub(super) async fn run_session(
                                 // set_primary_model also adds to models_used.
                                 session.signals_handle().set_primary_model(&model_name);
                                 cfg.model = model_name.clone();
+                                session.live_model_capabilities.replace(None);
                                 cfg.extra_headers.extend(extra_headers);
                                 if let Some(cw) = context_window
                                     && session.compaction.context_window_override.is_none()

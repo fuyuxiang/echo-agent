@@ -18,7 +18,6 @@ import {
 import {
   SettingsSection,
   AgentSettingsPanel,
-  DataSettingsPanel,
   GeneralSettingsPanel,
   HelpSettingsPanel,
   NotificationCenterSettingsPanel,
@@ -30,6 +29,7 @@ import { ModelConnectionsPanel } from "./ModelConnectionsPanel";
 import { NotifyChannelsPanel } from "./NotifyChannelsPanel";
 import { WeixinChannelPanel } from "./WeixinChannelPanel";
 import { CloudStoragePanel } from "./CloudStoragePanel";
+import { DataSettingsPanel } from "./DataSettingsPanel";
 import { ArchivedSessionsSettingsPanel } from "./ArchivedSessionsSettingsPanel";
 import { PersonalMemoryPanel } from "./PersonalMemoryPanel";
 import { useModalFocus } from "@/lib/use-modal-focus";
@@ -87,7 +87,7 @@ const NOTIFICATION_VIEWS: Array<[SettingsSectionId, string]> = [
   ["notify-channels", "通知设置"], ["agent-mail", "通知记录"],
 ];
 const DATA_VIEWS: Array<[SettingsSectionId, string]> = [
-  ["data", "备份与恢复"], ["archived", "已归档会话"],
+  ["data", "本机数据"], ["archived", "已归档会话"],
 ];
 
 // Keep callers of historical IDs working without maintaining duplicate views.
@@ -200,8 +200,8 @@ export function SettingsPanel({
   const [memoryDirty, setMemoryDirty] = useState(false);
   const [memoryBusy, setMemoryBusy] = useState(false);
   const [memoryEntry, setMemoryEntry] = useState(0);
-  const [modelEntry, setModelEntry] = useState(0);
   const [modelTargetId, setModelTargetId] = useState(initialModelId);
+  const [modelResetRequest, setModelResetRequest] = useState(0);
   const drafts = useRef(new Map<string, SettingsDraftState>());
   const [draftBusy, setDraftBusy] = useState(false);
   const reportDraft = useCallback((id: string, state: SettingsDraftState | null) => {
@@ -216,6 +216,7 @@ export function SettingsPanel({
   const [searchTarget, setSearchTarget] = useState<{ target?: string } | null>(
     () => initialTarget ? { target: initialTarget } : null,
   );
+  const legacyRequested = searchTarget?.target === "legacy-workspace";
   const panelRef = useRef<HTMLDivElement>(null);
   const { requestConfirmation, dialog } = useAppDialog();
   const confirmLeave = (action: () => void) => {
@@ -246,10 +247,10 @@ export function SettingsPanel({
   };
   const selectSection = (section: SettingsSectionId, modelId?: string, target?: SettingsDirectTarget) => {
     const next = normalizeSection(section);
-    if (next !== active || next === "memory" || next === "model" || target) confirmLeave(() => {
+    if (next !== active || next === "memory" || next === "model" || target || legacyRequested) confirmLeave(() => {
       setModelTargetId(next === "model" ? modelId : undefined);
+      if (next === "model" && !modelId) setModelResetRequest(value => value + 1);
       if (next === "memory" && next === active) setMemoryEntry(value => value + 1);
-      if (next === "model" && !modelId) setModelEntry(value => value + 1);
       setActive(next);
       setSearchTarget(target ? { target } : null);
     });
@@ -357,16 +358,16 @@ export function SettingsPanel({
         </nav>
 
         <div className="settings-modal__content">
-          <div className="settings-modal__toolbar">
-            <div className="settings-modal__location" aria-label="当前设置页">
+          <div className={`settings-modal__toolbar${active === "model" ? " settings-modal__toolbar--actions-only" : ""}`}>
+            {active !== "model" && <div className="settings-modal__location" aria-label="当前设置页">
               <strong title={settingsSectionTitle(active)}>{settingsSectionTitle(active)}</strong>
-            </div>
+            </div>}
             <SettingsSearch onSelect={(entry, onSelected) => {
               const navigate = () => {
                 const section = normalizeSection(entry.section);
                 setModelTargetId(undefined);
                 if (section === "memory") setMemoryEntry(value => value + 1);
-                if (section === "model") setModelEntry(value => value + 1);
+                if (section === "model") setModelResetRequest(value => value + 1);
                 setActive(section);
                 setSearchTarget({ target: entry.target });
                 onSelected();
@@ -386,9 +387,9 @@ export function SettingsPanel({
             </button>
           </div>
           {leaveFeedback && <p className="settings-navigation-feedback" role="status">{leaveFeedback}</p>}
-          <div className="settings-modal__panel" ref={panelRef} tabIndex={-1}>
+          <div className={`settings-modal__panel${active === "model" ? " settings-modal__panel--model" : ""}`} ref={panelRef} tabIndex={-1}>
             {active === "model" ? (
-              <ModelConnectionsPanel overviewRequest={modelEntry} onModelsChanged={onModelsChanged} initialModelId={modelTargetId} onOpenOrganization={onOpenOrganization ? () => confirmLeave(onOpenOrganization) : undefined} />
+              <ModelConnectionsPanel resetRequest={modelResetRequest} onModelsChanged={onModelsChanged} initialModelId={modelTargetId} onOpenOrganization={onOpenOrganization ? () => confirmLeave(onOpenOrganization) : undefined} />
             ) : active === "shortcuts" ? (
               <div className="settings-subview">
                 <SettingsViewTabs label="通用视图" items={GENERAL_VIEWS} active={active} onSelect={selectSection} />
@@ -403,30 +404,27 @@ export function SettingsPanel({
             ) : active === "security" ? (
               <SecuritySettingsPanel />
             ) : active === "data" ? (
-              <div className="settings-subview">
-                <SettingsViewTabs label="数据视图" items={DATA_VIEWS} active={active} onSelect={selectSection} />
-                <DataSettingsPanel recoveryRequested={searchTarget?.target === "ui-recovery"} />
-              </div>
+              <DataSettingsPanel navigation={<SettingsViewTabs label="数据视图" items={DATA_VIEWS} active={active} onSelect={selectSection} />}
+                recoveryRequested={searchTarget?.target === "ui-recovery"}
+                legacyRequested={legacyRequested} />
             ) : active === "archived" ? (
-              <div className="settings-subview">
-                <SettingsViewTabs label="数据视图" items={DATA_VIEWS} active={active} onSelect={selectSection} />
-                <ArchivedSessionsSettingsPanel
-                  onRestoreSession={onRestoreSession}
-                  sessionHistory={sessionHistory}
-                  onDeleteSession={onDeleteSession}
-                  onOpenSession={onOpenSession}
-                  onClose={onClose}
-                  onToast={onToast}
-                />
-              </div>
+              <ArchivedSessionsSettingsPanel
+                navigation={<SettingsViewTabs label="数据视图" items={DATA_VIEWS} active={active} onSelect={selectSection} />}
+                onRestoreSession={onRestoreSession}
+                sessionHistory={sessionHistory}
+                onDeleteSession={onDeleteSession}
+                onOpenSession={onOpenSession}
+                onClose={onClose}
+                onToast={onToast}
+              />
             ) : active === "usage" ? (
-              <SettingsSection title="模型用量" desc="本机用量记录。费用以服务商账单为准。"><UsageQuotaPanel /></SettingsSection>
+              <SettingsSection title="模型用量" desc="费用以服务商账单为准。"><UsageQuotaPanel /></SettingsSection>
             ) : active === "notify-channels" ? (
               <SettingsSection title="通知设置" navigation={<SettingsViewTabs label="通知视图" items={NOTIFICATION_VIEWS} active={active} onSelect={selectSection} />}><NotifyChannelsPanel onToast={onToast} sessionId={sessionId} onOpenWeixin={() => selectSection("weixin-channel")} /></SettingsSection>
             ) : active === "weixin-channel" ? (
-              <SettingsSection title="微信连接" desc="在微信继续任务。请保持电脑联网并运行 EchoAgent。"><WeixinChannelPanel onToast={onToast} /></SettingsSection>
+              <SettingsSection title="微信连接" desc="在微信继续任务时，电脑需联网且 EchoAgent 正在运行。"><WeixinChannelPanel onToast={onToast} /></SettingsSection>
             ) : active === "cloud-storage" ? (
-              <SettingsSection title="云存储" desc="按需浏览与传输 WebDAV 文件。本地资料仅在手动操作时上传。"><CloudStoragePanel onToast={onToast} onUnsavedChange={setCloudDirty} /></SettingsSection>
+              <SettingsSection title="云存储" desc="连接 WebDAV 浏览和传输文件，仅在手动操作时上传本地资料。"><CloudStoragePanel onToast={onToast} onUnsavedChange={setCloudDirty} /></SettingsSection>
             ) : active === "general" ? (
               <div className="settings-subview">
                 <SettingsViewTabs label="通用视图" items={GENERAL_VIEWS} active={active} onSelect={selectSection} />

@@ -111,6 +111,17 @@ describe("InputAddMenu", () => {
       .toHaveAttribute("aria-disabled", "true");
   });
 
+  it("选择网页或电脑操作时可查看对应的数据提示", async () => {
+    render(<InputAddMenu onPickFiles={vi.fn()} onAutomationModeChange={vi.fn()} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "添加" }));
+    });
+    expect(screen.getByRole("menuitemradio", { name: "操作网页" }))
+      .toHaveAccessibleDescription("操作时，相关网页内容可能发送给当前模型。");
+    expect(screen.getByRole("menuitemradio", { name: "操作电脑" }))
+      .toHaveAccessibleDescription("操作时，相关屏幕内容可能发送给当前模型。");
+  });
+
   it("连接器子菜单只展示后端实际启用的 MCP 服务", async () => {
     const onOpenCapability = vi.fn();
     render(

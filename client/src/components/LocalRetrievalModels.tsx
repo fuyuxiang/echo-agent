@@ -50,8 +50,8 @@ export function LocalRetrievalModels() {
     <div className="local-retrieval__description">
       <strong>{ready ? "本地语义检索已就绪" : unsupported ? "关键词检索可用" : preparing ? "正在检查与修复模型" : "本地模型需要修复"}</strong>
       <span>{ready
-        ? `${status.source === "repaired" ? "使用已校验的本地模型。" : "客户端已内置模型，无需下载。"}向量生成与相关性排序在本机完成；用于回答的资料会交给当前对话模型。`
-        : unsupported ? "当前电脑使用关键词搜索，知识库与记忆仍可使用。" : preparing ? "正在处理本地模型文件，关键词搜索仍可使用。" : "内置模型暂不可用，可修复或重新安装客户端。修复期间，关键词搜索仍可使用。"}</span>
+        ? `${status.source === "repaired" ? "使用已校验的本地模型。" : "客户端已内置模型，无需下载。"}检索在本机完成，用于回答的资料会发送给当前对话模型。`
+        : unsupported ? "知识库与记忆可继续使用关键词搜索。" : preparing ? "修复期间可继续使用关键词搜索。" : "可修复模型或重新安装客户端，期间可使用关键词搜索。"}</span>
     </div>
     {preparing && <div className="local-retrieval__progress" role="status">
       <progress aria-label="本地模型准备进度" value={status.downloadedBytes} max={status.totalBytes || 1} />
@@ -69,15 +69,15 @@ export function LocalRetrievalModels() {
         </button><button type="button" disabled={busy} onClick={() => void importModels()}>导入离线模型</button></>}
     </div>}
     <details><summary>模型与隐私说明</summary>
-      <p>客户端内置中文向量模型 BGE base zh v1.5、相关性模型 BGE reranker base，均使用 INT8 版本，约占 400MB 安装空间。首次检索会加载模型，空闲后自动释放。个人记忆自动回忆不运行重排；组织知识仍由组织服务检索。</p>
-      <p>首次使用无需联网下载模型。仅修复缺失或损坏的模型时可能下载公开文件，不上传知识库；回答和自动整理记忆使用当前对话模型。</p>
+      <p>内置 BGE base zh v1.5 和 BGE reranker base 的 INT8 版，约占 400 MB。首次检索时加载，空闲后释放。自动回忆个人记忆时跳过排序，组织知识由组织服务检索。</p>
+      <p>修复时可能下载公开模型文件，知识库不随修复上传。回答和自动整理记忆使用当前对话模型。</p>
     </details>
     {ready && <details><summary>模型维护</summary>
-      <p>检查并校验现有模型，仅在文件缺失或损坏时下载修复。修复与离线导入使用用户数据目录，不改动客户端安装文件。</p>
+      <p>发现文件缺失或损坏时会下载修复，修复和导入的模型保存在用户数据目录。</p>
       <div className="local-retrieval__actions"><button type="button" disabled={busy} onClick={() => void act("retrieval_models_prepare")}>检查并修复模型</button><button type="button" disabled={busy} onClick={() => void importModels()}>导入离线模型</button></div>
     </details>}
     {!ready && !preparing && !unsupported && <details><summary>离线导入说明</summary>
-      <p>选择包含 embedding 和 reranker 两个目录的模型包，每个目录包含 model.onnx 与 tokenizer.json。按下方清单下载并重命名到对应路径，导入时会自动校验文件。</p>
+      <p>按下列路径放置模型文件，选择包含 embedding 和 reranker 的目录。导入时会校验文件。</p>
       <ul>{modelAssets.assets.map(asset => <li key={asset.path}><a href={`https://huggingface.co/${asset.repo}/resolve/${asset.revision}/${asset.remote}?download=true`} onClick={event => {
         event.preventDefault(); void openExternalUrl(event.currentTarget.href).catch(error => { if (alive.current) setError(String(error)); });
       }}>{asset.path}</a></li>)}</ul>

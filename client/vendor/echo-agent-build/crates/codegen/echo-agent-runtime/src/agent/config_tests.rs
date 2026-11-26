@@ -1071,6 +1071,7 @@ fn test_model_entry(
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            supports_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
         },
         api_key: api_key.map(|s| s.to_string()),
@@ -3040,6 +3041,79 @@ fn resolve_sampling(model: &ModelEntry, session_key: Option<&str>) -> SamplerCon
     let credentials = resolve_credentials(model, session_key);
     sampling_config_for_model(model, credentials, None, None, None, None)
 }
+#[test]
+fn model_capabilities_and_effort_defaults_apply_to_any_configured_model() {
+    let (_, models) = resolve_models_from_toml(
+        r#"
+        [model_providers.gateway]
+        base_url = "https://gateway.example.test/v1"
+        api_key = "test-key"
+        supports_tool_calls = false
+        reasoning_efforts = ["low", "high"]
+
+        [model.custom]
+        model_provider = "gateway"
+        reasoning_effort = "high"
+
+        [model.automatic]
+        model_provider = "gateway"
+        reasoning_effort_auto = true
+
+        [model.cleared]
+        model_provider = "gateway"
+        reasoning_efforts = []
+
+        [model.disabled]
+        model_provider = "gateway"
+        reasoning_effort = "high"
+        supports_reasoning_effort = false
+        "#,
+        None,
+    );
+    let explicit = resolve_sampling(&models["custom"], None);
+    assert_eq!(explicit.supports_tool_calls, Some(false));
+    assert_eq!(explicit.reasoning_effort, Some(ReasoningEffort::High));
+    assert!(models["automatic"].supports_reasoning_effort);
+    assert!(resolve_sampling(&models["automatic"], None).reasoning_effort.is_none());
+    assert!(!models["cleared"].supports_reasoning_effort);
+    assert!(models["cleared"].reasoning_efforts.is_empty());
+    assert!(resolve_sampling(&models["cleared"], None).reasoning_effort.is_none());
+    assert!(!models["disabled"].supports_reasoning_effort);
+    assert!(resolve_sampling(&models["disabled"], None).reasoning_effort.is_none());
+}
+
+#[test]
+fn official_profile_exposes_minimax_efforts_without_overriding_request_default() {
+    let (_, models) = resolve_models_from_toml(
+        r#"
+        [model.flash]
+        model = "MiniMax-M3.1-Flash"
+        base_url = "https://api.minimax.cn/v1"
+        api_backend = "chat_completions"
+
+        [model.messages]
+        model = "MiniMax-M3.1-Flash"
+        base_url = "https://api.minimax.cn/anthropic/v1"
+        api_backend = "messages"
+        reasoning_effort = "none"
+
+        [model.gateway]
+        model = "MiniMax-M3.1-Flash"
+        base_url = "https://gateway.example.test/v1"
+        "#,
+        None,
+    );
+    assert!(models["flash"].supports_reasoning_effort);
+    assert_eq!(models["flash"].supports_tool_calls, Some(true));
+    assert_eq!(models["flash"].reasoning_efforts.len(), 5);
+    assert!(models["flash"].reasoning_effort.is_none());
+    assert!(models["messages"].supports_reasoning_effort);
+    assert_eq!(models["messages"].reasoning_efforts.len(), 5);
+    assert!(models["messages"].reasoning_effort.is_none());
+    assert!(!models["gateway"].supports_reasoning_effort);
+    assert_eq!(models["gateway"].supports_tool_calls, None);
+}
+
 #[test]
 #[serial]
 fn e2e_user_overrides_default_model_key_with_custom_endpoint() {
@@ -6808,6 +6882,7 @@ fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            supports_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
             auto_compact_threshold_percent: None,
             system_prompt_label: None,

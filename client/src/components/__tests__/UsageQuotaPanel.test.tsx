@@ -55,7 +55,7 @@ describe("UsageQuotaPanel", () => {
       fireEvent.click(screen.getByText("本月"));
       expect(screen.getByText("每日配额")).toBeInTheDocument();
       expect(screen.getByText("100 / 500 (20%)")).toBeInTheDocument();
-      expect(screen.getByText("仅限制本机手动发送；自动化和其他客户端不受此限制。")).toBeInTheDocument();
+      expect(screen.getByText(/限额仅适用于本机手动发送.*自动化和其他客户端可继续使用/)).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

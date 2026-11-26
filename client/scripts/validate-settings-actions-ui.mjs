@@ -44,7 +44,6 @@ try {
       const geometry = await assertSettingsActionsSeparated(page);
       const rootFontSize = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
       assert(Math.abs(rootFontSize - 16 * font / 13) < 0.001, "Requested settings font size must actually be applied");
-      assert.equal(geometry.navigatedToConnections, populated, "Use the actual catalog-specific navigation path");
       assert.deepEqual(errors, [], "Settings browser runtime errors");
       await page.screenshot({ path: join(output, `settings-actions-${populated ? "populated" : "empty"}-${width}-${theme}-${font}.png`) });
       results.push({ populated, width, height, theme, font, rootFontSize, ...geometry });

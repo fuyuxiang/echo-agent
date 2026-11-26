@@ -30,7 +30,7 @@ select.echo-select:not([multiple]):not([size]) {
   padding-inline-end: var(--echo-select-padding-end, 34px);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23748095' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right var(--echo-select-indicator-offset, 10px) center;
+  background-position: right 10px center;
 }
 select.echo-select:hover:not(:disabled) { border-color: var(--echo-text-weak); }
 select.echo-select[aria-expanded="true"] { border-color: var(--echo-focus-ring); }

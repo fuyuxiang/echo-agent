@@ -547,6 +547,7 @@ pub(crate) async fn spawn_session_actor(
         context_window: context_window_override.unwrap_or(baseline_context_window),
         reasoning_effort: sampling_config.reasoning_effort,
         stream_tool_calls: Some(sampling_config.stream_tool_calls),
+        supports_tool_calls: sampling_config.supports_tool_calls,
     };
     let actor_pruning_config = echo_agent_chat_state::PruningConfig {
         enabled: session_pruning_config.enabled,
@@ -1627,6 +1628,7 @@ pub(crate) async fn spawn_session_actor(
         session_info: session_info.clone(),
         auth_method_id,
         model_auth_memo: std::cell::RefCell::new(None),
+        live_model_capabilities: std::cell::RefCell::new(models_manager.live_model_capabilities(&session_model_id)),
         attribution_callback,
         auth_manager,
         is_chat_kind,

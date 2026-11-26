@@ -534,16 +534,14 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
         const binding = await call('desktop_review_model_connection');
         assert(binding.model === scope.modelId.split('/').at(-1), 'Configured model binding differs');
         const http = new URL(binding.baseUrl).protocol === 'http:';
-        const label = `隔离个人模型-${nonce}`, marker = `CORE-CUSTOM-${nonce}`;
+        const marker = `CORE-CUSTOM-${nonce}`;
+        const priorProviderIds = new Set((await call('providers_list')).providers.map(provider => provider.id));
         (await wait(() => document.querySelector('button[aria-label="设置"]'), 'settings for personal model')).click();
         (await wait(() => [...document.querySelectorAll('.settings-navigation__item')].find((el) => el.textContent.trim() === '模型'), 'model settings')).click();
-        (await wait(() => document.querySelector('button[aria-label="管理模型连接"]'), 'connection management')).click();
-        (await wait(() => button(document, '添加模型连接'), 'add personal connection')).click();
-        const editor = await wait(() => document.querySelector('[role="dialog"][aria-label="添加模型连接"]'), 'personal connection editor');
-        set(await wait(() => editor.querySelector('#model-provider-kind'), 'explicit custom service'), 'custom');
+        (await wait(() => button(document, '添加模型'), 'add personal model')).click();
+        const editor = await wait(() => document.querySelector('[role="dialog"][aria-label="添加模型"]'), 'personal model editor');
+        set(await wait(() => editor.querySelector("#model-provider-kind"), "explicit custom service"), "custom");
         set(await wait(() => editor.querySelector('#model-base-url'), 'custom service address'), binding.baseUrl);
-        (await wait(() => button(editor, '更多设置'), 'connection advanced fields')).click();
-        set(await wait(() => editor.querySelector('#model-connection-label'), 'personal connection name'), label);
         if (http) {
           const consent = await wait(() => editor.querySelector('.model-connection-editor__http-consent input'), 'actual HTTP consent');
           assert(!consent.checked, 'HTTP consent must start unchecked'); consent.click();
@@ -558,21 +556,21 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
           const alert = editor.querySelector('.models-settings-panel__error, [role="alert"]');
           if (visible(alert)) throw new Error(`Actual connection test/save failed: ${alert.textContent.slice(0, 500)}`);
           if (document.contains(editor)) return null;
-          const data = await call('providers_list'), provider = data.providers.find((item) => item.label === label);
+          const data = await call('providers_list'), provider = data.providers.find(item => !priorProviderIds.has(item.id) && item.baseUrl === binding.baseUrl);
           const model = provider && data.models.find((item) => item.providerId === provider.id && item.remoteModelId === binding.model);
           // credentialConfigured also means an anonymous service is usable;
           // apiKey is the actual persisted-secret indicator in this DTO.
           assert(!provider || provider.source === 'personal' && !provider.managed && Boolean(provider.apiKey) === Boolean(binding.apiKey)
             && provider.baseUrl === binding.baseUrl && provider.allowInsecureHttp === http, 'Personal connection scope/auth was changed');
-          return model ? { providerId: provider.id, modelId: model.modelId, label, marker } : null;
+          return model ? { providerId: provider.id, modelId: model.modelId, label: provider.label, marker } : null;
         }, 'persisted normal connection from production editor', 90000);
         e.customModel = entry;
-        const modelRow = await wait(() => document.querySelector(`.model-connections__model-list [data-model-id="${CSS.escape(entry.modelId)}"]`), 'saved model detail');
-        (await wait(() => button(modelRow, '测试模型'), 'actual saved model connection test')).click();
+        const modelRow = await wait(() => document.querySelector(`.provider-card__model[data-model-id="${CSS.escape(entry.modelId)}"]`), 'saved model detail');
+        (await wait(() => [...modelRow.querySelectorAll('button[aria-label^="测试模型 "]')].find(el => !el.disabled), 'actual saved model connection test')).click();
         await wait(() => {
-          const failed = modelRow.querySelector('.model-connections__test-result--error');
+          const failed = modelRow.querySelector('.provider-card__test--error');
           if (visible(failed)) throw new Error(`Actual saved model test failed: ${failed.textContent.slice(0, 500)}`);
-          return visible(modelRow.querySelector('.model-connections__test-result--success'));
+          return visible(modelRow.querySelector('.provider-card__test--success'));
         }, 'actual saved model test success', 90000);
         (await wait(() => document.querySelector('button[aria-label="关闭设置"]'), 'close personal model settings')).click();
         await select(e.sessionId); await choose(entry.modelId);

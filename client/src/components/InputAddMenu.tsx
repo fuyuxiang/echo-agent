@@ -62,13 +62,13 @@ const AUTOMATION_ITEMS: MenuItem[] = [
   {
     id: "browser-use",
     label: "操作网页",
-    description: "让 Agent 打开和操作网页",
+    description: "操作时，相关网页内容可能发送给当前模型。",
     icon: <Globe2 size={16} />,
   },
   {
     id: "computer-use",
     label: "操作电脑",
-    description: "读取控件、查看屏幕并操作本机应用",
+    description: "操作时，相关屏幕内容可能发送给当前模型。",
     icon: <Monitor size={16} />,
   },
 ];

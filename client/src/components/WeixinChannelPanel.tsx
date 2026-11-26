@@ -225,7 +225,7 @@ export function WeixinChannelPanel(_props: { onToast?: (message: string) => void
     {!status && <div className="weixin-channel__card" role="status">{statusError ? <>绑定状态读取失败：{statusError}<div className="weixin-channel__recovery"><button type="button" className="settings-btn" onClick={refreshStatus}>重试</button><button type="button" className="settings-btn settings-btn--danger weixin-channel__secondary" onClick={disconnect}>清除本机绑定</button></div></> : "正在读取绑定状态…"}</div>}
     {status && !status.connected && <section className="weixin-channel__card">
       <h3>绑定微信</h3>
-      <p>用手机微信扫描二维码，在微信内完成确认。二维码仅在本机显示。</p>
+      <p>用微信扫码并确认，二维码仅在本机显示。</p>
       {qrImage && <img className="weixin-channel__qr" src={qrImage} alt="微信绑定二维码" />}
       {qrUrl && <p aria-live="polite">{STATUS[qrStatus] ?? qrStatus}</p>}
       {qrStatus === "need_verifycode" && <div className="weixin-channel__code"><input className="form-control" aria-label="微信配对码" inputMode="numeric" value={verifyCode} onChange={(event) => setVerifyCode(event.target.value)} placeholder="微信显示的配对码" disabled={checkingCode} /><button type="button" className="settings-btn settings-btn--primary" onClick={submitCode} disabled={checkingCode}>{checkingCode ? "正在验证…" : "提交配对码"}</button></div>}
@@ -233,14 +233,14 @@ export function WeixinChannelPanel(_props: { onToast?: (message: string) => void
     </section>}
     {status?.connected && <>
       <section className="weixin-channel__card"><div className="weixin-channel__card-header"><h3>{status.online && !statusError ? "已连接" : "已绑定，连接中"}</h3><button type="button" className="settings-btn weixin-channel__secondary" onClick={refreshStatus}>刷新状态</button></div>
-        <p>连接状态：{statusError ? `无法确认 · ${statusError}` : status.online ? "正在接收微信消息" : "暂时无法接收微信消息，等待自动恢复"}{status.lastError && !statusError ? ` · ${status.lastError}` : ""}</p>
+        <p>连接状态：{statusError ? `无法确认 · ${statusError}` : status.online ? "正在接收微信消息" : "暂时无法接收消息，等待自动恢复"}{status.lastError && !statusError ? ` · ${status.lastError}` : ""}</p>
         {status.pendingReplies > 0 && <p role="status">{status.pendingReplies} 条文字回复待发送，连接恢复后自动重试。</p>}
 
         <p>当前会话：{status.activeSession ? `${status.activeSessionTitle ?? "任务"}` : "尚未选择"}</p>
-        <p>在任务列表右键选择“在微信继续”，即可把任意已有任务设为微信当前会话。</p>
+        <p>右键任务并选择「在微信继续」，即可切换微信会话。</p>
       </section>
       <section className="weixin-channel__card"><h3>授权工作区</h3>
-        <p>所选目录中的已有任务可在微信访问。“新任务：内容”会在标记为默认的目录创建任务。</p>
+        <p>微信可访问授权目录中的任务，新任务默认在标记的目录创建。</p>
         {workspacesLoading && <p role="status">正在读取工作区…</p>}
         {workspacesError && <p role="alert">工作区列表读取失败：{workspacesError} <button type="button" className="settings-btn weixin-channel__secondary" onClick={refreshWorkspaces}>重试</button></p>}
         {!workspacesLoading && !workspacesError && workspaces.length === 0 && <p>暂无已有工作区。先在桌面创建任务。</p>}
@@ -257,7 +257,7 @@ export function WeixinChannelPanel(_props: { onToast?: (message: string) => void
       </section>
       <SettingsDisclosure title="单独交接的任务" description={`${status.sharedSessions.length} 个任务 · 可单独撤销交接授权`}>
       <section className="weixin-channel__card"><h3>交接授权</h3>
-        <p>交接授权可让微信访问单个任务。若所属工作区也已授权，撤销交接后该任务仍可在微信访问。</p>
+        <p>撤销交接后，仍可通过已授权的工作区访问该任务。</p>
         {status.sharedSessions.length === 0 && <p>暂无单独交接的任务。</p>}
         {status.sharedSessions.map((session) => <div className="weixin-channel__shared" key={session.sessionId}>
           <div><strong>{session.title}</strong><small>#{session.sessionId.slice(-8)}{session.cwd && ` · ${session.cwd}`}</small>{status.allowedWorkspaces.includes(session.cwd) && <small>所属工作区已授权，撤销交接后仍可访问</small>}</div>
@@ -265,14 +265,14 @@ export function WeixinChannelPanel(_props: { onToast?: (message: string) => void
         </div>)}
       </section>
       </SettingsDisclosure>
-      <SettingsDisclosure title="连接详情" description="查看微信 Bot 标识与当前会话编号">
+      <SettingsDisclosure title="连接详情" description="查看微信 Bot 标识和当前会话编号。">
         <p className="settings-hint">微信 Bot：{status.botId}</p>
         <p className="settings-hint">当前会话编号：{status.activeSession ?? "尚未选择"}</p>
       </SettingsDisclosure>
       <details className="weixin-channel__card weixin-channel__guide"><summary>微信指令与使用说明</summary>
         <div className="weixin-channel__commands"><span>任务 / 任务2</span><span>每页 5 条；也支持“任务 2”</span><span>切换 #编号</span><span>进入已有会话</span><span>工作区</span><span>查看新任务可用目录</span><span>新任务：内容</span><span>在默认工作区新建任务</span><span>新任务 2：内容</span><span>在指定工作区新建任务</span><span>状态 / 停止</span><span>查看或停止当前任务</span></div>
-        <p>发送“/文件 相对路径”，可取回当前任务工作区内不超过 20 MB 的文件。</p>
-        <p>直接发送文字、语音转写或图片和文档，会继续当前会话。任务沿用桌面设置的权限模式；需要确认时，会收到带编号的请求。</p>
+        <p>发送「/文件 相对路径」可取回当前工作区内不超过 20 MB 的文件。</p>
+        <p>发送文字、语音转写、图片或文档可继续当前会话。任务沿用桌面权限，待确认的请求会带编号。</p>
       </details>
       <button type="button" className="settings-btn settings-btn--danger weixin-channel__disconnect" onClick={disconnect}>解除绑定</button>
     </>}

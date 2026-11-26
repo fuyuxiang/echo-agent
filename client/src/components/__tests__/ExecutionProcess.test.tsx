@@ -175,7 +175,8 @@ describe("assistant execution process", () => {
       act(() => vi.advanceTimersByTime(30_000));
       expect(screen.getByRole("note")).toBeVisible();
       rerender(view({ active: false, stopReason: "cancelled" }));
-      expect(screen.queryByRole("note")).toBeNull();
+      expect(screen.queryByText(/未收到新进展/)).toBeNull();
+      expect(screen.getByRole("note")).toHaveTextContent("1 项操作结果待确认");
       unmount();
     } finally { vi.useRealTimers(); }
   });

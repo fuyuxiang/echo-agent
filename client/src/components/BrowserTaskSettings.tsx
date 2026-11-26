@@ -101,13 +101,15 @@ export function BrowserTaskSettings() {
         {options.map(item => <option key={item.sessionId} value={item.sessionId}>{item.title || "未命名任务"}{item.sessionId === currentId && item.title !== "当前任务" ? "（当前任务）" : ""}</option>)}
       </Select>
     </label>
-    {!selectedId ? <p className="settings-hint">选择需要管理的任务，其他任务的浏览器数据不受影响。</p>
+    {!selectedId ? <p className="settings-hint">{options.length ? "仅管理所选任务的浏览器数据。" : "暂无可管理的任务。"}</p>
       : automation.error ? <p className="settings-msg settings-msg--warn" role="alert">{automation.error}
         <button type="button" className="settings-btn" disabled={busy} onClick={automation.reconnect}>重新读取</button></p>
       : !status ? <p className="settings-hint" role="status">正在读取任务的浏览器设置…</p> : <>
         <h4 className="security-settings__browser-heading">浏览器连接</h4>
-        <p className="settings-hint">内置浏览器可在侧栏接手，公网登录和浏览记录按账号共享。独立浏览器保留当前任务的登录状态。扩展可接入已登录的 Chrome 或 Edge 标签。</p>
-        <p className="settings-hint">扩展所连接的网页沿用原浏览器的网络权限。{taskWorking ? "请先停止当前执行，再切换浏览器。" : ""}</p>
+        <p className="settings-hint">内置浏览器可在侧栏接手，公网登录和浏览记录按账号共享。</p>
+        <p className="settings-hint">独立浏览器为当前任务保留登录状态。</p>
+        <p className="settings-hint">扩展连接已登录的 Chrome 或 Edge 标签，并沿用原浏览器的网络权限。</p>
+        {taskWorking && <p className="settings-hint">请先停止任务再切换浏览器。</p>}
         <p className="settings-hint" role="status">{status.extensionConnected ? "已连接所选浏览器标签页"
           : extensionSource ? currentPairing && !currentPairing.expired ? "等待扩展连接" : "浏览器尚未连接，可重新连接或使用任务浏览器"
           : browserSource === "panel" ? "当前使用会话内置浏览器" : browserSource === "isolated" ? "当前使用任务独立浏览器" : "当前使用任务浏览器"}</p>
@@ -125,7 +127,7 @@ export function BrowserTaskSettings() {
         {currentPairing && !status.extensionConnected && <div className="settings-hint browser-task-settings__pairing">
           <p>在 Chrome 或 Edge 的扩展管理页开启开发者模式，选择“加载已解压的扩展程序”，使用下方目录：</p>
           <code>{currentPairing.extensionPath}</code>
-          <p>打开扩展，勾选允许访问的标签页并粘贴连接地址。连接成功后，可返回对话继续任务。</p>
+          <p>在扩展中勾选允许访问的标签页，粘贴连接地址。</p>
           {currentPairing.expired ? <p role="status">连接地址已过期，请重新生成连接地址，或使用任务浏览器。</p> : <>
           <input className="form-control" readOnly aria-label="浏览器连接地址" value={currentPairing.endpoint} onFocus={event => event.currentTarget.select()} />
           <button type="button" className="settings-btn" disabled={busy} onClick={() => void copyEndpoint()}>复制连接地址</button>
@@ -136,16 +138,16 @@ export function BrowserTaskSettings() {
         <label className="settings-row settings-row--comfortable browser-task-settings__network">
           <span className="settings-row__label settings-row__label--stacked">
             <span className="settings-row__name">{extensionSource ? "允许导航到本机与内网页面" : "允许访问本机与内网"}</span>
-            <span className="settings-row__description">{extensionSource ? "仅限制 Agent 主动打开的页面地址，网页自身的请求沿用原浏览器的网络权限。"
-              : browserSource === "panel" ? "开启后，新开的内置标签可以访问本机与内网。关闭会断开连接并关闭使用该权限的网页。也可在侧栏只授权所需的本地端口。"
-              : "仅对所选任务生效。侧栏预览也可单独授权给指定的本地端口。"}</span>
+            <span className="settings-row__description">{extensionSource ? "仅控制 Agent 主动打开的地址，页面自身的请求不受此开关限制。"
+              : browserSource === "panel" ? "开启后新标签可访问本机与内网，关闭时会断开并关闭相关网页。也可在侧栏仅授权所需端口。"
+              : "仅对所选任务生效，也可在侧栏只授权指定端口。"}</span>
           </span>
           <input type="checkbox" checked={status.allowPrivateNetwork} disabled={busy}
             onChange={event => void run(() => automationSetPrivateNetwork(selectedId, event.target.checked), "访问范围已更新。")}/>
         </label>
         <h4 className="security-settings__browser-heading">任务网页数据</h4>
-        <p className="settings-hint">内置网页的公网登录和浏览记录可在网页侧栏的工具菜单中清除。</p>
-        {extensionSource && <p className="settings-hint">扩展连接的登录、缓存和下载文件可在原浏览器中管理。</p>}
+        <p className="settings-hint">可在网页侧栏清除内置浏览器的公网登录和浏览记录。</p>
+        {extensionSource && <p className="settings-hint">扩展的登录、缓存和下载文件在原浏览器中管理。</p>}
         <div className="settings-row settings-row--comfortable">
           <div className="settings-row__label settings-row__label--stacked">
             <span className="settings-row__name">下载文件与任务专用数据</span>

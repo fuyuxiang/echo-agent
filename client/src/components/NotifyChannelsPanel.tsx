@@ -15,6 +15,7 @@ import {
   type NotifyChannel,
   type ChannelKind,
 } from "@/lib/notify-channels";
+import { SettingsDisclosure } from "./SettingsDisclosure";
 import { useAppDialog } from "./AppDialog";
 import { SettingsGroup } from "./SettingsSections";
 import { desktopPreferencesGet, desktopNotificationPreviewSave } from "@/lib/agent-client";
@@ -34,10 +35,10 @@ const ADDABLE_KINDS: ChannelKind[] = [
   "generic-webhook",
 ];
 
-export function NotifyChannelsPanel({ onToast, sessionId, onOpenWeixin }: { onToast?: (msg: string) => void; sessionId?: string; onOpenWeixin?: () => void }) {
+export function NotifyChannelsPanel({ onToast, onOpenWeixin, sessionId }: { onToast?: (msg: string) => void; onOpenWeixin?: () => void; sessionId?: string }) {
   const [channels, setChannels] = useState<NotifyChannel[]>([]);
   const [desktop, setDesktop] = useState<DesktopNotifyStatus | null>(null);
-  const [desktopTestResult, setDesktopTestResult] = useState<string | null>(null);
+  const [desktopTest, setDesktopTest] = useState<{ text: string; error: boolean }>();
   const [desktopLoading, setDesktopLoading] = useState(true);
   const [desktopError, setDesktopError] = useState<string | null>(null);
   const [showTaskTitle, setShowTaskTitle] = useState(false);
@@ -244,25 +245,29 @@ export function NotifyChannelsPanel({ onToast, sessionId, onOpenWeixin }: { onTo
     if (!desktop || mutationInFlight.current) return;
     mutationInFlight.current = true;
     setMutating("desktop-toggle");
-    setDesktopTestResult(null);
+    setDesktopTest(undefined);
     try {
       await setDesktopNotifyEnabled(!desktop.enabled);
       await loadDesktop();
     } catch (error) { reportFeedback(`更新桌面通知失败：${String(error).replace(/^Error:\s*/, "")}`); }
     finally { mutationInFlight.current = false; setMutating(null); }
   };
-  const testDesktop = async () => {
-    if (mutationInFlight.current) return;
+  const runDesktopTest = async () => {
+    if (mutationInFlight.current || !desktop?.enabled) return;
     mutationInFlight.current = true;
     setMutating("desktop-test");
-    setDesktopTestResult(null);
+    setDesktopTest(undefined);
     try {
       const result = await testDesktopNotify(sessionId);
-      setDesktopTestResult(result.ok
-        ? `已向系统提交通知。${sessionId ? "点击提醒可返回当前任务。" : ""}若未看到，请检查系统通知设置和勿扰模式。`
-        : `桌面提醒提交失败：${result.error ?? "未知错误"}`);
-    } catch (error) { setDesktopTestResult(`桌面提醒提交失败：${String(error).replace(/^Error:\s*/, "")}`); }
-    finally { mutationInFlight.current = false; setMutating(null); }
+      setDesktopTest(result.ok
+        ? { text: "已向系统提交通知。若未看到弹窗，请检查系统通知权限和勿扰模式。", error: false }
+        : { text: `桌面通知提交失败：${result.error ?? "请稍后重试"}`, error: true });
+    } catch (error) {
+      setDesktopTest({ text: `桌面通知提交失败：${String(error).replace(/^Error:\s*/, "")}`, error: true });
+    } finally {
+      mutationInFlight.current = false;
+      setMutating(null);
+    }
   };
   const customChannels = channels.filter(channel => channel.kind !== "desktop");
 
@@ -272,7 +277,7 @@ export function NotifyChannelsPanel({ onToast, sessionId, onOpenWeixin }: { onTo
         <div className="settings-row settings-row--comfortable notify-panel__preference">
           <div className="settings-row__label settings-row__label--stacked">
             <span className="settings-row__name">桌面通知</span>
-            <span className="settings-row__description">任务完成、失败或需要确认时，通过系统通知提醒你。关闭后仍保留应用内通知记录。</span>
+            <span className="settings-row__description">在任务结束或需要确认时提醒你，关闭后仍保留应用内通知记录。</span>
             <span className="settings-preference-state" aria-live="polite">{desktopLoading ? "正在读取状态…" : desktopError ? "读取失败，请重试" : mutating === "desktop-toggle" ? "正在保存…" : desktop?.source === "policy" ? "组织策略已限制桌面通知" : desktop?.enabled ? desktop.source === "default" ? "已开启 · 默认设置" : "已开启" : "已关闭"}</span>
           </div>
           <label className="sk-toggle">
@@ -286,23 +291,21 @@ export function NotifyChannelsPanel({ onToast, sessionId, onOpenWeixin }: { onTo
           <button type="button" className="settings-btn" onClick={() => void loadDesktop()} disabled={desktopLoading}>重试读取桌面提醒</button>
         </div>}
         {desktop?.policyError && <p className="settings-msg settings-msg--warn">{desktop.policyError}</p>}
-        <div className="notify-panel__test-row">
-          <details className="notify-panel__help">
-            <summary>收不到桌面通知？</summary>
-            <p>请检查系统通知权限与勿扰模式。macOS：系统设置 → 通知；Windows：设置 → 系统 → 通知，找到 EchoAgent 并允许通知。</p>
-            <p>查看当前任务时，不重复弹出该任务的常规提醒。定时任务按各自的通知设置提醒。</p>
-            <p>应用目前无法读取系统授权状态。测试提交成功表示系统已接收请求，是否弹出仍由系统决定。</p>
-          </details>
-          <button type="button" className="settings-btn" onClick={() => void testDesktop()} disabled={!desktop?.enabled || desktopLoading || !!desktopError || mutating !== null}>{mutating === "desktop-test" ? "正在提交…" : "发送测试通知"}</button>
-        </div>
-        {desktopTestResult && <p className="notify-panel__feedback" role="status">{desktopTestResult}</p>}
+        <SettingsDisclosure title="收不到桌面通知？" settingId="desktop-notification-help">
+          <p>在 macOS 的「系统设置 → 通知」或 Windows 的「设置 → 系统 → 通知」中允许 EchoAgent 发送通知，并检查勿扰模式。</p>
+          <p>正在查看任务时，常规通知可能不会重复弹出。可以发送一条测试通知来检查系统是否显示。</p>
+          <button type="button" className="settings-btn" disabled={!desktop?.enabled || desktopLoading || !!desktopError || mutating !== null}
+            onClick={() => void runDesktopTest()}>{mutating === "desktop-test" ? "正在提交…" : "发送测试通知"}</button>
+          {desktopTest && <p className={desktopTest.error ? "settings-msg settings-msg--warn" : "settings-msg"}
+            role={desktopTest.error ? "alert" : "status"}>{desktopTest.text}</p>}
+        </SettingsDisclosure>
       </SettingsGroup>
 
       <SettingsGroup title="通知内容" settingId="notification-content">
         <div className="settings-row settings-row--comfortable notify-panel__preference">
           <div className="settings-row__label settings-row__label--stacked">
             <span className="settings-row__name">在通知中显示任务标题</span>
-            <span className="settings-row__description">关闭后，新通知将隐藏任务标题，减少锁屏信息暴露。点击通知仍可回到关联任务。</span>
+            <span className="settings-row__description">关闭后，新通知会隐藏任务标题，点击仍可打开原任务。</span>
           </div>
           <label className="sk-toggle">
             <input type="checkbox" role="switch" aria-label="在通知中显示任务标题" checked={showTaskTitle}
@@ -319,12 +322,12 @@ export function NotifyChannelsPanel({ onToast, sessionId, onOpenWeixin }: { onTo
 
       <section className="notify-advanced" data-setting-id="external-notifications">
         <button type="button" className="notify-advanced__toggle" aria-expanded={advancedOpen} aria-controls={advancedId} onClick={() => setAdvancedOpen(!advancedOpen)}>
-          <span className="notify-advanced__heading"><span className="settings-group__title">推送到其他应用</span><span className="settings-group__desc">高级选项 · Slack、Discord 和 Webhook</span></span>
+          <span className="notify-advanced__heading"><span className="settings-group__title">推送到其他应用</span><span className="settings-group__desc">支持 Slack、Discord 和 Webhook。</span></span>
           <span className="notify-advanced__count">{loading ? "正在读取…" : loadError ? "读取失败" : customChannels.length ? `${customChannels.length} 个已配置` : "未配置"}</span>
           <ChevronDown size={16} aria-hidden="true" />
         </button>
         {advancedOpen && <div className="notify-advanced__content" id={advancedId}>
-          <p className="notify-panel__external-note">将任务事件发送到已配置的外部应用，接收范围遵循各任务的通知设置。远程对话与账号绑定请前往{onOpenWeixin ? <button type="button" className="settings-btn settings-btn--ghost settings-btn--compact" onClick={onOpenWeixin}>微信连接</button> : "“设置 → 微信连接”"}。</p>
+          <p className="notify-panel__external-note">按各任务的设置，将通知发到外部应用。要在微信继续任务，请前往{onOpenWeixin ? <button type="button" className="settings-btn settings-btn--ghost settings-btn--compact" onClick={onOpenWeixin}>微信连接</button> : "“设置 → 微信连接”"}。</p>
           {loadError && (
             <div className="panel-inline-error" role="alert">
               <span>通知渠道加载失败：{loadError}</span>
@@ -361,13 +364,13 @@ export function NotifyChannelsPanel({ onToast, sessionId, onOpenWeixin }: { onTo
               ))}
             </ul>
           ) : !loading && !loadError ? (
-            <div className="notify-panel__empty">尚未添加外部推送，日常桌面提醒无需配置这里。</div>
+            <div className="notify-panel__empty">暂无外部推送渠道。</div>
           ) : null}
 
           {!editorOpen && <button type="button" className="settings-btn notify-panel__add-button" onClick={() => { cancelEdit(); setEditorOpen(true); }} disabled={loading || !!loadError || mutating !== null}><Plus size={14} />添加渠道</button>}
           {editorOpen && <form className="notify-panel__editor" aria-label={editingId ? "编辑通知渠道" : "添加通知渠道"} onSubmit={(event) => { event.preventDefault(); void save(); }}>
             <h4>{editingId ? "编辑渠道" : "添加渠道"}</h4>
-            {editingId && <p className="notify-panel__edit-hint">正在编辑“{channels.find((item) => item.id === editingId)?.label}”。Webhook 地址已隐藏；留空表示保持原地址。</p>}
+            {editingId && <p className="notify-panel__edit-hint">正在编辑「{channels.find((item) => item.id === editingId)?.label}」。</p>}
             <div className="notify-panel__add">
               <label className="notify-panel__field">渠道类型<Select className="form-control" autoFocus={!editingId} aria-label="通知渠道类型" value={newKind} disabled={Boolean(editingId) || mutating !== null || loading || Boolean(loadError)} onChange={(e) => setNewKind(e.target.value as ChannelKind)}>
                 {ADDABLE_KINDS.map((kind) => (
@@ -384,7 +387,7 @@ export function NotifyChannelsPanel({ onToast, sessionId, onOpenWeixin }: { onTo
                 disabled={mutating !== null || loading || Boolean(loadError)}
                 onChange={(e) => setNewLabel(e.target.value)}
               /></label>
-              {newKind !== "desktop" && <label className="notify-panel__field notify-panel__field--endpoint">{editingId ? "替换 Webhook URL（留空保留）" : "Webhook URL"}<input
+              {newKind !== "desktop" && <label className="notify-panel__field notify-panel__field--endpoint">{editingId ? "替换 Webhook URL" : "Webhook URL"}<input
                 className="form-control"
                 type="url"
                 autoComplete="off"
