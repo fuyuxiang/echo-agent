@@ -971,18 +971,21 @@ pub(crate) fn build_prompt_blocks(
     Ok(blocks)
 }
 
-/// Send a typed ACP prompt. Supported images are carried as real ImageContent;
-/// other files are explicit @path references so the runtime's read_file tool
-/// can load them on demand.
-pub async fn prompt_for_automation(
+#[derive(Default)]
+pub(crate) struct AutomationPromptOptions<'a> {
+    pub(crate) checkpoint: bool,
+    pub(crate) recovering: bool,
+    pub(crate) pinned_workflow_id: Option<&'a str>,
+}
+
+/// Send a scheduled ACP prompt with its recovery and workflow metadata.
+pub(crate) async fn prompt_for_automation(
     tx: &AcpAgentTx,
     admission: &HostPromptAdmission,
     session_id: &str,
     prompt_id: &str,
     text: &str,
-    checkpoint: bool,
-    recovering: bool,
-    pinned_workflow_id: Option<&str>,
+    options: AutomationPromptOptions<'_>,
 ) -> Result<crate::bridge::CompleteEvent> {
     let stopped_before_send = || {
         crate::bridge::parse_complete_event(&serde_json::json!({
@@ -998,26 +1001,17 @@ pub async fn prompt_for_automation(
     }
     let mut blocks = build_team_prompt_blocks(session_id, prompt_id, text, &[], None)?;
     if let Some(acp::ContentBlock::Text(block)) = blocks.first_mut() {
-        block.meta.get_or_insert_with(Default::default).insert(
-            "desktopScheduledTurn".into(),
-            serde_json::Value::Bool(true),
-        );
-    }
-    if checkpoint || recovering {
-        if let Some(acp::ContentBlock::Text(block)) = blocks.first_mut() {
-            block.meta.get_or_insert_with(Default::default).insert(
+        let meta = block.meta.get_or_insert_with(Default::default);
+        meta.insert("desktopScheduledTurn".into(), serde_json::Value::Bool(true));
+        if options.checkpoint || options.recovering {
+            meta.insert(
                 "desktopAutomation".into(),
-                serde_json::json!(if recovering { "finish" } else { "run" }),
+                serde_json::json!(if options.recovering { "finish" } else { "run" }),
             );
         }
-    }
-    if let (Some(id), Some(acp::ContentBlock::Text(block))) =
-        (pinned_workflow_id, blocks.first_mut())
-    {
-        block
-            .meta
-            .get_or_insert_with(Default::default)
-            .insert("desktopPinnedWorkflow".into(), serde_json::json!(id));
+        if let Some(id) = options.pinned_workflow_id {
+            meta.insert("desktopPinnedWorkflow".into(), serde_json::json!(id));
+        }
     }
     let meta = serde_json::Map::from_iter([("promptId".into(), serde_json::json!(prompt_id))]);
     let mut req = acp::PromptRequest::new(session_id.to_string(), blocks).meta(Some(meta));
@@ -1137,9 +1131,7 @@ pub(crate) fn enqueue_prepared_prompt(
 ) -> Result<impl std::future::Future<Output = Result<acp::PromptResponse>> + use<>> {
     let response =
         echo_agent_acp::acp_enqueue(request, tx).map_err(|error| anyhow!("prompt: {error:?}"))?;
-    Ok(async move {
-        response.await.map_err(|error| anyhow!("prompt: {error:?}"))
-    })
+    Ok(async move { response.await.map_err(|error| anyhow!("prompt: {error:?}")) })
 }
 
 pub(crate) fn build_team_prompt_blocks(
@@ -1490,9 +1482,7 @@ mod tests {
             session_id,
             prompt_id,
             "Synthetic task",
-            false,
-            false,
-            None,
+            AutomationPromptOptions::default(),
         )
         .await
         .unwrap();
@@ -1521,9 +1511,7 @@ mod tests {
             session_id,
             prompt_id,
             "Synthetic task",
-            false,
-            false,
-            None,
+            AutomationPromptOptions::default(),
         );
         let refuse = async {
             let echo_agent_acp::AcpAgentMessage::Prompt(request) = agent.rx.recv().await.unwrap()
@@ -2172,9 +2160,10 @@ mod tests {
                     &session_id,
                     &prompt_id,
                     &prompt,
-                    true,
-                    false,
-                    None,
+                    AutomationPromptOptions {
+                        checkpoint: true,
+                        ..Default::default()
+                    },
                 ),
             )
             .await;
@@ -2207,7 +2196,10 @@ mod tests {
             let completion = tokio::time::timeout(Duration::from_secs(80), prompt_for_automation(
                 &handle.tx, &admission, session_id, &prompt_id,
                 "The original turn was interrupted. From the previous command result, return the exact marker that it wrote. Do not use tools.",
-                false, true, None,
+                AutomationPromptOptions {
+                    recovering: true,
+                    ..Default::default()
+                },
             )).await.unwrap().unwrap();
             assert_eq!(
                 crate::bridge::completion_disposition(&completion),

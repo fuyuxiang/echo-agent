@@ -3716,7 +3716,10 @@ fn result_from_reader(
         .filter(|tool| !matches!(tool.status.as_str(), "completed" | "failed"))
         .max_by_key(|tool| tool.order)
         .map(|tool| tool.title.clone());
-    let mut completed: Vec<_> = tools.values().filter(|tool| tool.status == "completed").collect();
+    let mut completed: Vec<_> = tools
+        .values()
+        .filter(|tool| tool.status == "completed")
+        .collect();
     completed.sort_unstable_by_key(|tool| tool.order);
     let mut completed_orders = HashMap::<&str, usize>::new();
     for tool in &completed {
@@ -4802,12 +4805,14 @@ async fn run_automation_once(
         &session_id,
         &prompt_id,
         prompt,
-        automation.recover_after_interruption,
-        recovering,
-        automation
-            .workflow_skill
-            .as_ref()
-            .map(|binding| binding.workflow_id.as_str()),
+        crate::agent_runtime::AutomationPromptOptions {
+            checkpoint: automation.recover_after_interruption,
+            recovering,
+            pinned_workflow_id: automation
+                .workflow_skill
+                .as_ref()
+                .map(|binding| binding.workflow_id.as_str()),
+        },
     )
     .await
     .map_err(|error| error.to_string())?;

@@ -912,11 +912,12 @@ async fn learn_from_chat(
     }
     let request_was_clipped = request.trim().len() > MAX_EVIDENCE;
     let request = clip(request.trim(), MAX_EVIDENCE).to_owned();
-    let (mut evidence, steps, history_truncated) = tauri::async_runtime::spawn_blocking(move || {
-        crate::automations::workflow_chat_evidence(cwd, session_id, prompt_id, request)
-    })
-    .await
-    .map_err(|_| "读取任务记录失败")??;
+    let (mut evidence, steps, history_truncated) =
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::automations::workflow_chat_evidence(cwd, session_id, prompt_id, request)
+        })
+        .await
+        .map_err(|_| "读取任务记录失败")??;
     if evidence.result.trim().is_empty()
         || !learning_signal(&evidence.request, steps.len())
         || has_source(&library, &evidence.source)
@@ -1527,7 +1528,11 @@ pub async fn workflow_skills_activate(
             let path = skill_path(&directory, &id);
             if let Some(number) = version {
                 let candidate = workflow.version(number)?;
-                if candidate.evaluation.as_ref().is_some_and(|result| !result.passed()) {
+                if candidate
+                    .evaluation
+                    .as_ref()
+                    .is_some_and(|result| !result.passed())
+                {
                     return Err("此版本未通过验证，请修订并重新验证后启用".into());
                 }
                 crate::paths::write_private_file(&path, render_skill(&id, candidate).as_bytes())?;

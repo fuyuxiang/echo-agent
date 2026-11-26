@@ -949,7 +949,7 @@ fn config_menu_only_model_derives_support_and_default() {
     cfg.config_models.insert(
         "menu-only".to_string(),
         config::ConfigModelOverride {
-            reasoning_efforts: vec![
+            reasoning_efforts: Some(vec![
                 ReasoningEffortOption {
                     id: "balanced".to_string(),
                     value: ReasoningEffort::Medium,
@@ -964,7 +964,7 @@ fn config_menu_only_model_derives_support_and_default() {
                     description: None,
                     default: true,
                 },
-            ],
+            ]),
             ..Default::default()
         },
     );

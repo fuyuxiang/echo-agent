@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::State;
 use toml::map::Map;
-use toml::Value;
+use toml::{Table, Value};
 
 use echo_agent_runtime::agent::model_capabilities::model_capability_profile;
 use echo_agent_runtime::sampling::{ApiBackend, ReasoningEffort};
@@ -723,27 +723,30 @@ fn resolved_provider_api_key(table: &Map<String, Value>) -> Option<String> {
 pub(crate) fn require_model_images_if_declared(model_id: &str) -> Result<(), String> {
     let config = read_config_checked()?;
     let (model, provider) = model_and_provider_tables(&config, model_id);
-    let images = capabilities_from_tables(model, provider).images.or_else(|| {
-        let model = model?;
-        let inherited = |key| {
-            model
-                .get(key)
+    let images = capabilities_from_tables(model, provider)
+        .images
+        .or_else(|| {
+            let model = model?;
+            let inherited = |key| {
+                model.get(key).and_then(Value::as_str).or_else(|| {
+                    provider
+                        .and_then(|table| table.get(key))
+                        .and_then(Value::as_str)
+                })
+            };
+            let backend = match inherited("api_backend").unwrap_or("chat_completions") {
+                "chat_completions" => ApiBackend::ChatCompletions,
+                "responses" => ApiBackend::Responses,
+                "messages" => ApiBackend::Messages,
+                _ => return None,
+            };
+            let remote_id = model
+                .get("model")
                 .and_then(Value::as_str)
-                .or_else(|| provider.and_then(|table| table.get(key)).and_then(Value::as_str))
-        };
-        let backend = match inherited("api_backend").unwrap_or("chat_completions") {
-            "chat_completions" => ApiBackend::ChatCompletions,
-            "responses" => ApiBackend::Responses,
-            "messages" => ApiBackend::Messages,
-            _ => return None,
-        };
-        let remote_id = model
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or(model_id);
-        let base_url = inherited("api_base_url").or_else(|| inherited("base_url"))?;
-        model_capability_profile(remote_id, base_url, &backend)?.images
-    });
+                .unwrap_or(model_id);
+            let base_url = inherited("api_base_url").or_else(|| inherited("base_url"))?;
+            model_capability_profile(remote_id, base_url, &backend)?.images
+        });
     if images == Some(false) {
         return Err("当前模型明确不支持图片输入，请切换支持视觉输入的模型或移除图片".into());
     }
@@ -758,7 +761,7 @@ fn declared_model_capabilities(config: &Value, model_id: &str) -> DeclaredModelC
 fn model_and_provider_tables<'a>(
     config: &'a Value,
     model_id: &str,
-) -> (Option<&'a Map<String, Value>>, Option<&'a Map<String, Value>>) {
+) -> (Option<&'a Table>, Option<&'a Table>) {
     let model = config
         .get("model")
         .and_then(Value::as_table)
@@ -778,8 +781,8 @@ fn model_and_provider_tables<'a>(
 }
 
 fn capabilities_from_tables(
-    model: Option<&Map<String, Value>>,
-    provider: Option<&Map<String, Value>>,
+    model: Option<&Table>,
+    provider: Option<&Table>,
 ) -> DeclaredModelCapabilities {
     let model_field = |key| model.and_then(|fields| fields.get(key));
     let provider_field = |key| provider.and_then(|fields| fields.get(key));
@@ -791,8 +794,12 @@ fn capabilities_from_tables(
     let effort_options = model_field("reasoning_efforts")
         .and_then(Value::as_array)
         .or_else(|| provider_field("reasoning_efforts").and_then(Value::as_array));
-    let levels = effort_options
-        .map(|values| values.iter().filter_map(read_reasoning_effort).collect::<Vec<_>>());
+    let levels = effort_options.map(|values| {
+        values
+            .iter()
+            .filter_map(read_reasoning_effort)
+            .collect::<Vec<_>>()
+    });
     let cleared_levels = levels.as_ref().is_some_and(Vec::is_empty);
     let use_request_default = cleared_levels
         || model_field("reasoning_effort_auto").and_then(Value::as_bool) == Some(true);
@@ -804,7 +811,8 @@ fn capabilities_from_tables(
             .or_else(|| provider_field("reasoning_effort").and_then(read_reasoning_effort))
             .or_else(|| {
                 let values = effort_options?;
-                values.iter()
+                values
+                    .iter()
                     .filter(|value| value.get("default").and_then(Value::as_bool) == Some(true))
                     .find_map(read_reasoning_effort)
                     .or_else(|| values.iter().find_map(read_reasoning_effort))
@@ -834,7 +842,8 @@ impl DeclaredModelCapabilities {
 }
 
 fn read_reasoning_effort(value: &Value) -> Option<ReasoningEffort> {
-    value.as_str()
+    value
+        .as_str()
         .or_else(|| value.get("value").and_then(Value::as_str))?
         .parse()
         .ok()
@@ -1611,7 +1620,10 @@ fn model_to_table(m: &ModelEntry, existing: Option<&Value>) -> Value {
             }
         }
         if let Some(effort) = capabilities.reasoning_effort {
-            table.insert("reasoning_effort".into(), Value::String(effort.as_str().into()));
+            table.insert(
+                "reasoning_effort".into(),
+                Value::String(effort.as_str().into()),
+            );
             table.remove("reasoning_effort_auto");
         } else if capabilities.clear_reasoning_effort {
             table.remove("reasoning_effort");
@@ -1619,11 +1631,19 @@ fn model_to_table(m: &ModelEntry, existing: Option<&Value>) -> Value {
         }
         if let Some(levels) = &capabilities.reasoning_efforts {
             let previous = table.get("reasoning_efforts").and_then(Value::as_array);
-            let values = levels.iter().map(|level| {
-                previous.and_then(|items| {
-                    items.iter().find(|item| read_reasoning_effort(item) == Some(*level))
-                }).cloned().unwrap_or_else(|| Value::String(level.as_str().into()))
-            }).collect();
+            let values = levels
+                .iter()
+                .map(|level| {
+                    previous
+                        .and_then(|items| {
+                            items
+                                .iter()
+                                .find(|item| read_reasoning_effort(item) == Some(*level))
+                        })
+                        .cloned()
+                        .unwrap_or_else(|| Value::String(level.as_str().into()))
+                })
+                .collect();
             table.insert("reasoning_efforts".into(), Value::Array(values));
         }
     }
@@ -1647,24 +1667,40 @@ fn validate_model_capability_overrides(
     provider: &Value,
     existing: Option<&Value>,
 ) -> Result<(), String> {
-    let Some(overrides) = model.capability_overrides.as_ref() else { return Ok(()) };
-    let inherited_string = |key| existing.and_then(|entry| entry.get(key)).or_else(|| provider.get(key)).and_then(Value::as_str);
+    let Some(overrides) = model.capability_overrides.as_ref() else {
+        return Ok(());
+    };
+    let inherited_string = |key| {
+        existing
+            .and_then(|entry| entry.get(key))
+            .or_else(|| provider.get(key))
+            .and_then(Value::as_str)
+    };
     let backend = match provider.get("api_backend").and_then(Value::as_str) {
         Some("responses") => ApiBackend::Responses,
         Some("messages") => ApiBackend::Messages,
         _ => ApiBackend::ChatCompletions,
     };
     let base_url = inherited_string("api_base_url")
-        .or_else(|| provider.get("base_url").and_then(Value::as_str)).unwrap_or_default();
+        .or_else(|| provider.get("base_url").and_then(Value::as_str))
+        .unwrap_or_default();
     let remote = model.remote_model_id.as_deref().unwrap_or(&model.model_id);
     let profile = model_capability_profile(remote, base_url, &backend);
     let allowed = |effort: ReasoningEffort| {
-        (backend != ApiBackend::Messages || !matches!(effort, ReasoningEffort::None | ReasoningEffort::Minimal))
+        (backend != ApiBackend::Messages
+            || !matches!(effort, ReasoningEffort::None | ReasoningEffort::Minimal))
             && profile.is_none_or(|profile| profile.reasoning_efforts.contains(&effort))
     };
-    if overrides.reasoning_efforts.as_ref().is_some_and(|levels| levels.iter().any(|&effort| !allowed(effort)))
+    if overrides
+        .reasoning_efforts
+        .as_ref()
+        .is_some_and(|levels| levels.iter().any(|&effort| !allowed(effort)))
         || overrides.reasoning_effort.is_some_and(|effort| {
-            !allowed(effort) || overrides.reasoning_efforts.as_ref().is_some_and(|levels| !levels.contains(&effort))
+            !allowed(effort)
+                || overrides
+                    .reasoning_efforts
+                    .as_ref()
+                    .is_some_and(|levels| !levels.contains(&effort))
         })
     {
         return Err("当前模型或协议不支持所选思考档位，请重新选择。".into());
@@ -2136,7 +2172,9 @@ pub fn providers_list() -> Result<ProviderListModel, String> {
         .iter()
         .filter_map(|model| {
             let declared = declared_model_capabilities(&config, &model.model_id);
-            declared.has_declarations().then(|| (model.model_id.clone(), declared))
+            declared
+                .has_declarations()
+                .then(|| (model.model_id.clone(), declared))
         })
         .collect();
     let provider_tables = config.get("model_providers").and_then(Value::as_table);
@@ -2145,7 +2183,9 @@ pub fn providers_list() -> Result<ProviderListModel, String> {
         .filter_map(|provider| {
             let table = provider_tables?.get(&provider.id)?.as_table()?;
             let declared = capabilities_from_tables(None, Some(table));
-            declared.has_declarations().then(|| (provider.id.clone(), declared))
+            declared
+                .has_declarations()
+                .then(|| (provider.id.clone(), declared))
         })
         .collect();
     Ok(ProviderListModel {
@@ -2320,8 +2360,11 @@ pub fn providers_save_connection(
                         && value.get("model_provider").and_then(Value::as_str) == Some(&provider_id)
                         && stored_model_slug(id, value) == remote_model_id
                 });
-                let unchanged_slug = model_tables.get(model.model_id.trim())
-                    .is_some_and(|entry| stored_model_slug(model.model_id.trim(), entry) == remote_model_id);
+                let unchanged_slug = model_tables
+                    .get(model.model_id.trim())
+                    .is_some_and(|entry| {
+                        stored_model_slug(model.model_id.trim(), entry) == remote_model_id
+                    });
                 if duplicate && !unchanged_slug && !replace_models {
                     return Err("此模型已添加到这个连接。".into());
                 }
@@ -2409,10 +2452,12 @@ pub fn providers_save_model(
     }
     let local_id = update_config(|config| {
         validate_personal_provider_target(config, model.provider_id.trim())?;
-        let provider = config.get("model_providers")
+        let provider = config
+            .get("model_providers")
             .and_then(|providers| providers.get(model.provider_id.trim()))
             .cloned();
-        let provider_context_window = provider.as_ref()
+        let provider_context_window = provider
+            .as_ref()
             .and_then(|provider| provider.get("context_window"))
             .and_then(Value::as_integer)
             .and_then(|window| u64::try_from(window).ok());
@@ -2470,9 +2515,14 @@ pub fn providers_delete_provider(
         validate_personal_provider_target(config, id.trim())?;
 
         if only_if_empty == Some(true)
-            && config.get("model").and_then(Value::as_table).is_some_and(|models| {
-                models.values().any(|model| model.get("model_provider").and_then(Value::as_str) == Some(id.as_str()))
-            })
+            && config
+                .get("model")
+                .and_then(Value::as_table)
+                .is_some_and(|models| {
+                    models.values().any(|model| {
+                        model.get("model_provider").and_then(Value::as_str) == Some(id.as_str())
+                    })
+                })
         {
             return Err("这条连接已有模型，请刷新列表后再操作。".into());
         }
@@ -3693,7 +3743,8 @@ extra_headers = { X-Token = "old-model-token" }
 
     #[test]
     fn model_effort_preferences_override_and_reset_connection_defaults() {
-        let mut config: Value = toml::from_str(r#"
+        let mut config: Value = toml::from_str(
+            r#"
             [model_providers.gateway]
             supports_tool_calls = true
             reasoning_effort = "low"
@@ -3702,7 +3753,9 @@ extra_headers = { X-Token = "old-model-token" }
             [model.sample]
             model_provider = "gateway"
             supports_images = false
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let model = |capability_overrides| ModelEntry {
             model_id: "sample".into(),
             provider_id: "gateway".into(),
@@ -3715,20 +3768,32 @@ extra_headers = { X-Token = "old-model-token" }
             reasoning_effort: Some(ReasoningEffort::High),
             ..Default::default()
         });
-        let table = config.get_mut("model").and_then(Value::as_table_mut).unwrap();
-        table.insert("sample".into(), model_to_table(&selected, table.get("sample")));
+        let table = config
+            .get_mut("model")
+            .and_then(Value::as_table_mut)
+            .unwrap();
+        table.insert(
+            "sample".into(),
+            model_to_table(&selected, table.get("sample")),
+        );
         let capabilities = declared_model_capabilities(&config, "sample");
         assert_eq!(capabilities.tools, Some(false));
         assert_eq!(capabilities.images, Some(false));
         assert_eq!(capabilities.reasoning_effort, Some(ReasoningEffort::High));
-        assert_eq!(capabilities.reasoning_efforts, Some(vec![ReasoningEffort::Low, ReasoningEffort::High]));
+        assert_eq!(
+            capabilities.reasoning_efforts,
+            Some(vec![ReasoningEffort::Low, ReasoningEffort::High])
+        );
 
         let reset = model(DeclaredModelCapabilities {
             clear_reasoning_effort: true,
             reasoning_efforts: Some(Vec::new()),
             ..Default::default()
         });
-        let table = config.get_mut("model").and_then(Value::as_table_mut).unwrap();
+        let table = config
+            .get_mut("model")
+            .and_then(Value::as_table_mut)
+            .unwrap();
         table.insert("sample".into(), model_to_table(&reset, table.get("sample")));
         let cleared = declared_model_capabilities(&config, "sample");
         assert!(cleared.reasoning_effort.is_none());
@@ -3748,9 +3813,15 @@ extra_headers = { X-Token = "old-model-token" }
         let provider: Value = r#"
             base_url = "https://api.minimax.cn/anthropic/v1"
             api_backend = "messages"
-        "#.parse().unwrap();
+        "#
+        .parse()
+        .unwrap();
         assert!(validate_model_capability_overrides(&model, &provider, None).is_err());
-        model.capability_overrides.as_mut().unwrap().reasoning_effort = Some(ReasoningEffort::High);
+        model
+            .capability_overrides
+            .as_mut()
+            .unwrap()
+            .reasoning_effort = Some(ReasoningEffort::High);
         assert!(validate_model_capability_overrides(&model, &provider, None).is_ok());
         assert_eq!(
             inference_endpoint("https://api.minimax.cn/anthropic", "messages").unwrap(),

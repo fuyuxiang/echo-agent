@@ -284,29 +284,26 @@ pub(crate) fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), Str
     let parent = path
         .parent()
         .ok_or_else(|| format!("private file has no parent: {}", path.display()))?;
-    let file_name = path
-        .file_name()
+    path.file_name()
         .ok_or_else(|| format!("private file has no name: {}", path.display()))?;
     fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     harden_private_dir(parent)?;
-    // A unique sibling prevents concurrent writers from truncating each
-    // other's staging file. `create_new` also closes the residual collision
-    // window if a UUID is ever repeated.
+    // Keep the staging name short even when the destination uses its entire
+    // filesystem component limit. The sibling stays on the same filesystem.
     let tmp = parent.join(format!(
-        ".{}.{}.{}.tmp",
-        file_name.to_string_lossy(),
+        ".echo-private.{}.{}.tmp",
         std::process::id(),
         uuid::Uuid::now_v7().simple()
     ));
 
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(&tmp)
+        .map_err(|e| format!("create private staging file {}: {e}", tmp.display()))?;
     let result = (|| -> Result<(), String> {
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut file = options
-            .open(&tmp)
-            .map_err(|e| format!("create private staging file {}: {e}", tmp.display()))?;
         file.write_all(contents)
             .map_err(|e| format!("write {}: {e}", tmp.display()))?;
         file.sync_all()

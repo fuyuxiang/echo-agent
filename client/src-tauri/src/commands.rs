@@ -2398,16 +2398,22 @@ async fn agent_send_impl(
             && weixin.is_none()
             && mode.as_deref() != Some("plan")
             && !crate::automations::owns_session(&session_id)
-            && agent_runtime::completion_from_prompt_response(response.clone(), &session_id, &prompt)
-                .is_ok_and(|completion| {
-                    crate::bridge::completion_disposition(&completion)
-                        == crate::bridge::CompletionDisposition::Success
-                })
+            && agent_runtime::completion_from_prompt_response(
+                response.clone(),
+                &session_id,
+                &prompt,
+            )
+            .is_ok_and(|completion| {
+                crate::bridge::completion_disposition(&completion)
+                    == crate::bridge::CompletionDisposition::Success
+            })
         {
             let request = display_text.unwrap_or(text);
             tokio::spawn(async move {
-                crate::workflow_skills::review_chat_turn(&app, workspace, session_id, prompt, request)
-                    .await;
+                crate::workflow_skills::review_chat_turn(
+                    &app, workspace, session_id, prompt, request,
+                )
+                .await;
             });
         }
     }
