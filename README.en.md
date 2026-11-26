@@ -2,8 +2,9 @@
 
 <h1><img src="docs/assets/readme/hero.svg" alt="Echo Agent" width="100%" /></h1>
 
-**Echo Agent** is an AI agent with long-term memory, collaboration among specialist agents, and skill evolution. It supports desktop work, software development, and remote automation.
+**Echo Agent** is an AI agent with long-term memory, collaboration among specialist agents, and skill evolution.
 
+It supports desktop work, software development, and remote automation.<br />
 It can carry project context and lessons from past tasks into future work.
 
 <p>

@@ -2,8 +2,9 @@
 
 <h1><img src="docs/assets/readme/hero.svg" alt="Echo Agent" width="100%" /></h1>
 
-**Echo Agent** 是一款支持长期记忆、专家协作和技能进化的 AI Agent，可用于桌面办公、代码开发和远程自动化。
+**Echo Agent** 是一款支持长期记忆、专家协作和技能进化的 AI Agent。
 
+可用于桌面办公、代码开发和远程自动化。<br />
 项目背景和任务经验可在后续工作中复用，支持持续协作。
 
 <p>
