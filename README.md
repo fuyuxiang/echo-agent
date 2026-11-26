@@ -15,6 +15,16 @@
 [![PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=flat)](https://github.com/fuyuxiang/echo-agent/stargazers)
 
+<details>
+<summary>下载统计</summary>
+
+<!-- Download badges are refreshed by .github/workflows/download-stats.yml. -->
+![Runtime 累计下载](.github/badges/runtime-downloads.svg)
+![桌面端累计下载](.github/badges/desktop-downloads.svg)
+[![统计更新日期](.github/badges/stats-updated.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/download-stats.yml)
+
+</details>
+
 [文档](https://fuyuxiang.github.io/echo-agent/) · [架构](docs/concepts/architecture.md) · [版本记录](CHANGELOG.md) · [English](README.en.md)
 
 </div>
@@ -73,13 +83,3 @@ echo-agent gateway
 ## 许可证
 
 项目原创代码采用 PolyForm Noncommercial License 1.0.0，超出许可范围的商业使用需另行授权。[许可证全文](LICENSE)
-
-<details>
-<summary>下载统计</summary>
-
-<!-- Download badges are refreshed by .github/workflows/download-stats.yml. -->
-![Runtime 累计下载](.github/badges/runtime-downloads.svg)
-![桌面端累计下载](.github/badges/desktop-downloads.svg)
-[![统计更新日期](.github/badges/stats-updated.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/download-stats.yml)
-
-</details>

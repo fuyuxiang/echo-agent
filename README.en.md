@@ -15,6 +15,16 @@
 [![PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=flat)](https://github.com/fuyuxiang/echo-agent/stargazers)
 
+<details>
+<summary>Download statistics</summary>
+
+<!-- Download badges are refreshed by .github/workflows/download-stats.yml. -->
+![Runtime total downloads](.github/badges/runtime-downloads.svg)
+![Desktop total downloads](.github/badges/desktop-downloads.svg)
+[![Statistics updated](.github/badges/stats-updated.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/download-stats.yml)
+
+</details>
+
 [Docs](https://fuyuxiang.github.io/echo-agent/en/) · [Architecture](docs/concepts/architecture.en.md) · [Changelog](CHANGELOG.md) · [中文](README.md)
 
 </div>
@@ -73,13 +83,3 @@ Once Gateway is running, send your first message in the [Playground](http://127.
 ## License
 
 The project's original code uses the PolyForm Noncommercial License 1.0.0. Commercial use outside the license requires separate permission. [Full license](LICENSE)
-
-<details>
-<summary>Download statistics</summary>
-
-<!-- Download badges are refreshed by .github/workflows/download-stats.yml. -->
-![Runtime total downloads](.github/badges/runtime-downloads.svg)
-![Desktop total downloads](.github/badges/desktop-downloads.svg)
-[![Statistics updated](.github/badges/stats-updated.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/download-stats.yml)
-
-</details>
