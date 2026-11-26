@@ -2,73 +2,69 @@
 
 <h1><img src="docs/assets/readme/hero.svg" alt="Echo Agent" width="100%" /></h1>
 
-**Give your agent memory. Turn experience into reusable skills.**
-
-Work on projects in EchoAgent Desktop or self-host Echo Agent Runtime for scheduled jobs, messaging, and API access.
+**Echo Agent is an AI assistant with cross-session memory. Use it on your desktop to work with documents, code, and web pages, run it in your terminal, or self-host it to connect with WeChat, Feishu, and Slack.**
 
 <p>
-  <a href="#run-your-own-agent"><img src="docs/assets/readme/runtime-button.svg" alt="Run your own agent" width="164" height="44" /></a>
+  <a href="#desktop"><img src="docs/assets/readme/desktop-button.svg" alt="Desktop quickstart" width="164" height="44" /></a>
   &nbsp;
-  <a href="#work-on-a-project"><img src="docs/assets/readme/desktop-button.svg" alt="Work on a project in Desktop" width="164" height="44" /></a>
+  <a href="#runtime"><img src="docs/assets/readme/runtime-button.svg" alt="Runtime quickstart" width="164" height="44" /></a>
 </p>
 
-[Memory and skills](#memory-and-skills) · [Architecture](docs/concepts/architecture.en.md) · [Documentation](#documentation) · [中文](README.md)
-
 [![PyPI](https://img.shields.io/pypi/v/echo-agent)](https://pypi.org/project/echo-agent/)
-[![Python](https://img.shields.io/pypi/pyversions/echo-agent)](https://pypi.org/project/echo-agent/)
 [![CI](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-online-blue)](https://fuyuxiang.github.io/echo-agent/en/)
 [![PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=flat)](https://github.com/fuyuxiang/echo-agent/stargazers)
 
-<!-- Download badges are refreshed by .github/workflows/download-stats.yml. -->
-![Runtime total downloads](.github/badges/runtime-downloads.svg)
-![Desktop total downloads](.github/badges/desktop-downloads.svg)
-[![Statistics updated](.github/badges/stats-updated.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/download-stats.yml)
+[Docs](https://fuyuxiang.github.io/echo-agent/en/) · [Architecture](docs/concepts/architecture.en.md) · [Changelog](CHANGELOG.md) · [中文](README.md)
 
 </div>
 
-## Work on a project
+## Quickstart
 
-Say you're preparing a competitive analysis. Add a brief to your project in EchoAgent Desktop and ask the agent to write a report. Open the report under project files and outputs, review it, and attach it to the next task from the preview. New tasks also carry over the project's instructions and confirmed decisions.
+Use **Desktop** to work with Echo Agent in a graphical workspace on your computer. Run **Runtime** in your terminal or deploy it as a service for messaging channels and API access. Either option works on its own.
 
-[![EchoAgent Desktop project overview showing a task awaiting review, work in progress, recent outputs, and project context](client/docs/images/echoagent-project-workspace.png)](client/docs/images/echoagent-project-workspace.png)
+### Desktop
 
-*EchoAgent Desktop project overview with sample data in the Chinese UI.*
+1. [Download the installer](https://github.com/fuyuxiang/echo-agent-desktop/releases) for macOS (Apple Silicon or Intel) or Windows x64.
+2. Open the app. Under **Settings → Models**, add and test a model connection, or use one provided by your organization.
+3. Choose a working folder and permission mode, then submit a task. The conversation shows its progress and results. [Run your first task](docs/desktop/quickstart.en.md)
 
-Download the installer for **macOS (Apple Silicon or Intel) or Windows x64**. Under **Settings → Models**, add and test your own model connection or choose an organization-provided model. Select a working folder and a permission mode before submitting a task. [Download Desktop](https://github.com/fuyuxiang/echo-agent-desktop/releases) · [Run your first task](docs/desktop/quickstart.en.md)
+[![EchoAgent Desktop project overview showing a task awaiting review, recent outputs, and project context](docs/assets/readme/desktop-project.png)](docs/assets/readme/desktop-project.png)
 
-- Ask the agent to change code in an authorized folder, then inspect file changes and verification results in the conversation. For document work, generate and open Word, Excel, PowerPoint, or PDF files for review. [Code tasks and file changes](docs/desktop/coding.en.md) · [Office documents](docs/desktop/knowledge-memory.en.md#generate-and-export-documents)
-- Have the agent work in a browser or an authorized desktop app. Follow its activity and review permission requests as it runs. [Platform support and permissions](docs/desktop/automation.en.md)
-- Choose experts, skills, and MCP connectors for a task, or schedule jobs for a project. Invite teammates through the organization service. [Scheduling](docs/desktop/collaboration-scheduling.en.md) · [Team projects (Chinese)](client/docs/team-projects.md)
+*Desktop project workspace from the current source build, shown in Chinese with sample data.* [Run from source](docs/desktop/installation.en.md#run-from-this-repository)
 
-## Run your own agent
+### Runtime
 
-Run Echo Agent Runtime in a terminal to give the agent a task directly. Deploy it as a service to schedule a weekly report or take requests from messaging channels, webhooks, and your application. [Messaging channels](docs/integrations/channels/index.en.md) · [Gateway API](docs/reference/gateway-api.en.md)
-
-Install in a **Python 3.11+** virtual environment and follow the setup wizard to configure a model. This example uses OpenAI or a compatible API. [Installation for other providers and platforms](docs/getting-started/installation.en.md)
+Run these commands in a Python 3.11+ virtual environment. In the wizard, configure a model and credentials for OpenAI or a compatible API. If the wizard already starts Gateway, skip the last command. [Other providers and platforms](docs/getting-started/installation.en.md)
 
 ```bash
-python -m pip install "echo-agent[openai,tui]"
+python -m pip install "echo-agent[openai]"
 echo-agent setup --flow quickstart
+echo-agent gateway
 ```
 
-Use `echo-agent run` to start a task in the terminal, or `echo-agent gateway` to start the service. The default URLs are the [Dashboard](http://127.0.0.1:58123/) for management and the [Playground](http://127.0.0.1:58123/playground) for chat. Choose one way to start the Runtime per workspace. If the wizard already started Gateway, open it in your browser or connect with `echo-agent cli`. [Quickstart](docs/getting-started/quickstart.en.md) · [Deployment](echo-agent-runtime/README.en.md)
+Once Gateway is running, send your first message in the [Playground](http://127.0.0.1:58123/playground) and check the service status in the [Dashboard](http://127.0.0.1:58123/). For direct terminal use, choose `echo-agent run`. Run one instance per workspace.
 
-### Memory and skills
+[Runtime quickstart](docs/getting-started/quickstart.en.md) · [Full-screen terminal preview](docs/assets/readme/runtime-tui.png)
 
-- **Memory across sessions.** New sessions can retrieve relevant summaries, project facts, and preferences. A weekly report can use the format you saved in an earlier conversation. [Memory system](docs/concepts/memory-system.en.md)
-- **Skill evolution.** Runtime can propose skill changes from execution records and compare versions on the same evaluation cases. You can require human review and roll back applied changes. Skill evolution is off by default. [Skill evolution and evaluation](docs/concepts/evolution-evaluation.en.md)
+[![Echo Agent Dashboard overview showing service, session, and messaging channel status](docs/assets/readme/runtime-dashboard.en.png)](docs/assets/readme/runtime-dashboard.en.png)
+
+*Gateway Dashboard with sample data.*
+
+## Core capabilities
+
+- **Memory across sessions.** New sessions can retrieve relevant summaries, project context, and user preferences. [Memory system](docs/concepts/memory-system.en.md)
+- **Desktop tasks and approvals.** Create and preview Word, Excel, PowerPoint, and PDF files, edit code in an authorized folder, or operate a browser and supported desktop apps. Review plans, tool calls, and file changes in the conversation. The selected permission mode governs approvals. [Code tasks](docs/desktop/coding.en.md) · [Office documents](docs/desktop/knowledge-memory.en.md#generate-and-export-documents) · [Platform support and permissions](docs/desktop/automation.en.md)
+- **Desktop projects and collaboration.** Projects keep instructions, reference files, and confirmed decisions available for new tasks. You can divide work among experts or schedule jobs. [Collaboration and scheduling](docs/desktop/collaboration-scheduling.en.md) · [Team projects (Chinese)](client/docs/team-projects.md)
+- **Messaging and automation.** Runtime supports 14 channels, including WeChat, Feishu, DingTalk, Slack, webhooks, scheduled jobs, and the terminal. Gateway provides HTTP and WebSocket APIs. [Messaging channels](docs/integrations/channels/index.en.md) · [Gateway API](docs/reference/gateway-api.en.md)
+- **Skill evolution.** Runtime can propose skill changes from execution records and compare versions against the same evaluation cases. It supports human review and rollback and is off by default. [Skill evolution and evaluation](docs/concepts/evolution-evaluation.en.md)
+- **Extensions.** Desktop and Runtime both support MCP. Runtime ships with 35 skills, supports plugins, and accepts tasks delegated by other agents over A2A. There is currently no outbound A2A delegation entry point in the agent runtime. [Skills, plugins, and MCP](docs/runtime-extensions.en.md) · [A2A integration](docs/integrations/a2a.en.md)
 
 ## Documentation
 
-Desktop embeds a Rust engine. The standalone Python Runtime can be installed and deployed on its own. Each manages its own model configuration, sessions, and memory. [System architecture](docs/concepts/architecture.en.md)
-
-- **Desktop** · [Installation and source builds](docs/desktop/installation.en.md) · [User guide](client/README.en.md) · [Data management](docs/desktop/operations.en.md)
-- **Runtime** · [Build and deploy](echo-agent-runtime/README.en.md) · [Background services](docs/operations/background-service.en.md) · [Skills, plugins, and MCP](docs/runtime-extensions.en.md) · [Security model](docs/concepts/security-model.en.md)
-- **Integration and development** · [API reference](docs/reference/gateway-api.en.md) · [Python Runtime composition](echo-agent-runtime/echo_agent/app.py) · [Repository map](docs/development/repository-map.en.md)
-
-[Full documentation](https://fuyuxiang.github.io/echo-agent/en/) · [Changelog](CHANGELOG.md)
+- **Desktop** · [Installation and source builds](docs/desktop/installation.en.md) · [Tasks and permissions](docs/desktop/tasks-permissions.en.md) · [Data management](docs/desktop/operations.en.md)
+- **Runtime** · [Installation options](docs/getting-started/installation.en.md) · [Background services](docs/operations/background-service.en.md) · [Security model](docs/concepts/security-model.en.md)
+- **Architecture and development** · [System architecture](docs/concepts/architecture.en.md) · [Desktop architecture](docs/concepts/desktop-architecture.en.md) · [Repository map](docs/development/repository-map.en.md)
 
 ## Contributing
 
@@ -77,3 +73,13 @@ Desktop embeds a Rust engine. The standalone Python Runtime can be installed and
 ## License
 
 The project's original code uses the PolyForm Noncommercial License 1.0.0. Commercial use outside the license requires separate permission. [Full license](LICENSE)
+
+<details>
+<summary>Download statistics</summary>
+
+<!-- Download badges are refreshed by .github/workflows/download-stats.yml. -->
+![Runtime total downloads](.github/badges/runtime-downloads.svg)
+![Desktop total downloads](.github/badges/desktop-downloads.svg)
+[![Statistics updated](.github/badges/stats-updated.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/download-stats.yml)
+
+</details>
