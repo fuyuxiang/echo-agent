@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -67,8 +67,10 @@ beforeEach(() => {
   vi.mocked(client.agentAuthStatus).mockResolvedValue(auth);
   vi.mocked(client.providersList).mockResolvedValue({ providers: [], models: [{ modelId: 'model-a', name: '模型 A', providerId: 'p' }] } as never);
   vi.mocked(client.agentListAllSessions).mockResolvedValue([{ sessionId: 'source', title: '源会话', cwd: '/workspace', currentModelId: 'model-a' }] as never);
-  vi.mocked(invoke).mockImplementation(async command => ['notification_take_pending_opens'].includes(command) ? [] : null);
+  vi.mocked(invoke).mockImplementation(async command =>
+    ['notification_take_pending_opens', 'pending_external_operations'].includes(command) ? [] : null);
 });
+afterEach(() => vi.unstubAllGlobals());
 async function start() {
   render(<App />); await screen.findByText('首页'); await waitFor(() => expect(client.agentListAllSessions).toHaveBeenCalled());
   await act(async () => {}); fireEvent.click(screen.getByRole('button', { name: '打开源会话' }));
@@ -100,12 +102,16 @@ describe('catalog search navigation', () => {
     expect(vi.mocked(invoke).mock.calls.some(([method]) => method.startsWith("coding_"))).toBe(false);
     expect(vi.mocked(listen).mock.calls.some(([event]) => event.startsWith("coding://"))).toBe(false);
     expect(localStorage.getItem("echo-coding-workspaces")).toBe(workspaces);
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
     fireEvent.click(screen.getByRole("button", { name: "查看迁移资料" }));
     expect(await screen.findByRole("heading", { name: "旧版工作台资料" })).toBeVisible();
     expect(screen.getByRole("button", { name: "导出旧版草稿和队列" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "刷新操作列表" })).toBeVisible();
     const tabs = screen.getByRole("group", { name: "数据视图" });
     fireEvent.click(within(tabs).getByRole("button", { name: "本机数据" }));
-    expect(screen.queryByRole("heading", { name: "旧版工作台资料" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("核验目录限制", { exact: true })).not.toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "旧版工作台资料" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "导出旧版草稿和队列" })).toBeVisible();
   });
 
   it('keeps the actual search open after a native load failure and retries the selected task', async () => {
