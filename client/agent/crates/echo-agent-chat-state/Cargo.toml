@@ -1,0 +1,29 @@
+[package]
+license = "Apache-2.0"
+name = "echo-agent-chat-state"
+version = "0.1.0"
+edition.workspace = true
+description = "Actor-based chat state management for EchoAgent agents"
+
+[features]
+default-bazel = []
+
+[dependencies]
+indexmap = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+strum = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt", "macros"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+# `CompactionDetail`, embedded in `CompactionMode::Segments`.
+echo-agent-compaction-transcript = { workspace = true }
+echo-agent-compaction = { path = "../echo-agent-compaction" }
+echo-agent-sampling-types = { path = "../echo-agent-sampling-types" }
+echo-agent-token-estimation = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+
+[lints]
+workspace = true

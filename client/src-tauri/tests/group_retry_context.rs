@@ -2,7 +2,7 @@
 extern crate self as echo_agent_memory;
 #[path = "../src/groups/model.rs"]
 mod model;
-#[path = "../../vendor/echo-agent-build/crates/codegen/echo-agent-memory/src/text_utils.rs"]
+#[path = "../../agent/crates/echo-agent-memory/src/text_utils.rs"]
 pub mod text_utils;
 
 use model::{Group, Member};

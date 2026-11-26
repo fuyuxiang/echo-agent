@@ -7,7 +7,7 @@ const readProjectFile = (path: string) => readFileSync(resolve(projectRoot, path
 
 describe("single agent runtime architecture", () => {
   it("keeps model selection inside the EchoAgent Runtime lifecycle", () => {
-    const commands = readProjectFile("src-tauri/src/commands.rs");
+    const commands = readProjectFile("src-tauri/src/harness/commands.rs");
 
     expect(commands).toContain("agent_runtime::new_session");
     expect(commands).toContain("agent_runtime::prepare_mode_prompt");

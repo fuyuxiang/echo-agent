@@ -26,7 +26,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 
-use crate::commands::AppState;
+use crate::harness::state::HarnessState;
 
 /// Notification kind. Mirrors the EchoAgent event channels we already subscribe to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -534,7 +534,7 @@ fn append_once_at(
 /// Append a notification (frontend calls this when it receives a EchoAgent event).
 #[tauri::command]
 pub fn notification_append(
-    _state: State<'_, AppState>,
+    _state: State<'_, HarnessState>,
     kind: String,
     title: String,
     body: Option<String>,
@@ -552,7 +552,9 @@ pub fn notification_append(
 
 /// List notifications (newest first).
 #[tauri::command]
-pub fn notification_list(_state: State<'_, AppState>) -> Result<Vec<NotificationEntry>, String> {
+pub fn notification_list(
+    _state: State<'_, HarnessState>,
+) -> Result<Vec<NotificationEntry>, String> {
     let mut entries = read_store()?.entries;
     entries.reverse();
     Ok(entries)
@@ -560,7 +562,7 @@ pub fn notification_list(_state: State<'_, AppState>) -> Result<Vec<Notification
 
 /// Mark a notification as read.
 #[tauri::command]
-pub fn notification_mark_read(_state: State<'_, AppState>, id: u64) -> Result<(), String> {
+pub fn notification_mark_read(_state: State<'_, HarnessState>, id: u64) -> Result<(), String> {
     let path = store_path();
     update_store_at(&path, |store| {
         let entry = store
@@ -575,7 +577,7 @@ pub fn notification_mark_read(_state: State<'_, AppState>, id: u64) -> Result<()
 
 /// Mark all as read.
 #[tauri::command]
-pub fn notification_mark_all_read(_state: State<'_, AppState>) -> Result<(), String> {
+pub fn notification_mark_all_read(_state: State<'_, HarnessState>) -> Result<(), String> {
     let path = store_path();
     update_store_at(&path, |store| {
         for entry in &mut store.entries {
@@ -587,7 +589,7 @@ pub fn notification_mark_all_read(_state: State<'_, AppState>) -> Result<(), Str
 
 /// Clear all notifications.
 #[tauri::command]
-pub fn notification_clear(_state: State<'_, AppState>) -> Result<(), String> {
+pub fn notification_clear(_state: State<'_, HarnessState>) -> Result<(), String> {
     let path = store_path();
     with_file_access_at(&path, log_access(), "通知记录", || {
         write_store_at(&path, &NotificationStore::default())
@@ -749,7 +751,7 @@ fn desktop_status(store: &ChannelStore, policy_error: Option<String>) -> Desktop
 pub fn notify_desktop_status() -> Result<DesktopNotifyStatus, String> {
     Ok(desktop_status(
         &read_channels()?,
-        crate::policy::require_feature("notifications").err(),
+        crate::harness::policy::require_feature("notifications").err(),
     ))
 }
 
@@ -785,7 +787,7 @@ fn set_desktop_enabled(store: &mut ChannelStore, enabled: bool) -> Result<(), St
 
 #[tauri::command]
 pub fn notify_desktop_set_enabled(enabled: bool) -> Result<(), String> {
-    crate::policy::require_feature("notifications")?;
+    crate::harness::policy::require_feature("notifications")?;
     update_channels_at(&channels_path(), |store| {
         set_desktop_enabled(store, enabled)
     })
@@ -959,7 +961,7 @@ pub fn notify_channels_list() -> Result<Vec<NotifyChannel>, String> {
 
 #[tauri::command]
 pub fn notify_channel_upsert(mut channel: NotifyChannel) -> Result<(), String> {
-    crate::policy::require_feature("notifications")?;
+    crate::harness::policy::require_feature("notifications")?;
     channel.id = channel.id.trim().to_string();
     channel.label = channel.label.trim().to_string();
     channel.endpoint = match &channel.kind {
@@ -999,7 +1001,7 @@ fn upsert_channel_in_store(
 
 #[tauri::command]
 pub fn notify_channel_remove(id: String) -> Result<(), String> {
-    crate::policy::require_feature("notifications")?;
+    crate::harness::policy::require_feature("notifications")?;
     let id = id.trim();
     validate_channel_id(id)?;
     let path = channels_path();
@@ -1024,7 +1026,7 @@ fn remove_channel_in_store(store: &mut ChannelStore, id: &str) -> Result<(), Str
 
 #[tauri::command]
 pub fn notify_channel_set_enabled(id: String, enabled: bool) -> Result<(), String> {
-    crate::policy::require_feature("notifications")?;
+    crate::harness::policy::require_feature("notifications")?;
     let id = id.trim();
     validate_channel_id(id)?;
     let path = channels_path();
@@ -1265,7 +1267,7 @@ pub async fn dispatch_external(
     message: NotifyMessage,
     only_id: Option<&str>,
 ) -> Vec<DeliveryResult> {
-    if crate::policy::require_feature("notifications").is_err() {
+    if crate::harness::policy::require_feature("notifications").is_err() {
         return vec![DeliveryResult {
             id: only_id.unwrap_or("notifications-policy").to_string(),
             ok: false,
@@ -1358,7 +1360,7 @@ pub async fn dispatch_with_desktop_fallback(
     app: &AppHandle,
     message: NotifyMessage,
 ) -> Vec<DeliveryResult> {
-    if crate::policy::require_feature("notifications").is_err() {
+    if crate::harness::policy::require_feature("notifications").is_err() {
         return vec![DeliveryResult {
             id: "notifications-policy".into(),
             ok: false,
@@ -1414,10 +1416,10 @@ pub async fn dispatch_with_desktop_fallback(
 #[tauri::command]
 pub async fn notify_desktop_test(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: Option<String>,
 ) -> Result<DeliveryResult, String> {
-    crate::policy::require_feature("notifications")?;
+    crate::harness::policy::require_feature("notifications")?;
     if let Some(id) = session_id.as_deref() {
         // A native test may return to the active task, never an arbitrary target.
         state.session_workspace(id)?;

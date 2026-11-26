@@ -82,7 +82,7 @@ jobs:
         with:
           node-version: '22.23.4'
           cache: 'pnpm'
-      - run: node scripts/verify-vendored-runtime.mjs
+      - run: node scripts/verify-agent-source.mjs
       - run: node scripts/release-version.mjs check
       - name: Check release script syntax
         run: |
@@ -94,6 +94,7 @@ jobs:
       - run: python3 -m unittest discover -s scripts -p 'test_extract_meeting_speech.py'
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tsc --noEmit
+      - run: pnpm --filter @apollo-design/docx-preview typecheck
       - run: pnpm icons:check
       - name: Require audit coverage for every Rust lockfile
         run: node --test scripts/test-rust-audit-coverage.mjs
@@ -329,7 +330,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libxdo-dev
-      # Match vendor/echo-agent-build/bin/protoc; older distro compilers do not
+      # Match agent/bin/protoc; older distro compilers do not
       # understand the built-in debug_redact option used by the vendored tests.
       - uses: actions/setup-python@v7
         with:
@@ -346,7 +347,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22.23.4'
-      - run: node scripts/verify-vendored-runtime.mjs
+      - run: node scripts/verify-agent-source.mjs
         id: verify_runtime
       - name: Check Rust warnings and lints
         run: node scripts/check-rust-desktop.mjs
@@ -355,7 +356,7 @@ jobs:
         run: node scripts/test-rust-desktop.mjs
       - name: Verify the vendored protoc locator
         if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
-        run: cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-proto-build --lib
+        run: cargo test --locked --manifest-path agent/Cargo.toml -p echo-agent-proto-build --lib
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
       - name: Run isolated memory library unit tests
@@ -367,9 +368,9 @@ jobs:
       - name: Validate compatible memory-safety backports
         if: ${{ !cancelled() && steps.verify_runtime.outcome == 'success' }}
         run: |
-          cargo test --manifest-path vendor/glib/Cargo.toml --release variant_iter
-          cargo test --manifest-path vendor/lru-0.12/Cargo.toml --test security
-          cargo test --manifest-path vendor/lru-0.16/Cargo.toml --test security
+          cargo test --manifest-path third-party/rust/glib/Cargo.toml --release variant_iter
+          cargo test --manifest-path third-party/rust/lru-0.12/Cargo.toml --test security
+          cargo test --manifest-path third-party/rust/lru-0.16/Cargo.toml --test security
 
       - name: Preserve complete native test output
         if: always()
@@ -416,7 +417,7 @@ jobs:
           workspaces: src-tauri -> target
           cache-on-failure: 'true'
       - name: Verify the macOS protoc locator
-        run: cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-proto-build --lib
+        run: cargo test --locked --manifest-path agent/Cargo.toml -p echo-agent-proto-build --lib
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
       - name: Run native tests and verify automation recovery after a model stream interruption
@@ -532,7 +533,7 @@ jobs:
           workspaces: src-tauri -> target
           cache-on-failure: 'true'
       - name: Verify the Windows protoc locator
-        run: cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-proto-build --lib
+        run: cargo test --locked --manifest-path agent/Cargo.toml -p echo-agent-proto-build --lib
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
       - name: Run all isolated native unit and integration tests
@@ -637,7 +638,7 @@ jobs:
         uses: ./.github/actions/setup-protoc
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: vendor/echo-agent-build -> target
+          workspaces: agent -> target
           cache-on-failure: 'true'
       # Release profile activates the automatic rg.exe download, pinned hash
       # verification, ZIP extraction and include_bytes! path. The test then
@@ -645,12 +646,12 @@ jobs:
       - name: Build and execute bundled rg.exe
         run: >-
           cargo test --locked --release
-          --manifest-path vendor/echo-agent-build/Cargo.toml
+          --manifest-path agent/Cargo.toml
           -p echo-agent-tools
           implementations::echo_agent_build::grep::tests::tool_grep_finds_matches
       - name: Verify parallel tool stream recovery on Windows
         run: >-
           cargo test --locked --release
-          --manifest-path vendor/echo-agent-build/Cargo.toml
+          --manifest-path agent/Cargo.toml
           -p echo-agent-sampler
           ambiguous_parallel_tools_retry_once_with_parallel_disabled

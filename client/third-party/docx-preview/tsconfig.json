@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "declaration": false,
+    "noImplicitAny": false,
+    "noEmitOnError": true,
+    "pretty": true,
+    "removeComments": true,
+    "preserveConstEnums": true,
+    "sourceMap": true,
+    "noEmitHelpers": false,
+    "importHelpers": false,
+    "esModuleInterop": true,
+    "target": "ES2020",
+    "noEmit": true,
+    "lib": [
+      "ESNext",
+      "dom"
+    ],
+  },
+  "exclude": [
+    "node_modules"
+  ]
+}

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 #[tauri::command]
 pub async fn group_member_change(
     app: tauri::AppHandle,
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     group_id: String,
     action: String,
     member_id: Option<String>,
@@ -81,8 +81,8 @@ pub async fn group_member_change(
             &snapshot.members[0].model_id,
             override_model,
         )?;
-        crate::commands::ensure_runtime_ready(&app, &state, Some(&model)).await?;
-        crate::policy::require_model(&model)?;
+        crate::harness::commands::ensure_runtime_ready(&app, &state, Some(&model)).await?;
+        crate::harness::policy::require_model(&model)?;
         Some((entry, profile, model))
     } else {
         None

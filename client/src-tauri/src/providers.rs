@@ -861,7 +861,7 @@ pub(crate) struct ConfiguredModelAccess {
 }
 
 pub(crate) fn configured_model_access(model_id: &str) -> Result<ConfiguredModelAccess, String> {
-    crate::policy::require_model(model_id)?;
+    crate::harness::policy::require_model(model_id)?;
     configured_model_access_from_config(&read_config_checked()?, model_id)
 }
 
@@ -2242,7 +2242,7 @@ pub(crate) fn usable_model_ids() -> (Vec<String>, Option<String>) {
 /// Save (merge) a provider into `[model_providers.<id>]`. Preserves unknown keys.
 #[tauri::command]
 pub fn providers_save_provider(
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     provider: ModelProviderEntry,
 ) -> Result<(), String> {
     if provider.id.trim().is_empty() {
@@ -2269,7 +2269,7 @@ pub fn providers_save_provider(
 /// An empty provider id allocates a collision-free id such as `custom-2`.
 #[tauri::command]
 pub fn providers_save_connection(
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     mut provider: ModelProviderEntry,
     mut models: Vec<ModelEntry>,
     replace_models: bool,
@@ -2444,7 +2444,7 @@ pub fn providers_save_connection(
 /// Migrates the entry away from legacy per-model connection fields.
 #[tauri::command]
 pub fn providers_save_model(
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     mut model: ModelEntry,
 ) -> Result<String, String> {
     if model.provider_id.trim().is_empty() {
@@ -2507,7 +2507,7 @@ pub fn providers_save_model(
 /// Delete a provider AND every model that references it.
 #[tauri::command]
 pub fn providers_delete_provider(
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     id: String,
     only_if_empty: Option<bool>,
 ) -> Result<(), String> {
@@ -2587,7 +2587,7 @@ pub fn providers_delete_provider(
 /// Delete a single model entry.
 #[tauri::command]
 pub fn providers_delete_model(
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     model_id: String,
 ) -> Result<(), String> {
     let removed = update_config(|config| {
@@ -2625,7 +2625,7 @@ pub fn providers_delete_model(
 /// Deprecated: use `providers_save_provider` / `providers_save_model`.
 #[tauri::command]
 pub fn providers_save(
-    _state: State<'_, crate::commands::AppState>,
+    _state: State<'_, crate::harness::state::HarnessState>,
     _providers: Vec<serde_json::Value>,
 ) -> Result<(), String> {
     Err("providers_save is deprecated; use providers_save_provider / providers_save_model".into())

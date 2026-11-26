@@ -1452,7 +1452,7 @@ async fn stop_during_preparation_fences_a_delayed_native_prompt() {
                 &id,
                 &work,
                 &tx,
-                crate::agent_runtime::GroupPromptRequest {
+                crate::harness::agent_runtime::GroupPromptRequest {
                     session: "native",
                     prompt_id: &prompt_id,
                     text: "写入文件",
@@ -1499,7 +1499,7 @@ async fn paused_preparation_returns_to_queue_and_dispatch_enqueues_before_awaiti
         &g.id,
         &work,
         &tx,
-        crate::agent_runtime::GroupPromptRequest {
+        crate::harness::agent_runtime::GroupPromptRequest {
             session: "native",
             prompt_id: &prompt_id,
             text: "分析",
@@ -1523,7 +1523,7 @@ async fn paused_preparation_returns_to_queue_and_dispatch_enqueues_before_awaiti
         &g.id,
         &work,
         &tx,
-        crate::agent_runtime::GroupPromptRequest {
+        crate::harness::agent_runtime::GroupPromptRequest {
             session: "native",
             prompt_id: &prompt_id,
             text: "分析",

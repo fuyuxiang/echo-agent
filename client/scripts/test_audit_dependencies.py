@@ -179,7 +179,7 @@ class NpmAuditReviewTests(AuditTestCase):
 class RustAuditReviewTests(AuditTestCase):
     def test_audit_rejects_changes_to_the_onnx_and_hex_backports_before_querying_osv(self):
         read_bytes = Path.read_bytes
-        for relative in ("vendor/ort-sys/build.rs", "vendor/faster-hex/src/lib.rs"):
+        for relative in ("third-party/rust/ort-sys/build.rs", "third-party/rust/faster-hex/src/lib.rs"):
             changed = audit.ROOT / relative
 
             def read_with_change(path):

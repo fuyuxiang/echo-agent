@@ -25,7 +25,7 @@ fn long_turn_extraction_is_bounded_without_dropping_the_user_anchor_or_latest_ou
     assert_eq!(window[0].text_content(), "original user request");
     assert_eq!(window.last().unwrap().text_content(), "latest outcome");
 }
-#[path = "../../vendor/echo-agent-build/crates/codegen/echo-agent-runtime/src/session/memory/background.rs"]
+#[path = "../../agent/crates/echo-agent-runtime/src/session/memory/background.rs"]
 mod background;
 
 #[tokio::test]

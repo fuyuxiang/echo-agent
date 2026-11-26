@@ -167,7 +167,7 @@ fn load_page_at(home: &Path, session: &str, cursor: Option<&str>) -> Result<Trac
 
 #[tauri::command]
 pub async fn knowledge_traces_load(
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     session_id: String,
     cursor: Option<String>,
 ) -> Result<TracePage, String> {
@@ -186,7 +186,7 @@ pub async fn knowledge_traces_load(
 }
 #[tauri::command]
 pub fn knowledge_trace_save(
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     session_id: String,
     prompt_id: String,
     trace: Value,

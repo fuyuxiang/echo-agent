@@ -11,7 +11,6 @@ on:
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
-      - 'patches/**'
       - 'rust-toolchain.toml'
       - 'tsconfig*.json'
       - 'vite.config.*'
@@ -23,7 +22,8 @@ on:
       - 'src/**'
       - 'src-tauri/**'
       - 'scripts/**'
-      - 'vendor/**'
+      - 'agent/**'
+      - 'third-party/**'
       - 'browser-extension/**'
       - 'LICENSE'
       - 'LICENSES/**'
@@ -91,7 +91,7 @@ jobs:
         uses: actions/cache/restore@v6.1.0
         with:
           path: ${{ runner.temp }}/echo-onnx-runtime
-          key: ort-archive-${{ matrix.target }}-${{ hashFiles('vendor/ort-sys/dist.txt') }}
+          key: ort-archive-${{ matrix.target }}-${{ hashFiles('third-party/rust/ort-sys/dist.txt') }}
       - name: Verify and prepare pinned ONNX Runtime before compilation
         timeout-minutes: 8
         run: node scripts/setup-onnx-runtime.mjs

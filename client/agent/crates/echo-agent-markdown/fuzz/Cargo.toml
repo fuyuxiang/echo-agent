@@ -1,0 +1,28 @@
+[package]
+name = "echo-agent-markdown-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+members = ["."]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.echo-agent-markdown]
+path = ".."
+
+# All render modes: pretty/non-pretty × syntect/no-syntect × full/streaming
+[[bin]]
+name = "render_all"
+path = "fuzz_targets/render_all.rs"
+test = false
+doc = false
+bench = false
+
+[patch.crates-io]
+lru = { path = "../../../../third-party/rust/lru-0.12" }

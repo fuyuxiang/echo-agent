@@ -50,9 +50,9 @@ Windows 渲染进程恢复回调使用与 Wry 一致的 `webview2-com 0.39.1` �
 | --- | --- | --- |
 | 桌面前端与 Office Worker | 根目录 `package.json`、`pnpm-lock.yaml` | `pnpm install --frozen-lockfile`；修改依赖后用 pnpm 更新锁文件 |
 | Tauri 桌面程序 | `src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` | `cargo check --locked --manifest-path src-tauri/Cargo.toml --lib` |
-| 内嵌 Agent workspace | `vendor/echo-agent-build/Cargo.toml`、同目录 `Cargo.lock` | 用该 manifest 运行 Cargo；其锁文件与桌面锁文件分别维护 |
-| Markdown fuzz workspace | `vendor/echo-agent-build/crates/codegen/echo-agent-markdown/fuzz/Cargo.toml`、同目录 `Cargo.lock` | 在该独立 workspace 中更新 Cargo 锁文件 |
-| Nucleo 独立 workspace 与基准程序 | `vendor/nucleo/Cargo.toml`、同目录 `Cargo.lock` | 用该 manifest 更新锁文件并验证；桌面构建使用桌面锁文件，不能据此遗漏独立锁文件的审计 |
+| 内嵌 Agent workspace | `agent/Cargo.toml`、同目录 `Cargo.lock` | 用该 manifest 运行 Cargo；其锁文件与桌面锁文件分别维护 |
+| Markdown fuzz workspace | `agent/crates/echo-agent-markdown/fuzz/Cargo.toml`、同目录 `Cargo.lock` | 在该独立 workspace 中更新 Cargo 锁文件 |
+| Nucleo 独立 workspace 与基准程序 | `third-party/rust/nucleo/Cargo.toml`、同目录 `Cargo.lock` | 用该 manifest 更新锁文件并验证；桌面构建使用桌面锁文件，不能据此遗漏独立锁文件的审计 |
 | 独立原生验收 harness | `scripts/desktop-native-check/Cargo.toml`、同目录 `Cargo.lock` | `pnpm test:desktop-native`；复用原生模块并有独立锁文件，须独立纳入审计 |
 | 文档编辑验收 harness | `scripts/document-workspace-check/Cargo.toml`、同目录 `Cargo.lock` | `pnpm test:document-workspace`；文档存储与导出的独立 Rust 依赖图同样纳入审计 |
 | 桌面恢复 harness | `scripts/stability-check/Cargo.toml`、同目录 `Cargo.lock` | `pnpm test:stability` 与 `pnpm test:stability:native`；独立依赖图同样纳入 Rust 审计 |
@@ -63,11 +63,13 @@ Windows 渲染进程恢复回调使用与 Wry 一致的 `webview2-com 0.39.1` �
 
 | 补丁 | 用途与兼容边界 |
 | --- | --- |
-| `vendor/ort-sys/` | 保留 ort-sys 2.0.0-rc.10 / ONNX Runtime 1.22 的 API、ABI 与下载校验值，修复新版 Cargo 输出目录布局及 Windows 无符号链接权限时测试 DLL 的放置。原生测试入口在各平台验证干净构建与新旧布局。 |
-| `vendor/glib/` | 基于 GLib Rust bindings 0.18.5，回移 `VariantStrIter` 的可变输出指针修复，保留 Tauri 在 Linux 上依赖的 GTK3 ABI。由 `src-tauri/Cargo.toml` 的 patch 选用。 |
-| `vendor/lru-0.12/`、`vendor/lru-0.16/` | 分别基于 lru 0.12.5、0.16.4；修复析构可能 panic 时的节点脱链顺序，并为旧版本回移迭代器共享键引用修复。Agent workspace 和 fuzz workspace 各自配置 patch。 |
+| `third-party/rust/ort-sys/` | 保留 ort-sys 2.0.0-rc.10 / ONNX Runtime 1.22 的 API、ABI 与下载校验值，修复新版 Cargo 输出目录布局及 Windows 无符号链接权限时测试 DLL 的放置。原生测试入口在各平台验证干净构建与新旧布局。 |
+| `third-party/rust/glib/` | 基于 GLib Rust bindings 0.18.5，回移 `VariantStrIter` 的可变输出指针修复，保留 Tauri 在 Linux 上依赖的 GTK3 ABI。由 `src-tauri/Cargo.toml` 的 patch 选用。 |
+| `third-party/rust/lru-0.12/`、`third-party/rust/lru-0.16/` | 分别基于 lru 0.12.5、0.16.4；修复析构可能 panic 时的节点脱链顺序，并为旧版本回移迭代器共享键引用修复。Agent workspace 和 fuzz workspace 各自配置 patch。 |
 
 上游引用与公告以各目录的 `SOURCE.json` 为准。修改补丁时，先确认安全边界与回归用例，再更新对应的 `patchedSha256`；不能为了使审计通过而仅重写摘要。上游有可替代修复时，应验证兼容性后移除本地副本、patch/workspace 配置及关联断言。
+
+DOCX 预览以 `pnpm-workspace.yaml` 的本地包接入。完整核心源码、发布包摘要、许可和源码修改见 [DOCX preview](../third-party/docx-preview/README.md)。升级时同时核对源码类型、公开声明、分页测试与真实预览。通用加密包仍以 npm 锁定版本和完整性管理。
 
 ## 升级流程
 

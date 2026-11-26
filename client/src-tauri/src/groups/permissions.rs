@@ -1,17 +1,17 @@
 //! A group owns its approval strategy. Member actors are applications of that
 //! setting, never independent sources of authority.
 use super::*;
-use crate::bridge::Permissions;
-use crate::commands::AppState;
-use crate::permission_config::{
+use crate::harness::bridge::Permissions;
+use crate::harness::permission_config::{
     self as config, PermissionModeSetResult, PermissionModeStatus, PermissionRuntimeSyncState,
 };
+use crate::harness::state::HarnessState;
 use echo_agent_acp::AcpAgentTx;
 
 pub(super) fn effective_mode(group: &Group) -> String {
     let capabilities = config::permission_mode_status(false, None);
-    let configured =
-        crate::policy::locked_permission_mode().unwrap_or_else(|| group.permission_mode.clone());
+    let configured = crate::harness::policy::locked_permission_mode()
+        .unwrap_or_else(|| group.permission_mode.clone());
     config::effective_permission_mode(
         &configured,
         capabilities.auto_mode_available,
@@ -19,7 +19,7 @@ pub(super) fn effective_mode(group: &Group) -> String {
     )
 }
 
-fn status(state: &AppState, group: &Group) -> PermissionModeStatus {
+fn status(state: &HarnessState, group: &Group) -> PermissionModeStatus {
     let running = state.tx.lock().unwrap().is_some();
     let mut status = config::permission_mode_status(running, None);
     if !status.locked {
@@ -64,7 +64,7 @@ fn status(state: &AppState, group: &Group) -> PermissionModeStatus {
 
 #[tauri::command]
 pub fn group_permission_mode_get(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     group_id: String,
 ) -> Result<PermissionModeStatus, String> {
     Ok(status(&state, &db()?.header(&group_id)?))
@@ -156,7 +156,7 @@ pub(super) async fn transition(
 #[tauri::command]
 pub async fn group_permission_mode_set(
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     permissions: State<'_, Permissions>,
     group_id: String,
     mode: String,
@@ -166,7 +166,7 @@ pub async fn group_permission_mode_set(
 
 pub(crate) async fn set_permission_mode(
     app: &tauri::AppHandle,
-    state: &AppState,
+    state: &HarnessState,
     permissions: &Permissions,
     group_id: &str,
     mode: &str,
@@ -185,7 +185,7 @@ pub(crate) async fn set_permission_mode(
     }
     // resolve_new_session_permission_mode honors policy for creation. A write
     // must reject a conflicting request instead of reporting a false success.
-    if crate::policy::locked_permission_mode().is_some_and(|locked| locked != mode) {
+    if crate::harness::policy::locked_permission_mode().is_some_and(|locked| locked != mode) {
         return Err("权限模式已被组织策略锁定".into());
     }
     let mode = config::resolve_new_session_permission_mode(Some(mode))?;

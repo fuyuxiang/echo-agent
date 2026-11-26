@@ -1,0 +1,153 @@
+[package]
+license = "Apache-2.0"
+name = "echo-agent-workspace"
+version = "0.1.220-alpha.4"
+edition.workspace = true
+description = "Core host-local workspace library (FS, VCS, execution, discovery) for echo-agent-runtime and remote sampler"
+
+[dependencies]
+anyhow = { workspace = true }
+arc-swap = { workspace = true }
+dunce = { workspace = true }
+echo-agent-version = { workspace = true }
+async-stream = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+fs2 = { workspace = true }
+dirs = "6"
+parking_lot = { workspace = true }
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
+ignore = { workspace = true }
+regex = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = [
+    "fs",
+    "io-std",
+    "macros",
+    "process",
+    "rt",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4", "v5", "v7"] }
+echo-agent-core = { path = "../echo-agent-core" }
+echo-agent-tools = { path = "../echo-agent-tools" }
+echo-agent-tools-api = { path = "../echo-agent-tools-api" }
+# `DiagHandle`, held by the hub config and threaded through `connect_hub`.
+echo-agent-diag-server = { workspace = true }
+echo-agent-workspace-client = { path = "../echo-agent-workspace-client" }
+# Daemon/process-lifecycle machinery for `bin/workspace_server.rs` only; the
+# library never references it.
+echo-agent-workspace-daemon = { path = "../echo-agent-workspace-daemon" }
+echo-agent-workspace-types = { path = "../echo-agent-workspace-types" }
+echo-agent-config = { workspace = true }
+# Leaf config value types (RemoteSettings, BoolFlag) for the folder-trust decision.
+echo-agent-config-types = { workspace = true }
+toml = { workspace = true, features = ["preserve_order"] }
+dashmap = { workspace = true }
+agent-client-protocol = { workspace = true }
+echo-agent-acp = { workspace = true }
+echo-agent-codebase-graph = { path = "../echo-agent-codebase-graph" }
+echo-agent-paths = { path = "../echo-agent-paths" }
+base64 = { workspace = true }
+infer = { workspace = true }
+sha2 = { workspace = true, features = ["force-soft"] }
+bstr = "1.12.1"
+hashbrown = "0.16.1"
+nohash-hasher = "0.2.0"
+rustc-hash = "2.1.1"
+# Backs `file_system`'s fuzzy path picker (matcher + background daemon).
+echo-agent-fuzzy-file-search = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+smallvec = { workspace = true }
+chrono = { workspace = true }
+tree-sitter = "0.25.10"
+tree-sitter-bash = "0.25"
+url = { workspace = true }
+echo-agent-env = { workspace = true }
+humantime-serde = { workspace = true }
+prometheus = { workspace = true }
+glob = "0.3"
+echo-agent-sandbox = { path = "../echo-agent-sandbox", default-features = false }
+echo-agent-hooks = { path = "../echo-agent-hooks" }
+echo-agent-hunk-tracker = { path = "../echo-agent-hunk-tracker" }
+# `metrics` enables the SDK's metric-donation client (periodic Prometheus
+# registry gather → OTLP → hub donation pump); see metric_donation_reporter.
+echo-agent-computer-hub-sdk = { workspace = true, features = ["metrics"] }
+echo-agent-computer-hub-mcp-adapter = { path = "../echo-agent-computer-hub-mcp-adapter" }
+echo-agent-mcp = { path = "../echo-agent-mcp" }
+echo-agent-file-utils = { path = "../echo-agent-file-utils" }
+echo-agent-session-events = { workspace = true }
+echo-agent-auth = { path = "../echo-agent-auth" }
+echo-agent-telemetry = { workspace = true }
+echo-agent-tty-utils = { workspace = true }
+reqwest = { workspace = true }
+echo-agent-tool-protocol = { workspace = true }
+echo-agent-tool-runtime = { workspace = true }
+echo-agent-tool-types = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
+urlencoding = "2"
+echo-agent-fast-worktree = { path = "../echo-agent-fast-worktree", features = ["metadata"] }
+# tonic: Status/Code mapping for deploy errors in workspace_ops.
+tonic = { workspace = true }
+sha1 = { workspace = true, optional = true }
+zip = { workspace = true, optional = true }
+
+echo-agent-fsnotify = { path = "../echo-agent-fsnotify" }
+clap = { workspace = true }
+tracing-subscriber = { workspace = true }
+# "enable" required for the SDK's spans to record at all.
+fastrace = { workspace = true, features = ["enable"] }
+echo-agent-tracing = { workspace = true }
+echo-agent-extra-ca = { workspace = true }
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
+tempfile = { workspace = true }
+zstd = { workspace = true }
+wait-timeout = { workspace = true }
+
+# Raw fd/dirent/poll calls in foreign-session capability probes, the fuzzy
+# walker's rlimit guard, and the envrc reader.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { workspace = true, features = ["signal", "process"] }
+
+[[bin]]
+name = "echo-agent-workspace-server"
+path = "src/bin/workspace_server.rs"
+
+[[bin]]
+name = "workspace-server-probe"
+path = "src/bin/workspace_server_probe.rs"
+
+[features]
+desktop = ["echo-agent-tools/desktop"]
+default = ["sandbox-enforce"]
+compression = []
+test-support = []
+test-util = []
+sandbox-enforce = ["echo-agent-sandbox/enforce"]
+default-bazel = [
+    "sandbox-enforce",
+    ]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+echo-agent-test-utils = { path = "../echo-agent-test-utils" }
+# Decode tar.gz archives produced by workspace upload helpers in tests.
+flate2 = { workspace = true }
+tar = { workspace = true }
+
+[package.metadata.cargo-shear]
+ignored = ["tokio-tungstenite"]
+
+[lints]
+workspace = true

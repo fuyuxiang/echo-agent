@@ -33,7 +33,7 @@ pub(crate) fn document_lock(path: &Path) -> Result<Arc<DocumentLock>, String> {
 }
 fn session_root(app: &AppHandle, session: &str) -> Result<PathBuf, String> {
     let cwd = app
-        .state::<crate::commands::AppState>()
+        .state::<crate::harness::state::HarnessState>()
         .session_workspace(session)?;
     let root = app
         .state::<crate::shell_fs::FilesystemAccess>()
@@ -319,8 +319,8 @@ async fn open_document(
         // closed or offline workspace never acquires live file permissions.
         let history_root = match &root {
             Ok(root) => Cow::Borrowed(root.as_path()),
-            Err(_) => Cow::Owned(crate::commands::trusted_session_history_cwd(
-                &app.state::<crate::commands::AppState>(),
+            Err(_) => Cow::Owned(crate::harness::commands::trusted_session_history_cwd(
+                &app.state::<crate::harness::state::HarnessState>(),
                 session,
                 None,
             )?),
@@ -510,7 +510,7 @@ async fn import_for_session(
         return Err("DOCUMENT_EXTERNAL_CHANGE:原文件已变化，请重新读取后创建副本".into());
     }
     let cwd = app
-        .state::<crate::commands::AppState>()
+        .state::<crate::harness::state::HarnessState>()
         .session_workspace(session)?;
     let root = app
         .state::<crate::shell_fs::FilesystemAccess>()

@@ -12,7 +12,7 @@ const targets = {
 const host = `${process.platform}/${process.arch}`;
 const target = targets[host];
 if (!target) throw new Error(`Unsupported ONNX Runtime packaging host: ${host}`);
-const distribution = readFileSync(new URL("../vendor/ort-sys/dist.txt", import.meta.url), "utf8")
+const distribution = readFileSync(new URL("../third-party/rust/ort-sys/dist.txt", import.meta.url), "utf8")
   .split(/\r?\n/)
   .map(line => line.split("\t"))
   .find(([features, triple]) => features === "none" && triple === target);

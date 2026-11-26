@@ -176,7 +176,7 @@ export function deriveSubagents(messages: ChatMessage[]): SubagentActivity[] {
 
 /** 判断一个 tool_call 是否为子代理派发。
  *
- *  EchoAgent 原生子代理派发工具是 `task`（见 vendor/echo-agent-build/.../task/mod.rs:58,141），
+ *  EchoAgent 原生子代理派发工具是 `task`（见 agent/.../task/mod.rs:58,141），
  *  其 `kind = "task"`、`id = "task"`。较旧版本用过 `spawn_subagent` 这个 kind。
  *  这里综合 kind / toolCallId / title 三处线索判断，避免遗漏任一字段缺失的情况。 */
 export function isSubagentTool(tc: ToolCallView): boolean {

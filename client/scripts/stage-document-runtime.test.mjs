@@ -17,17 +17,19 @@ function withFixture(run) {
       'iccs/fixture.icc': 'color profile',
     };
     const packages = {
-      '@office-kit/pptx/LICENSE': 'license',
-      '@office-kit/pptx-preview/LICENSE': 'license',
-      '@apollo-design/docx-preview/LICENSE': 'license',
-      '@apollo-design/docx-preview/NOTICE': 'notice',
-      'ssf/LICENSE': 'license',
-      'pdfjs-dist/LICENSE': 'license',
-      'pdfjs-dist/package.json': '{"version":"6.5.438"}',
-      ...Object.fromEntries(Object.entries(assets).map(([path, data]) => [`pdfjs-dist/${path}`, data])),
+      'node_modules/@office-kit/pptx/LICENSE': 'license',
+      'node_modules/@office-kit/pptx-preview/LICENSE': 'license',
+      'node_modules/ssf/LICENSE': 'license',
+      'node_modules/pdfjs-dist/LICENSE': 'license',
+      'node_modules/pdfjs-dist/package.json': '{"version":"6.5.438"}',
+      'third-party/docx-preview/LICENSE': 'license',
+      'third-party/docx-preview/NOTICE': 'notice',
+      'third-party/docx-preview/node_modules/@noble/ciphers/LICENSE': 'ciphers license',
+      'third-party/docx-preview/node_modules/@noble/hashes/LICENSE': 'hashes license',
+      ...Object.fromEntries(Object.entries(assets).map(([path, data]) => [`node_modules/pdfjs-dist/${path}`, data])),
     };
     for (const [name, data] of Object.entries(packages)) {
-      const path = join(root, 'node_modules', name);
+      const path = join(root, name);
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, data);
     }
@@ -46,6 +48,10 @@ it('stages resources when invoked through an aliased checkout', () => {
     for (const [path, data] of Object.entries(assets)) {
       expect(readFileSync(join(staged, path), 'utf8')).toBe(data);
     }
+    const licenses = join(root, 'public/document-runtime/licenses');
+    expect(readFileSync(join(licenses, '@apollo-design-docx-preview-NOTICE'), 'utf8')).toBe('notice');
+    expect(readFileSync(join(licenses, '@noble-ciphers-LICENSE'), 'utf8')).toBe('ciphers license');
+    expect(readFileSync(join(licenses, '@noble-hashes-LICENSE'), 'utf8')).toBe('hashes license');
   });
 });
 

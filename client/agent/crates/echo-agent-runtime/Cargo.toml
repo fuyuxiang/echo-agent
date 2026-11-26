@@ -1,0 +1,287 @@
+[package]
+license = "Apache-2.0"
+name = "echo-agent-runtime"
+version = "1.0.8"
+edition.workspace = true
+
+[features]
+desktop = ["echo-agent-core/desktop", "echo-agent-tools/desktop", "echo-agent-workspace/desktop"]
+default = []
+dhat-heap = ["dep:dhat"]
+# Loom model-checking for src/auth/manager/lock/flock_wait.rs; test-only
+# (compile_error!-guarded). Run in release (debug overflows loom's stacks):
+#   cargo test --release --features loom -p echo-agent-runtime --lib flock_wait::loom -- --test-threads=1
+loom = ["dep:loom"]
+# Session synthesis + in-process e2e harness (`session::testkit`) for soak,
+# load, and bench tests. Off by default; the tests/benches that use it declare
+# it via `required-features`.
+test-support = []
+test-util = []
+# Local Computer Hub workspace_server (own/attach + crash-restart). Requires
+local-workspace = []
+# CI default set (preferred over cargo `default` for hermetic CI builds):
+# `config-docs` is on this set (not cargo `default`) so hermetic lib tests
+# parse the committed config-reference page.
+config-docs = []
+default-bazel = [
+    "local-workspace",
+    "test-support",
+    "config-docs",
+]
+
+[dependencies]
+dunce = { workspace = true }
+tonic-prost = { workspace = true, optional = true }
+agent-client-protocol = { workspace = true }
+anyhow = { workspace = true }
+echo-agent-announcements = { workspace = true }
+echo-agent-prompt-queue = { workspace = true }
+echo-agent-version = { workspace = true }
+
+async-openai = { workspace = true }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+bm25 = "2.3"
+bytes = { workspace = true }
+chrono = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+ignore = { workspace = true }
+jsonschema = { workspace = true }
+futures = { workspace = true }
+glob = { workspace = true }
+globset = { workspace = true }
+kanal = "0.1"
+loom = { workspace = true, optional = true }
+regex = { workspace = true }
+# rmcp 2.1 + reqwest 0.13 are quarantined inside `echo-agent-mcp`. The remaining
+# MCP code in this crate (extensions/mcp.rs, mcp_doctor.rs) reaches rmcp model
+# types via `echo_agent_mcp::rmcp::model::*`. reqwest 0.13 is a private impl
+# detail of echo-agent-mcp::servers; shell never sees it. Every HTTP call site
+# in this crate uses workspace reqwest 0.12.
+echo-agent-mcp = { workspace = true }
+reqwest = { workspace = true, features = ["stream", "blocking"] }
+reqwest-middleware = { workspace = true }
+serde = { workspace = true }
+schemars = { workspace = true }
+serde_ignored = "0.1"
+serde_json = { workspace = true, features = ["preserve_order"] }
+similar = { workspace = true }
+thiserror = { workspace = true }
+clap = { workspace = true }
+dirs = "6"
+tokio-stream = { workspace = true }
+tower-http = { workspace = true, features = ["cors"] }
+toml = { workspace = true, features = ["preserve_order"] }
+toml_edit = { workspace = true }
+tokio = { workspace = true, features = [
+    "io-std",
+    "process",
+    "rt",
+    "macros",
+    "rt-multi-thread",
+    "net",
+    "sync",
+] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = [
+    "env-filter",
+    "fmt",
+    "json",
+    "time",
+] }
+obfstr = { workspace = true }
+tokio-util = { workspace = true, features = ["compat", "rt"] }
+tokio-retry = { workspace = true }
+uuid = { workspace = true, features = ["v4", "v5", "v7"] }
+echo-agent-acp = { workspace = true }
+axum = { workspace = true, features = ["ws", "multipart"] }
+backon = { workspace = true }
+webbrowser = { workspace = true }
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-native-roots"] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "ring",
+    "logging",
+    "tls12",
+] }
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "logging",
+    "std",
+    "tls12",
+] }
+futures-util = { workspace = true }
+urlencoding = { workspace = true }
+gethostname = { workspace = true }
+gcloud-storage = { workspace = true }
+git2 = { version = "0.21", default-features = false, features = [
+    "vendored-libgit2",
+] }
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
+nucleo = { workspace = true }
+arc-swap = { workspace = true }
+infer = "0.15"
+image = { workspace = true, features = ["png", "jpeg", "gif", "webp"] }
+moka = { workspace = true, features = ["future"] }
+dhat = { workspace = true, optional = true }
+base64 = { workspace = true }
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+sha2 = { workspace = true }
+rand = { workspace = true }
+strum = { workspace = true }
+echo-agent-fast-worktree = { path = "../echo-agent-fast-worktree", features = ["metadata"] }
+
+tonic = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+echo-agent-paths = { path = "../echo-agent-paths" }
+echo-agent-runtime-base = { workspace = true }
+echo-agent-runtime-session-support = { workspace = true }
+echo-agent-runtime-terminal = { workspace = true }
+echo-agent-shared = { workspace = true }
+echo-agent-status-line = { workspace = true }
+echo-agent-tracing-macros = { path = "../echo-agent-tracing-macros" }
+echo-agent-fsnotify = { path = "../echo-agent-fsnotify" }
+echo-agent-codebase-graph = { path = "../echo-agent-codebase-graph" }
+echo-agent-hunk-tracker = { path = "../echo-agent-hunk-tracker" }
+echo-agent-lifecycle = { workspace = true }
+echo-agent-interjection-core = { workspace = true }
+echo-agent-sandbox = { path = "../echo-agent-sandbox", default-features = false }
+echo-agent-chat-state = { path = "../echo-agent-chat-state" }
+# Segment markdown rendering + the `compaction/` store path convention.
+echo-agent-compaction-transcript = { workspace = true }
+echo-agent-compaction = { path = "../echo-agent-compaction" }
+echo-agent-extra-ca = { workspace = true }
+echo-agent-sampler = { path = "../echo-agent-sampler" }
+# Session FTS search; owns this crate's only rusqlite/bundled-SQLite use.
+echo-agent-session-search = { workspace = true }
+echo-agent-token-estimation = { workspace = true }
+echo-agent-sampling-types = { path = "../echo-agent-sampling-types" }
+echo-agent-tools = { path = "../echo-agent-tools" }
+echo-agent-tty-utils = { workspace = true }
+echo-agent-workflow = { path = "../echo-agent-workflow" }
+echo-agent-system-power = { workspace = true }
+echo-agent-workspace = { workspace = true }
+# Backs the compatibility-only `echo_agent_runtime::foreign_sessions` re-export.
+echo-agent-foreign-sessions = { workspace = true }
+echo-agent-subagent-resolution = { path = "../echo-agent-subagent-resolution" }
+echo-agent-core = { path = "../echo-agent-core" }
+echo-agent-bundle = { workspace = true }
+echo-agent-config = { workspace = true }
+echo-agent-config-types = { workspace = true }
+echo-agent-memory = { workspace = true }
+echo-agent-hooks = { path = "../echo-agent-hooks" }
+echo-agent-hooks-plugins-types = { path = "../echo-agent-hooks-plugins-types" }
+echo-agent-plugin-marketplace = { path = "../echo-agent-plugin-marketplace" }
+echo-agent-file-utils = { path = "../echo-agent-file-utils" }
+echo-agent-session-events = { workspace = true }
+echo-agent-auth = { workspace = true, features = ["middleware"] }
+echo-agent-telemetry = { workspace = true }
+echo-agent-http = { workspace = true }
+echo-agent-models = { workspace = true }
+echo-agent-chat-proxy-types = { path = "../echo-agent-chat-proxy-types" }
+flate2 = { workspace = true }
+fs2 = { workspace = true }
+zstd = { workspace = true }
+tar = { workspace = true }
+url = { workspace = true }
+walkdir = { workspace = true }
+tdigests = "1.0"
+semver = { workspace = true }
+parking_lot.workspace = true
+dashmap.workspace = true
+
+# Used by acp_session.rs and mcp_servers.rs for the unified
+# echo_agent_tool_runtime::Tool dispatch model and the computer-hub MCP adapter.
+echo-agent-computer-hub-sdk = { workspace = true }
+echo-agent-tool-runtime = { workspace = true }
+echo-agent-tool-protocol = { workspace = true }
+echo-agent-tool-types = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+nix = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+siphasher = { workspace = true }
+windows = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+# The fixture that builds a `[ui.status_line]` section field by field.
+echo-agent-status-line = { workspace = true, features = ["test-support"] }
+criterion = { workspace = true }
+# Pre-main unified-log redirect (`test_support::redirect_unified_log_for_tests`).
+ctor = { workspace = true }
+filetime = { workspace = true }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+# `extensions::bundle` tests build archives with `bundle::test_helpers`, which
+# is `#[cfg(test)]`-only inside echo-agent-bundle without this feature.
+echo-agent-bundle = { workspace = true, features = ["test-support"] }
+echo-agent-memory = { workspace = true, features = ["test-support"] }
+echo-agent-workspace = { workspace = true, features = ["test-support"] }
+echo-agent-config = { workspace = true, features = [] }
+ring = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+aws-lc-rs = { version = "1.18.2", features = ["ring-io"] }
+semver = { workspace = true }
+serial_test = { workspace = true }
+# Test-only builds expose `env::EnvVarGuard` and the cpu_profile test seams to
+# this crate's test targets.
+echo-agent-runtime-base = { workspace = true, features = ["test-support"] }
+echo-agent-test-support = { workspace = true, features = [] }
+echo-agent-test-utils = { workspace = true }
+# `test-util` enables `#[tokio::test(start_paused = true)]` (paused virtual
+# clock with auto-advance) so interval-driven loop tests in `auth::refresh`
+# can assert exact tick counts deterministically without real-time sleep.
+tokio = { workspace = true, features = ["test-util"] }
+
+[dependencies.tempfile]
+workspace = true
+
+[[bench]]
+name = "session_list"
+harness = false
+
+[[bench]]
+name = "fork_copy"
+harness = false
+required-features = ["test-support"]
+
+[[bench]]
+name = "skills_watcher_startup"
+harness = false
+
+[[bench]]
+name = "child_replay_lookup"
+harness = false
+
+[[test]]
+name = "test_leader_soak"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_session_load_memory"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_fork_copy_memory"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_fork_replay_memory"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_load_perf"
+required-features = ["test-support"]
+
+[[test]]
+name = "testkit_synth_roundtrip"
+required-features = ["test-support"]
+
+[lints]
+workspace = true
+[[bin]]
+name = "chat-history-downgrade"
+path = "src/bin/chat-history-downgrade.rs"

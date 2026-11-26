@@ -87,13 +87,14 @@ On first use, macOS requires Accessibility and Screen Recording permission for t
 
 ## Architecture and data flow
 
-React 18 renders the interface. Tauri 2 and Rust manage native capabilities, state, and processes. The Agent Runtime runs **in process** and communicates with the host over typed ACP channels. The Runtime accesses browser and computer automation through a local, task-bound MCP service.
+React 18 renders the interface. Tauri 2 and Rust manage native capabilities, state, and processes. The Desktop Harness coordinates runtime generations, session admission, permissions, and events over typed ACP channels. The in-process Agent Runtime runs turns, calls models and tools, and owns memory and session persistence. A local, task-bound MCP service provides browser and computer automation.
 
 ```mermaid
 flowchart LR
     User --> UI["React interface"]
     UI <-->|Tauri commands and events| Host["Rust desktop host"]
-    Host <-->|ACP Channel| Runtime["Embedded Agent Runtime"]
+    Host --> Harness["Desktop Harness"]
+    Harness <-->|ACP Channel| Runtime["Embedded Agent Runtime"]
     Host --> Office["Office worker and bundled Node.js"]
     Host --> Workspace["Workspace and local data"]
     Runtime --> Workspace
@@ -103,9 +104,12 @@ flowchart LR
 | Directory | Responsibility |
 | --- | --- |
 | [`src/`](src/) | React UI, state management, and frontend domain logic. |
-| [`src-tauri/src/`](src-tauri/src/) | Tauri commands, ACP bridge, policy, storage, Office documents, and automation backend. |
-| [`vendor/echo-agent-build/`](vendor/echo-agent-build/) | Pinned embedded Agent Runtime source snapshot. |
+| [`src-tauri/`](src-tauri/) | Tauri host, platform integration, and product services. Desktop runtime control lives in [`src/harness/`](src-tauri/src/harness/). |
+| [`agent/`](agent/) | Maintained Agent source and Cargo workspace. `crates/` contains the embedded Runtime and libraries. `terminal/` contains the terminal client. |
+| [`third-party/`](third-party/) · [`LICENSES/`](LICENSES/) | Local third-party source and licenses for separately distributed resources. |
 | [`scripts/`](scripts/) · [`docs/`](docs/) | Build, verification, release scripts, and detailed documentation. |
+
+See the [architecture guide](docs/architecture.md) for runtime flows, module ownership, and dependency governance.
 
 ### Memory
 
@@ -240,7 +244,7 @@ Earlier MIT notice: [LICENSES/MIT.txt](LICENSES/MIT.txt). The embedded Runtime, 
 
 Personal knowledge and local memory use bundled, pinned ONNX INT8 versions of `BAAI/bge-base-zh-v1.5` (768 dimensions) and `BAAI/bge-reranker-base` (about 400MB installed). The app reads its resources directly: first use requires no model download or copy and local retrieval works offline. If models need repair, Knowledge keeps keyword search available and links to model maintenance for verification, repair, or offline import. You can also find model maintenance by searching Settings. A failed maintenance action reports its error separately while preserving healthy active models. Wide spreadsheets retain non-empty values with cell coordinates, and presentation citations follow the actual slide order. Only missing or damaged files may require downloads; repairs use the user data directory and never modify signed app resources. Keyword retrieval remains available if CPU support is unavailable. Automatic memory recall skips reranking and caps semantic waiting at 650ms. Organization knowledge retains its server-side scopes, authorization, citations and model pipeline. Retrieved evidence provenance survives conversation persistence and compaction, preventing automatic conversion into unrestricted personal memory.
 
-Embeddings and reranking run locally. Evidence used to answer and content used for memory extraction still reach the selected chat model. Fixed model versions, offline paths and checksums are in `vendor/echo-agent-build/crates/codegen/echo-agent-memory/src/model-assets.json`.
+Embeddings and reranking run locally. Evidence used to answer and content used for memory extraction still reach the selected chat model. Fixed model versions, offline paths and checksums are in `agent/crates/echo-agent-memory/src/model-assets.json`.
 
 Tauri development and packaging run `pnpm retrieval:prepare`, which reuses verified files in `src-tauri/resources/retrieval-models/`. To fill in missing or corrupt files, it downloads the bundle from the pinned [GitHub Release](https://github.com/fuyuxiang/echo-agent-desktop/releases/tag/retrieval-models-v1), checks its SHA256, extracts it with the system `tar`, and verifies each model file. For offline builds, use `pnpm retrieval:prepare --source /path/to/models` or set `ECHO_RETRIEVAL_MODELS_SOURCE`. `pnpm retrieval:check` validates each file's SHA256. Release compilation also rejects incomplete or corrupt resources. Model and inference runtime license notices are included in the installer.
 

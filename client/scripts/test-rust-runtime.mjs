@@ -11,7 +11,7 @@ import { reportNativeTestFailure, runNativeTestProcess } from './lib/native-test
 
 assert.equal(process.argv.length, 2, 'This entry runs the complete Runtime library suite');
 const root = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
-const workspace = realpathSync(join(root, 'vendor/echo-agent-build/crates/codegen/echo-agent-runtime'));
+const workspace = realpathSync(join(root, 'agent/crates/echo-agent-runtime'));
 const target = join(root, 'src-tauri/target');
 const toolHome = homedir();
 const home = realpathSync(mkdtempSync(join(tmpdir(), 'echo-runtime-tests-')));
@@ -32,7 +32,7 @@ if (process.platform === 'win32') {
 console.log(`Isolated Runtime library test data: ${home}`);
 function buildHarness(packageName, directory, integrationTest) {
   const targetArgs = integrationTest ? ['--test', integrationTest] : ['--lib'];
-  const build = spawnSync('cargo', ['test', '--locked', '--manifest-path', join(root, 'vendor/echo-agent-build/Cargo.toml'),
+  const build = spawnSync('cargo', ['test', '--locked', '--manifest-path', join(root, 'agent/Cargo.toml'),
     '-p', packageName, ...targetArgs, '-j', '2', '--no-run', '--message-format=json'],
   { cwd: root, env, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'inherit'] });
   const messages = (build.stdout ?? '').split('\n').filter(Boolean).map(line => {
@@ -117,7 +117,7 @@ for (const group of groups) {
   const result = await runNativeTestProcess(program, [...group.args, `--test-threads=${group.threads}`], { ...options, env: group.env });
   if (result !== 0) status = result;
 }
-const coreWorkspace = realpathSync(join(root, 'vendor/echo-agent-build/crates/codegen/echo-agent-core'));
+const coreWorkspace = realpathSync(join(root, 'agent/crates/echo-agent-core'));
 const coreProgram = buildHarness('echo-agent-core', coreWorkspace);
 const templateFilter = 'prompt::template::tests::';
 const coreOptions = { cwd: coreWorkspace, env: groupEnvironment('prompt-templates') };
@@ -129,7 +129,7 @@ for (const name of ['test_encrypted_templates_not_stale', 'test_base_template_re
 }
 const coreStatus = await runNativeTestProcess(coreProgram, [templateFilter, '--test-threads=2'], coreOptions);
 if (coreStatus !== 0) status = coreStatus;
-const toolsWorkspace = realpathSync(join(root, 'vendor/echo-agent-build/crates/codegen/echo-agent-tools'));
+const toolsWorkspace = realpathSync(join(root, 'agent/crates/echo-agent-tools'));
 const toolsProgram = buildHarness('echo-agent-tools', toolsWorkspace);
 const reminderFilter = 'reminders::task_completion::tests::';
 const toolsEnv = groupEnvironment('tool-reminders');
@@ -147,7 +147,7 @@ for (const name of ['format_bash_completion_pointer_form_is_small', 'format_betw
 console.log(`Running tool reminder contracts: ${testNames(reminderTests.stdout).length} discovered`);
 const toolsStatus = await runNativeTestProcess(toolsProgram, [reminderFilter, '--test-threads=2'], toolsOptions);
 if (toolsStatus !== 0) status = toolsStatus;
-const samplerWorkspace = realpathSync(join(root, 'vendor/echo-agent-build/crates/codegen/echo-agent-sampler'));
+const samplerWorkspace = realpathSync(join(root, 'agent/crates/echo-agent-sampler'));
 const samplerProgram = buildHarness('echo-agent-sampler', samplerWorkspace, 'chat_stream_termination');
 console.log('Running Chat Completions, Messages and Responses stream contracts');
 const samplerStatus = await runNativeTestProcess(samplerProgram, ['--test-threads=1'], {

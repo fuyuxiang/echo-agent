@@ -26,7 +26,7 @@ console.log(`Isolated host test data: ${home}`);
 // output tree and both Cargo layouts, before compiling the full application.
 const contract = join(home, `ort-library-copy-tests${process.platform === "win32" ? ".exe" : ""}`);
 let status = await runNativeTestProcess("rustc", ["--edition=2021", "--test",
-  "vendor/ort-sys/copy_libraries.rs", "-o", contract], { env });
+  "third-party/rust/ort-sys/copy_libraries.rs", "-o", contract], { env });
 if (status === 0) status = await runNativeTestProcess(contract, [], { env });
 if (status !== 0) process.exit(status);
 let preparation;

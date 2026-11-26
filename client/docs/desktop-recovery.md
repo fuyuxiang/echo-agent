@@ -46,6 +46,6 @@ Windows 监听 WebView2 的进程失败和浏览器退出事件：渲染进程�
 | `src-tauri/src/process_supervisor.rs`、`document_export.rs`、`office_node.rs` | 子进程生命周期、更新交接与 Office 导出。安装包的 `office/node/` 提供独立 Node.js 和许可证。 |
 | `src/lib/legacy-workspace.ts`、`src-tauri/src/legacy_workspace.rs`、`backup.rs` | 旧记录读取与导出、备份兼容、未结束操作的目录限制和人工核验。旧工作树、应用数据和草稿是用户数据。 |
 | `src-tauri/windows/install-path.nsh`、`scripts/stage-office-node.mjs` | 识别并清理已登记旧版安装的资源或本地生成的过期暂存物。历史资源路径仅用于清理与验收。 |
-| `vendor/echo-agent-build/crates/codegen/` | 共享 Runtime 中的文件工具、文档变化记录、任务规划、子 Agent、命令执行、MCP、Skills 与权限仍在桌面运行。桌面编译启用 `desktop`，排除语言服务器启动与对应工具，以及代码索引、SCM、PTY 控件和 worktree 创建、恢复与清理的专用入口。旧协议和配置标识继续可读。 |
+| `agent/crates/` | 共享 Runtime 中的文件工具、文档变化记录、任务规划、子 Agent、命令执行、MCP、Skills 与权限仍在桌面运行。桌面编译启用 `desktop`，排除语言服务器启动与对应工具，以及代码索引、SCM、PTY 控件和 worktree 创建、恢复与清理的专用入口。旧协议和配置标识继续可读。 |
 | `src-tauri/src/agent_admin.rs`、Runtime 的 `session/acp_types.rs` | 旧值 `code_only` 解析为通用的文件回溯模式 `files_only`，服从原有权限和目录限制。 |
 | Runtime 的 `builtin.rs`、`src-tauri/src/automation/policy.rs` | 旧内置技能哈希仅用于识别已分发且内容未修改的副本。`xterm` 是电脑操作策略中的系统终端应用名称。 |

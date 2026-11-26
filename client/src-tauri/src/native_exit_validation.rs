@@ -167,7 +167,7 @@ pub fn native_exit_review_context(
     }
     let scope = read_scope()?;
     let state = app
-        .try_state::<crate::commands::AppState>()
+        .try_state::<crate::harness::state::HarnessState>()
         .ok_or("Exit review native state is not ready")?;
     let (has_runtime_handle, shutdown_failure) = {
         let handle = state

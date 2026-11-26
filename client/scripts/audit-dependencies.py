@@ -210,9 +210,9 @@ def rust_audit(output):
     manifests = ["scripts/desktop-native-check/Cargo.lock", "scripts/document-workspace-check/Cargo.lock",
                  "scripts/stability-check/Cargo.lock",
                  "src-tauri/Cargo.lock", "src-tauri/meeting-speech/Cargo.lock",
-                 "vendor/echo-agent-build/Cargo.lock",
-                 "vendor/echo-agent-build/crates/codegen/echo-agent-markdown/fuzz/Cargo.lock",
-                 "vendor/nucleo/Cargo.lock"]
+                 "agent/Cargo.lock",
+                 "agent/crates/echo-agent-markdown/fuzz/Cargo.lock",
+                 "third-party/rust/nucleo/Cargo.lock"]
     packages, identities = {}, {}
     for manifest in manifests:
         for pkg in tomllib.loads((ROOT / manifest).read_text())["package"]:
@@ -222,19 +222,19 @@ def rust_audit(output):
     # Local GLib is not a registry dependency: verify its exact backport instead
     # of adding a global ignore for the advisory.
     tauri = tomllib.loads((ROOT / "src-tauri/Cargo.toml").read_text())
-    if tauri.get("patch", {}).get("crates-io", {}).get("glib", {}).get("path") != "../vendor/glib":
+    if tauri.get("patch", {}).get("crates-io", {}).get("glib", {}).get("path") != "../third-party/rust/glib":
         raise RuntimeError("The GTK3 GLib security backport is not active")
-    variant = (ROOT / "vendor/glib/src/variant_iter.rs").read_text()
+    variant = (ROOT / "third-party/rust/glib/src/variant_iter.rs").read_text()
     if "let mut p: *mut libc::c_char" not in variant or "                &mut p," not in variant:
         raise RuntimeError("GLib VariantStrIter backport is missing")
-    runtime = tomllib.loads((ROOT / "vendor/echo-agent-build/Cargo.toml").read_text())
-    for name, path in [("lru-0-12", "../lru-0.12"), ("lru-0-16", "../lru-0.16")]:
+    runtime = tomllib.loads((ROOT / "agent/Cargo.toml").read_text())
+    for name, path in [("lru-0-12", "../third-party/rust/lru-0.12"), ("lru-0-16", "../third-party/rust/lru-0.16")]:
         if runtime.get("patch", {}).get("crates-io", {}).get(name, {}).get("path") != path:
             raise RuntimeError(f"Runtime LRU security backport is not active: {name}")
-    fuzz = tomllib.loads((ROOT / "vendor/echo-agent-build/crates/codegen/echo-agent-markdown/fuzz/Cargo.toml").read_text())
-    if fuzz.get("patch", {}).get("crates-io", {}).get("lru", {}).get("path") != "../../../../../lru-0.12":
+    fuzz = tomllib.loads((ROOT / "agent/crates/echo-agent-markdown/fuzz/Cargo.toml").read_text())
+    if fuzz.get("patch", {}).get("crates-io", {}).get("lru", {}).get("path") != "../../../../third-party/rust/lru-0.12":
         raise RuntimeError("Markdown fuzz LRU security backport is not active")
-    for directory in ["vendor/glib", "vendor/lru-0.12", "vendor/lru-0.16", "vendor/ort-sys", "vendor/faster-hex"]:
+    for directory in ["third-party/rust/glib", "third-party/rust/lru-0.12", "third-party/rust/lru-0.16", "third-party/rust/ort-sys", "third-party/rust/faster-hex"]:
         source = ROOT / directory
         provenance = json.loads((source / "SOURCE.json").read_text())
         for file, expected in provenance["patchedSha256"].items():

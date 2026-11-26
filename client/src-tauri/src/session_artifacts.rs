@@ -257,10 +257,10 @@ fn published_entries(
 
 #[tauri::command]
 pub fn session_exports_list(
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     session_id: String,
 ) -> Result<Vec<SessionExport>, String> {
-    crate::commands::trusted_session_history_cwd(&state, &session_id, None)?;
+    crate::harness::commands::trusted_session_history_cwd(&state, &session_id, None)?;
     let _guard = WRITES.lock().map_err(|_| "成果存储锁已损坏")?;
     let home = crate::paths::echo_agent_home_dir();
     Ok(published_entries(

@@ -12,6 +12,8 @@
 
 ## 回归层级
 
+Agent 源码或路径变更先运行 `node scripts/verify-agent-source.mjs`。DOCX 预览源码修改运行 `pnpm --filter @apollo-design/docx-preview typecheck`、`pnpm exec vitest run src/lib/__tests__/word-preview-pagination.test.ts` 和 `pnpm test:ui:office-workbench`。
+
 | 范围 | 常用入口 | 证明的范围 |
 | --- | --- | --- |
 | 前端与工具组件 | `pnpm test`、`pnpm test:coverage` | 状态、交互与可控并发；覆盖率不代表业务成功 |
@@ -55,8 +57,8 @@ Rust 宿主及 Runtime 测试通过 `NATIVE_TEST_OUTPUT` 保存每次子进程�
 修改模型默认提示词后，先重新生成加密模板，再执行核心模板的内容一致性和渲染测试。Runtime 库测试入口也包含这些检查。
 
 ```sh
-python3 vendor/echo-agent-build/crates/codegen/echo-agent-core/scripts/encrypt_templates.py
-cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-core --lib prompt::template::tests
+python3 agent/crates/echo-agent-core/scripts/encrypt_templates.py
+cargo test --locked --manifest-path agent/Cargo.toml -p echo-agent-core --lib prompt::template::tests
 ```
 
 ## 原生应用与真实模型

@@ -14,7 +14,7 @@
 #    bash scripts/build.sh --allow-unsigned-platform  # development only
 #
 #  Prerequisites:
-#    The complete vendored Runtime source is included in the repository.
+#    The complete Agent source is included in the repository.
 #    `scripts/setup.sh` can be used to verify checkout integrity.
 #
 #  Production builds must pass codesign and Gatekeeper assessment. The escape
@@ -143,10 +143,10 @@ log_ok "Release version: $APP_VERSION"
 
 # ---------------------------------------------------------------------------
 # 4. Vendored Runtime sanity check. Path dependencies in Cargo.toml resolve
-#    directly into vendor/echo-agent-build, which is tracked by this repository.
+#    directly into agent, which is tracked by this repository.
 # ---------------------------------------------------------------------------
-log_step "Checking vendored Runtime source"
-node "$PROJECT_ROOT/scripts/verify-vendored-runtime.mjs"
+log_step "Checking Agent source"
+node "$PROJECT_ROOT/scripts/verify-agent-source.mjs"
 log_ok "Vendored Runtime source is complete"
 
 # ---------------------------------------------------------------------------

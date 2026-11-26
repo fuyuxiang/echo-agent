@@ -1,0 +1,8 @@
+---
+source: terminal/echo-agent-pager/src/scrollback/blocks/tool/edit.rs
+expression: diff_outputs_to_string(&outputs)
+---
+   99  99  context before
+  100      old code
+      100  new code
+  101 101  context after

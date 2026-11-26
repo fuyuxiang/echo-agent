@@ -80,8 +80,8 @@ pub(super) async fn dispatch_prompt(
     group_id: &str,
     work_id: &str,
     tx: &echo_agent_acp::AcpAgentTx,
-    request: crate::agent_runtime::GroupPromptRequest<'_>,
-) -> Result<Option<crate::agent_runtime::GroupPrompt>, String> {
+    request: crate::harness::agent_runtime::GroupPromptRequest<'_>,
+) -> Result<Option<crate::harness::agent_runtime::GroupPrompt>, String> {
     let _dispatch = dispatch_lock(group_id).lock_owned().await;
     dispatch_prompt_under_gate(store, group_id, work_id, tx, request)
 }
@@ -91,14 +91,14 @@ fn dispatch_prompt_under_gate(
     group_id: &str,
     work_id: &str,
     tx: &echo_agent_acp::AcpAgentTx,
-    request: crate::agent_runtime::GroupPromptRequest<'_>,
-) -> Result<Option<crate::agent_runtime::GroupPrompt>, String> {
+    request: crate::harness::agent_runtime::GroupPromptRequest<'_>,
+) -> Result<Option<crate::harness::agent_runtime::GroupPrompt>, String> {
     if !store.update(group_id, |g| Ok(g.begin_prompt(work_id)))? {
         return Ok(None);
     }
     // Synchronous enqueue while the same gate used by Stop is held. There is
     // no await between the durable start check and the native request.
-    crate::agent_runtime::begin_group_prompt(tx, request)
+    crate::harness::agent_runtime::begin_group_prompt(tx, request)
         .map(Some)
         .map_err(|e| e.to_string())
 }
@@ -216,7 +216,7 @@ fn schedule(app: tauri::AppHandle, group_id: String) {
                         }
                         return;
                     }
-                    use crate::bridge::{completion_disposition, CompletionDisposition};
+                    use crate::harness::bridge::{completion_disposition, CompletionDisposition};
                     let cancelled =
                         result
                             .as_ref()
@@ -270,7 +270,7 @@ async fn execute(
     app: &tauri::AppHandle,
     gid: &str,
     work_id: &str,
-) -> Result<Option<crate::bridge::CompleteEvent>, String> {
+) -> Result<Option<crate::harness::bridge::CompleteEvent>, String> {
     // Deletion and preparation share the gate: a native context can never
     // finish being created after its group and ownership records were removed.
     let preparation = dispatch_lock(gid).lock_owned().await;
@@ -302,10 +302,10 @@ async fn execute(
         .find(|m| m.id == work.member_id)
         .cloned()
         .ok_or("成员不存在")?;
-    let state = app.state::<crate::commands::AppState>();
-    crate::policy::require_feature("sessions")?;
-    crate::commands::ensure_runtime_ready(app, &state, Some(&member.model_id)).await?;
-    crate::policy::require_model(&member.model_id)?;
+    let state = app.state::<crate::harness::state::HarnessState>();
+    crate::harness::policy::require_feature("sessions")?;
+    crate::harness::commands::ensure_runtime_ready(app, &state, Some(&member.model_id)).await?;
+    crate::harness::policy::require_model(&member.model_id)?;
     let root = app
         .state::<crate::shell_fs::FilesystemAccess>()
         .require_workspace(&g.cwd)?;
@@ -321,7 +321,7 @@ async fn execute(
     } else {
         member.session_id.as_deref()
     };
-    let _permission = crate::permission_config::permission_transition_lock()
+    let _permission = crate::harness::permission_config::permission_transition_lock()
         .lock()
         .await;
     let permission_mode = super::permissions::effective_mode(&g);
@@ -333,9 +333,9 @@ async fn execute(
         crate::org::record_project_run_binding(app, binding, gid, &work.root_id, "running", None)
             .await?;
     }
-    let sid = crate::agent_runtime::group_session(
+    let sid = crate::harness::agent_runtime::group_session(
         &tx,
-        crate::agent_runtime::GroupSessionRequest {
+        crate::harness::agent_runtime::GroupSessionRequest {
             cwd: &root,
             model: &member.model_id,
             profile: &member.profile,
@@ -439,7 +439,7 @@ async fn execute(
         gid,
         work_id,
         &tx,
-        crate::agent_runtime::GroupPromptRequest {
+        crate::harness::agent_runtime::GroupPromptRequest {
             session: &sid,
             prompt_id: &work.prompt_id,
             text: &prompt,

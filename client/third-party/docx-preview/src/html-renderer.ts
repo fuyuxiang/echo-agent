@@ -1,0 +1,1595 @@
+import { WordDocument } from './word-document';
+import {
+	DomType, WmlTable, IDomNumbering,
+	WmlHyperlink, IDomImage, OpenXmlElement, WmlTableColumn, WmlTableCell, WmlText, WmlSymbol, WmlBreak, WmlNoteReference,
+	WmlSmartTag,
+	WmlAltChunk,
+	WmlTableRow,
+	WmlChange
+} from './document/dom';
+import { Options } from './docx-preview';
+import { DocumentElement } from './document/document';
+import { WmlParagraph } from './document/paragraph';
+import { asArray, encloseFontFamily, escapeClassName, isString, keyBy, mergeDeep } from './utils';
+import { computePixelToPoint, updateTabStop } from './javascript';
+import { FontTablePart } from './font-table/font-table';
+import { FooterHeaderReference, SectionProperties } from './document/section';
+import { WmlRun } from './document/run';
+import { WmlBookmarkStart } from './document/bookmarks';
+import { IDomStyle } from './document/style';
+import { WmlBaseNote, WmlFootnote } from './notes/elements';
+import { ThemePart } from './theme/theme-part';
+import { BaseHeaderFooterPart } from './header-footer/parts';
+import { Part } from './common/part';
+import { VmlElement } from './vml/vml';
+import { WmlCommentRangeStart, WmlCommentReference } from './comments/elements';
+import { WmlFieldChar, WmlInstructionText } from './document/fields';
+import { cx, h, ns } from './html';
+
+interface CellPos {
+	col: number;
+	row: number;
+}
+
+interface Section {
+	sectProps: SectionProperties;
+	elements: OpenXmlElement[];
+	pageBreak: boolean;
+}
+
+declare const Highlight: any;
+
+type CellVerticalMergeType = Record<number, HTMLTableCellElement>;
+
+export class HtmlRenderer {
+
+	className: string = "docx";
+	rootSelector: string;
+	document: WordDocument;
+	options: Options;
+	styleMap: Record<string, IDomStyle> = {};
+	currentPart: Part = null;
+
+	tableVerticalMerges: CellVerticalMergeType[] = [];
+	currentVerticalMerge: CellVerticalMergeType = null;
+	tableCellPositions: CellPos[] = [];
+	currentCellPosition: CellPos = null;
+
+	footnoteMap: Record<string, WmlFootnote> = {};
+	endnoteMap: Record<string, WmlFootnote> = {};
+	currentFootnoteIds: string[];
+	currentEndnoteIds: string[] = [];
+	usedHederFooterParts: any[] = [];
+
+	defaultTabSize: string;
+	currentTabs: any[] = [];
+
+	legacyCompat: boolean = false;
+	private defaultParagraphStyle: IDomStyle;
+	private docDefaultsStyle: IDomStyle;
+
+	commentHighlight: any;
+	commentMap: Record<string, Range> = {};
+
+	tasks: Promise<any>[] = [];
+	postRenderTasks: any[] = [];
+	h = h;
+
+	async render(document: WordDocument, options: Options): Promise<Node[]> {
+		this.document = document;
+		this.options = options;
+		this.className = options.className;
+		this.rootSelector = options.inWrapper ? `.${this.className}-wrapper` : ':root';
+		this.h = options.h ?? h;
+		this.styleMap = null;
+		this.tasks = [];
+
+		if (this.options.renderComments && globalThis.Highlight) {
+			this.commentHighlight = new Highlight();
+		}
+
+		const result: Node[] = [...this.renderDefaultStyle()];
+
+		if (document.themePart) {
+			result.push(...this.renderTheme(document.themePart));
+		}
+
+		if (document.stylesPart != null) {
+			this.styleMap = this.processStyles(document.stylesPart.styles);
+			result.push(...this.renderStyles(document.stylesPart.styles));
+		}
+
+		if (document.numberingPart) {
+			this.prodessNumberings(document.numberingPart.domNumberings);
+
+			result.push(...await this.renderNumbering(document.numberingPart.domNumberings));
+			//result.push(...await this.renderNumbering2(document.numberingPart.domNumberings));
+		}
+
+		if (document.footnotesPart) {
+			this.footnoteMap = keyBy(document.footnotesPart.notes, x => x.id);
+		}
+
+		if (document.endnotesPart) {
+			this.endnoteMap = keyBy(document.endnotesPart.notes, x => x.id);
+		}
+
+		if (document.settingsPart) {
+			this.defaultTabSize = document.settingsPart.settings?.defaultTabStop;
+
+			// Word 2003 layout rules (compatMode 11 — typical for WPS-authored
+			// documents) expand space runs even on the last line of justified
+			// paragraphs; see renderParagraph for the actual application.
+			const compatMode = document.settingsPart.settings?.compatMode;
+			this.legacyCompat = compatMode != null && compatMode <= 11;
+		}
+
+		if (!options.ignoreFonts && document.fontTablePart)
+			result.push(...await this.renderFontTable(document.fontTablePart));
+
+		var sectionElements = this.renderSections(document.documentPart.body);
+
+		if (this.options.inWrapper) {
+			result.push(this.renderWrapper(sectionElements));
+		} else {
+			result.push(...sectionElements);
+		}
+
+		if (this.commentHighlight && options.renderComments) {
+			(CSS as any).highlights.set(`${this.className}-comments`, this.commentHighlight);
+		}
+
+		this.postRenderTasks.forEach(t => t());
+
+		await Promise.allSettled(this.tasks);
+
+		this.refreshTabStops();
+
+		return result;
+	}
+
+	renderTheme(themePart: ThemePart) {
+		const variables = {};
+		const fontScheme = themePart.theme?.fontScheme;
+
+		if (fontScheme) {
+			if (fontScheme.majorFont) {
+				variables['--docx-majorHAnsi-font'] = fontScheme.majorFont.latinTypeface;
+				// An empty East Asian theme typeface falls back to the Latin
+				// one, so var() references never come out undefined (which
+				// would invalidate the whole font-family declaration).
+				variables['--docx-majorEastAsia-font'] = fontScheme.majorFont.eaTypeface || fontScheme.majorFont.latinTypeface;
+			}
+
+			if (fontScheme.minorFont) {
+				variables['--docx-minorHAnsi-font'] = fontScheme.minorFont.latinTypeface;
+				variables['--docx-minorEastAsia-font'] = fontScheme.minorFont.eaTypeface || fontScheme.minorFont.latinTypeface;
+			}
+		}
+
+		const colorScheme = themePart.theme?.colorScheme;
+
+		if (colorScheme) {
+			for (let [k, v] of Object.entries(colorScheme.colors)) {
+				variables[`--docx-${k}-color`] = `#${v}`;
+			}
+		}
+
+		const cssText = this.styleToString(`.${this.className}`, variables);
+		return [
+			this.h({ tagName: "#comment", children: ["docxjs document theme values"] }),
+			this.h({ tagName: "style", children: [cssText] })
+		];
+	}
+
+	async renderFontTable(fontsPart: FontTablePart) {
+		const result = [];
+
+		for (let f of fontsPart.fonts) {
+			for (let ref of f.embedFontRefs) {
+				try{
+					const fontData = await this.document.loadFont(ref.id, ref.key);
+					const cssValues = {
+						'font-family': encloseFontFamily(f.name),
+						'src': `url(${fontData})`
+					};
+
+					if (ref.type == "bold" || ref.type == "boldItalic") {
+						cssValues['font-weight'] = 'bold';
+					}
+
+					if (ref.type == "italic" || ref.type == "boldItalic") {
+						cssValues['font-style'] = 'italic';
+					}
+
+					result.push(this.h({ tagName: "#comment", children: [`docxjs ${f.name} font`] }));
+					result.push(this.h({ tagName: "style", children: [this.styleToString(`@font-face`, cssValues)] }));
+				} catch(e) {
+					if (this.options.debug) console.warn(`Can't load font with id ${ref.id} and key ${ref.key}`);
+				}
+			}
+		}
+
+		return result;
+	}
+
+	processStyleName(className: string): string {
+		return className ? `${this.className}_${escapeClassName(className)}` : this.className;
+	}
+
+	processStyles(styles: IDomStyle[]) {
+		const stylesMap = keyBy(styles.filter(x => x.id != null), x => x.id);
+
+		this.defaultParagraphStyle = styles.find(s => s.isDefault && s.target == "p");
+		this.docDefaultsStyle = styles.find(s => s.id == null);
+
+		for (const style of styles.filter(x => x.basedOn)) {
+			var baseStyle = stylesMap[style.basedOn];
+
+			if (baseStyle) {
+				style.paragraphProps = mergeDeep(style.paragraphProps, baseStyle.paragraphProps);
+				style.runProps = mergeDeep(style.runProps, baseStyle.runProps);
+
+				for (const baseValues of baseStyle.styles) {
+					const styleValues = style.styles.find(x => x.target == baseValues.target);
+
+					if (styleValues) {
+						this.copyStyleProperties(baseValues.values, styleValues.values);
+					} else {
+						style.styles.push({ ...baseValues, values: { ...baseValues.values } });
+					}
+				}
+			}
+			else if (this.options.debug)
+				console.warn(`Can't find base style ${style.basedOn}`);
+		}
+
+		for (let style of styles) {
+			style.cssName = this.processStyleName(style.id);
+		}
+
+		return stylesMap;
+	}
+
+	prodessNumberings(numberings: IDomNumbering[]) {
+		for (let num of numberings.filter(n => n.pStyleName)) {
+			const style = this.findStyle(num.pStyleName);
+
+			if (style?.paragraphProps?.numbering) {
+				style.paragraphProps.numbering.level = num.level;
+			}
+		}
+	}
+
+	processElement(element: OpenXmlElement) {
+		if (element.children) {
+			for (var e of element.children) {
+				e.parent = element;
+
+				if (e.type == DomType.Table) {
+					this.processTable(e);
+				}
+				else {
+					this.processElement(e);
+				}
+			}
+		}
+	}
+
+	processTable(table: WmlTable) {
+		for (var r of table.children) {
+			for (var c of r.children) {
+				c.cssStyle = this.copyStyleProperties(table.cellStyle, c.cssStyle, [
+					"border-left", "border-right", "border-top", "border-bottom",
+					"padding-left", "padding-right", "padding-top", "padding-bottom"
+				]);
+
+				this.processElement(c);
+			}
+		}
+	}
+
+	copyStyleProperties(input: Record<string, string>, output: Record<string, string>, attrs: string[] = null): Record<string, string> {
+		if (!input)
+			return output;
+
+		if (output == null) output = {};
+		if (attrs == null) attrs = Object.getOwnPropertyNames(input);
+
+		for (var key of attrs) {
+			if (input.hasOwnProperty(key) && !output.hasOwnProperty(key))
+				output[key] = input[key];
+		}
+
+		return output;
+	}
+
+	createPageElement(className: string, props: SectionProperties, docStyle: Record<string, any>) {
+		const style: Record<string, string> = { ...docStyle };
+
+		if (props) {
+			if (props.pageMargins) {
+				style.paddingLeft = props.pageMargins.left;
+				style.paddingRight = props.pageMargins.right;
+				style.paddingTop = props.pageMargins.top;
+				style.paddingBottom = props.pageMargins.bottom;
+
+				// Exposed for absolutely-positioned content anchored to the
+				// text area (floating tables with tblpYSpec="bottom" etc.).
+				style["--docx-pad-left"] = props.pageMargins.left;
+				style["--docx-pad-right"] = props.pageMargins.right;
+				style["--docx-pad-top"] = props.pageMargins.top;
+				style["--docx-pad-bottom"] = props.pageMargins.bottom;
+			}
+
+			if (props.pageSize) {
+				if (!this.options.ignoreWidth)
+					style.width = props.pageSize.width;
+				if (!this.options.ignoreHeight)
+					style.minHeight = props.pageSize.height;
+			}
+		}
+
+		return this.h({ tagName: "section", className, style }) as HTMLElement;
+	}
+
+	createSectionContent(props: SectionProperties) {
+		const style: Record<string, string> = {};
+
+		if (props.columns && props.columns.numberOfColumns) {
+			style.columnCount = `${props.columns.numberOfColumns}`;
+			style.columnGap = props.columns.space;
+
+			if (props.columns.separator) {
+				style.columnRule = "1px solid black";
+			}
+		}
+
+		return this.h({ tagName: "article", style });
+	}	
+
+	renderSections(document: DocumentElement): HTMLElement[] {
+		const result = [];
+
+		this.processElement(document);
+		const sections = this.splitBySection(document.children, document.props);
+		const pages = this.groupByPageBreaks(sections);
+		let prevProps = null;
+
+		for (let i = 0, l = pages.length; i < l; i++) {			
+			this.currentFootnoteIds = [];
+
+			const section = pages[i][0];
+			let props = section.sectProps;
+			const pageElement = this.createPageElement(this.className, props, document.cssStyle);
+
+			this.options.renderHeaders && this.renderHeaderFooter(props.headerRefs, props,
+				result.length, prevProps != props, pageElement);
+
+			for (const sect of pages[i]) {
+				var contentElement = this.createSectionContent(sect.sectProps);
+				this.renderElements(sect.elements, contentElement);
+				pageElement.appendChild(contentElement);
+				props = sect.sectProps;
+			}
+
+			if (this.options.renderFootnotes) {
+				const notes = this.renderNotes(this.currentFootnoteIds, this.footnoteMap);
+				notes && pageElement.appendChild(notes);
+			}
+
+			if (this.options.renderEndnotes && i == l - 1) {
+				const notes = this.renderNotes(this.currentEndnoteIds, this.endnoteMap);
+				notes && pageElement.appendChild(notes);
+			}
+
+			this.options.renderFooters && this.renderHeaderFooter(props.footerRefs, props,
+				result.length, prevProps != props, pageElement);
+
+			result.push(pageElement);
+			prevProps = props;
+		}
+
+		this.resolvePageFields(result);
+
+		return result;
+	}
+
+	renderHeaderFooter(refs: FooterHeaderReference[], props: SectionProperties, page: number, firstOfSection: boolean, into: HTMLElement) {
+		if (!refs) return;
+
+		var ref = (props.titlePage && firstOfSection ? refs.find(x => x.type == "first") : null)
+			?? (page % 2 == 1 ? refs.find(x => x.type == "even") : null)
+			?? refs.find(x => x.type == "default");
+
+		var part = ref && this.document.findPartByRelId(ref.id, this.document.documentPart) as BaseHeaderFooterPart;
+
+		if (part) {
+			this.currentPart = part;
+			if (!this.usedHederFooterParts.includes(part.path)) {
+				this.processElement(part.rootElement);
+				this.usedHederFooterParts.push(part.path);
+			}
+			const [el] = this.renderElements([part.rootElement], into) as HTMLElement[];
+
+			if (props?.pageMargins) {
+				if (part.rootElement.type === DomType.Header) {
+					el.style.marginTop = `calc(${props.pageMargins.header} - ${props.pageMargins.top})`;
+					el.style.minHeight = `calc(${props.pageMargins.top} - ${props.pageMargins.header})`;
+				}
+				else if (part.rootElement.type === DomType.Footer) {
+					el.style.marginBottom = `calc(${props.pageMargins.footer} - ${props.pageMargins.bottom})`;
+					el.style.minHeight = `calc(${props.pageMargins.bottom} - ${props.pageMargins.footer})`;
+				}
+			}
+
+			this.currentPart = null;
+		}
+	}
+
+	isPageBreakElement(elem: OpenXmlElement): boolean {
+		if (elem.type != DomType.Break)
+			return false;
+
+		if ((elem as WmlBreak).break == "lastRenderedPageBreak")
+			return !this.options.ignoreLastRenderedPageBreak;
+
+		return (elem as WmlBreak).break == "page";
+	}
+
+	isPageBreakSection(prev: SectionProperties, next: SectionProperties): boolean {
+		if (!prev) return false;
+		if (!next) return false;
+
+		return prev.pageSize?.orientation != next.pageSize?.orientation
+			|| prev.pageSize?.width != next.pageSize?.width
+			|| prev.pageSize?.height != next.pageSize?.height;
+	}
+
+	splitBySection(elements: OpenXmlElement[], defaultProps: SectionProperties): Section[] {
+		var current: Section = { sectProps: null, elements: [], pageBreak: false };
+		var result = [current];
+
+		for (let elem of elements) {
+			if (elem.type == DomType.Paragraph) {
+				const s = this.findStyle((elem as WmlParagraph).styleName);
+
+				if (s?.paragraphProps?.pageBreakBefore) {
+					current.sectProps = sectProps;
+					current.pageBreak = true;
+					current = { sectProps: null, elements: [], pageBreak: false };
+					result.push(current);
+				}
+			}
+
+			current.elements.push(elem);
+
+			if (elem.type == DomType.Paragraph) {
+				const p = elem as WmlParagraph;
+
+				var sectProps = p.sectionProps;
+				var pBreakIndex = -1;
+				var rBreakIndex = -1;
+
+				if (this.options.breakPages && p.children) {
+					pBreakIndex = p.children.findIndex(r => {
+						rBreakIndex = r.children?.findIndex(this.isPageBreakElement.bind(this)) ?? -1;
+						return rBreakIndex != -1;
+					});
+				}
+
+				if (sectProps || pBreakIndex != -1) {
+					current.sectProps = sectProps;
+					current.pageBreak = pBreakIndex != -1;
+					current = { sectProps: null, elements: [], pageBreak: false };
+					result.push(current);
+				}
+
+				if (pBreakIndex != -1) {
+					let breakRun = p.children[pBreakIndex];
+					let splitRun = rBreakIndex < breakRun.children.length - 1;
+
+					if (pBreakIndex < p.children.length - 1 || splitRun) {
+						var children = elem.children;
+						var newParagraph = { ...elem, children: children.slice(pBreakIndex) };
+						elem.children = children.slice(0, pBreakIndex);
+						current.elements.push(newParagraph);
+
+						if (splitRun) {
+							let runChildren = breakRun.children;
+							let newRun = { ...breakRun, children: runChildren.slice(0, rBreakIndex) };
+							elem.children.push(newRun);
+							breakRun.children = runChildren.slice(rBreakIndex);
+						}
+					}
+				}
+			}
+		}
+
+		let currentSectProps = null;
+
+		for (let i = result.length - 1; i >= 0; i--) {
+			if (result[i].sectProps == null) {
+				result[i].sectProps = currentSectProps ?? defaultProps;
+			} else {
+				currentSectProps = result[i].sectProps
+			}
+		}
+
+		return result;
+	}
+
+	// Modified by EchoAgent: preserve the page at which each section starts.
+	groupByPageBreaks(sections: Section[]): Section[][] {
+		let current: Section[] = [];
+		let previous: SectionProperties | undefined;
+		const pages = [current];
+
+		for (const section of sections) {
+			// Section properties belong to the section that starts here. A missing
+			// w:type means nextPage; continuous sections retain the current page.
+			const nextPageSection = previous && previous !== section.sectProps
+				&& !["continuous", "nextColumn"].includes(section.sectProps?.type ?? "nextPage");
+			if (current.length && (nextPageSection || this.isPageBreakSection(previous, section.sectProps)))
+				pages.push(current = []);
+			current.push(section);
+			if (section.pageBreak) pages.push(current = []);
+			previous = section.sectProps;
+		}
+
+		return pages.filter(page => page.length > 0);
+	}
+
+	renderWrapper(children: HTMLElement[]) {
+		return this.h({ tagName: "div", className: `${this.className}-wrapper`, children });
+	}
+
+	renderDefaultStyle() {
+		var c = this.className;
+		var wrapperStyle = `
+.${c}-wrapper { background: gray; padding: 30px; padding-bottom: 0px; display: flex; flex-flow: column; align-items: center; } 
+.${c}-wrapper>section.${c} { background: white; box-shadow: 0 0 10px rgba(0, 0, 0, 0.5); margin-bottom: 30px; }`;
+		if (this.options.hideWrapperOnPrint) {
+			wrapperStyle = `@media not print { ${wrapperStyle} }`;
+		}
+		var styleText = `${wrapperStyle}
+.${c} { color: black; hyphens: auto; text-underline-position: from-font; }
+.${c} { --docx-font-ascii: serif; --docx-font-ea: serif; }
+.${c}, .${c} * { font-family: var(--docx-font-ascii), var(--docx-font-ea); }
+section.${c} { box-sizing: border-box; display: flex; flex-flow: column nowrap; position: relative; overflow: hidden; }
+section.${c}>article { margin-bottom: auto; z-index: 1; }
+section.${c}>footer { z-index: 1; }
+.${c} table { border-collapse: collapse; }
+.${c} table td, .${c} table th { vertical-align: top; }
+.${c} p { margin: 0pt; min-height: 1em; }
+.${c} span { white-space: pre-wrap; overflow-wrap: break-word; }
+.${c} a { color: inherit; text-decoration: inherit; }
+.${c} svg { fill: transparent; }
+`;
+
+		if (this.options.renderComments) {
+			styleText += `
+.${c}-comment-ref { cursor: default; }
+.${c}-comment-popover { display: none; z-index: 1000; padding: 0.5rem; background: white; position: absolute; box-shadow: 0 0 0.25rem rgba(0, 0, 0, 0.25); width: 30ch; }
+.${c}-comment-ref:hover~.${c}-comment-popover { display: block; }
+.${c}-comment-author,.${c}-comment-date { font-size: 0.875rem; color: #888; }
+`
+		};
+
+		return [
+			this.h({ tagName: "#comment", children: ["docxjs library predefined styles"] }),
+			this.h({ tagName: "style", children: [styleText] })
+		];
+	}
+
+	// renderNumbering2(numberingPart: NumberingPartProperties, container: HTMLElement): HTMLElement {
+	//     let css = "";
+	//     const numberingMap = keyBy(numberingPart.abstractNumberings, x => x.id);
+	//     const bulletMap = keyBy(numberingPart.bulletPictures, x => x.id);
+	//     const topCounters = [];
+
+	//     for(let num of numberingPart.numberings) {
+	//         const absNum = numberingMap[num.abstractId];
+
+	//         for(let lvl of absNum.levels) {
+	//             const className = this.numberingClass(num.id, lvl.level);
+	//             let listStyleType = "none";
+
+	//             if(lvl.text && lvl.format == 'decimal') {
+	//                 const counter = this.numberingCounter(num.id, lvl.level);
+
+	//                 if (lvl.level > 0) {
+	//                     css += this.styleToString(`p.${this.numberingClass(num.id, lvl.level - 1)}`, {
+	//                         "counter-reset": counter
+	//                     });
+	//                 } else {
+	//                     topCounters.push(counter);
+	//                 }
+
+	//                 css += this.styleToString(`p.${className}:before`, {
+	//                     "content": this.levelTextToContent(lvl.text, num.id),
+	//                     "counter-increment": counter
+	//                 });
+	//             } else if(lvl.bulletPictureId) {
+	//                 let pict = bulletMap[lvl.bulletPictureId];
+	//                 let variable = `--${this.className}-${pict.referenceId}`.toLowerCase();
+
+	//                 css += this.styleToString(`p.${className}:before`, {
+	//                     "content": "' '",
+	//                     "display": "inline-block",
+	//                     "background": `var(${variable})`
+	//                 }, pict.style);
+
+	//                 this.document.loadNumberingImage(pict.referenceId).then(data => {
+	//                     var text = `.${this.className}-wrapper { ${variable}: url(${data}) }`;
+	//                     container.appendChild(createStyleElement(text));
+	//                 });
+	//             } else {
+	//                 listStyleType = this.numFormatToCssValue(lvl.format);
+	//             }
+
+	//             css += this.styleToString(`p.${className}`, {
+	//                 "display": "list-item",
+	//                 "list-style-position": "inside",
+	//                 "list-style-type": listStyleType,
+	//                 //TODO
+	//                 //...num.style
+	//             });
+	//         }
+	//     }
+
+	//     if (topCounters.length > 0) {
+	//         css += this.styleToString(`.${this.className}-wrapper`, {
+	//             "counter-reset": topCounters.join(" ")
+	//         });
+	//     }
+
+	//     return createStyleElement(css);
+	// }
+
+	async renderNumbering(numberings: IDomNumbering[]) {
+		var styleText = "";
+		var resetCounters = [];
+
+		for (var num of numberings) {
+			var selector = `p.${this.numberingClass(num.id, num.level)}`;
+			var listStyleType = "none";
+
+			if (num.bullet) {
+				let valiable = `--${this.className}-${num.bullet.src}`.toLowerCase();
+
+				styleText += this.styleToString(`${selector}:before`, {
+					"content": "' '",
+					"display": "inline-block",
+					"background": `var(${valiable})`
+				}, num.bullet.style);
+
+				try {
+					const imgData = await this.document.loadNumberingImage(num.bullet.src);
+					styleText += `${this.rootSelector} { ${valiable}: url(${imgData}) }`;
+				} catch(e) {
+					if (this.options.debug) console.warn(`Can't load numbering image with src ${num.bullet.src}`);
+				}
+			}
+			else if (num.levelText) {
+				let counter = this.numberingCounter(num.id, num.level);
+				const counterReset = counter + " " + (num.start - 1);
+				if (num.level > 0) {
+					styleText += this.styleToString(`p.${this.numberingClass(num.id, num.level - 1)}`, {
+						"counter-set": counterReset
+					});
+				}
+				// reset all level counters with start value
+				resetCounters.push(counterReset);
+
+				styleText += this.styleToString(`${selector}:before`, {
+					"content": this.levelTextToContent(num.levelText, num.suff, num.id, this.numFormatToCssValue(num.format)),
+					"counter-increment": counter,
+					...num.rStyle,
+				});
+			}
+			else {
+				listStyleType = this.numFormatToCssValue(num.format);
+			}
+
+			styleText += this.styleToString(selector, {
+				"display": "list-item",
+				"list-style-position": "inside",
+				"list-style-type": listStyleType,
+				...num.pStyle
+			});
+		}
+
+		if (resetCounters.length > 0) {
+			styleText += this.styleToString(this.rootSelector, {
+				"counter-reset": resetCounters.join(" ")
+			});
+		}
+
+		return [
+			this.h({ tagName: "#comment", children: ["docxjs document numbering styles"] }),
+			this.h({ tagName: "style", children: [styleText] })
+		];
+	}
+
+	renderStyles(styles: IDomStyle[]) {
+		var styleText = "";
+		const stylesMap = this.styleMap;
+		const defautStyles = keyBy(styles.filter(s => s.isDefault), s => s.target);
+
+		for (const style of styles) {
+			var subStyles = style.styles;
+
+			if (style.linked) {
+				var linkedStyle = style.linked && stylesMap[style.linked];
+
+				if (linkedStyle)
+					subStyles = subStyles.concat(linkedStyle.styles);
+				else if (this.options.debug)
+					console.warn(`Can't find linked style ${style.linked}`);
+			}
+
+			for (const subStyle of subStyles) {
+				//TODO temporary disable modificators until test it well
+				var selector = `${style.target ?? ''}.${style.cssName}`; //${subStyle.mod ?? ''}
+
+				if (style.target != subStyle.target)
+					selector += ` ${subStyle.target}`;
+
+				// docDefaults run properties must sit at the very bottom of the
+				// cascade. Emitted as ".docx span" they would directly match
+				// every span and beat fonts inherited from paragraph styles —
+				// the reverse of Word's style hierarchy. Emitted on the root
+				// container they are inherited, so paragraph fonts win.
+				if (style.id == null && subStyle.target == "span")
+					selector = `.${this.className}`;
+
+				if (defautStyles[style.target] == style)
+					selector = `.${this.className} ${style.target}, ` + selector;
+
+				styleText += this.styleToString(selector, subStyle.values);
+			}
+		}
+
+		return [
+			this.h({ tagName: "#comment", children: ["docxjs document styles"] }),
+			this.h({ tagName: "style", children: [styleText] })
+		];
+	}
+
+	renderNotes(noteIds: string[], notesMap: Record<string, WmlBaseNote>) {
+		var notes = noteIds.map(id => notesMap[id]).filter(x => x);
+
+		if (notes.length > 0) {
+			return this.h({ tagName: "ol", children: this.renderElements(notes) });
+		}
+	}
+
+	renderElement(elem: OpenXmlElement): Node | Node[] {
+		switch (elem.type) {
+			case DomType.Paragraph:
+				return this.renderParagraph(elem as WmlParagraph);
+
+			case DomType.BookmarkStart:
+				return this.renderBookmarkStart(elem as WmlBookmarkStart);
+
+			case DomType.BookmarkEnd:
+				return null; //ignore bookmark end
+
+			case DomType.Run:
+				return this.renderRun(elem as WmlRun);
+
+			case DomType.Table:
+				return this.renderTable(elem);
+
+			case DomType.Row:
+				return this.renderTableRow(elem);
+
+			case DomType.Cell:
+				return this.renderTableCell(elem);
+
+			case DomType.Hyperlink:
+				return this.renderHyperlink(elem);
+			
+			case DomType.SmartTag:
+				return this.renderSmartTag(elem);
+
+			case DomType.Drawing:
+				return this.renderDrawing(elem);
+
+			case DomType.Image:
+				return this.renderImage(elem as IDomImage);
+
+			case DomType.Text:
+				return this.renderText(elem as WmlText);
+
+			case DomType.Text:
+				return this.renderText(elem as WmlText);
+
+			case DomType.DeletedText:
+				return this.renderDeletedText(elem as WmlText);
+	
+			case DomType.Tab:
+				return this.renderTab(elem);
+
+			case DomType.Symbol:
+				return this.renderSymbol(elem as WmlSymbol);
+
+			case DomType.Break:
+				return this.renderBreak(elem as WmlBreak);
+
+			case DomType.Footer:
+				return this.renderContainer(elem, "footer");
+
+			case DomType.Header:
+				return this.renderContainer(elem, "header");
+
+			case DomType.Footnote:
+			case DomType.Endnote:
+				return this.renderContainer(elem, "li");
+
+			case DomType.FootnoteReference:
+				return this.renderFootnoteReference(elem as WmlNoteReference);
+
+			case DomType.EndnoteReference:
+				return this.renderEndnoteReference(elem as WmlNoteReference);
+
+			case DomType.NoBreakHyphen:
+				return this.h({ tagName: "wbr" });
+
+			case DomType.VmlPicture:
+				return this.renderVmlPicture(elem);
+
+			case DomType.VmlElement:
+				return this.renderVmlElement(elem as VmlElement);
+	
+			case DomType.MmlMath:
+				return this.renderContainerNS(elem, ns.mathML, "math", { xmlns: ns.mathML });
+	
+			case DomType.MmlMathParagraph:
+				return this.renderContainer(elem, "span");
+
+			case DomType.MmlFraction:
+				return this.renderContainerNS(elem, ns.mathML, "mfrac");
+
+			case DomType.MmlBase:
+				return this.renderContainerNS(elem, ns.mathML, 
+					elem.parent.type == DomType.MmlMatrixRow ? "mtd" : "mrow");
+
+			case DomType.MmlNumerator:
+			case DomType.MmlDenominator:
+			case DomType.MmlFunction:
+			case DomType.MmlLimit:
+			case DomType.MmlBox:
+				return this.renderContainerNS(elem, ns.mathML, "mrow");
+
+			case DomType.MmlGroupChar:
+				return this.renderMmlGroupChar(elem);
+
+			case DomType.MmlLimitLower:
+				return this.renderContainerNS(elem, ns.mathML, "munder");
+
+			case DomType.MmlMatrix:
+				return this.renderContainerNS(elem, ns.mathML, "mtable");
+
+			case DomType.MmlMatrixRow:
+				return this.renderContainerNS(elem, ns.mathML, "mtr");
+	
+			case DomType.MmlRadical:
+				return this.renderMmlRadical(elem);
+
+			case DomType.MmlSuperscript:
+				return this.renderContainerNS(elem, ns.mathML, "msup");
+
+			case DomType.MmlSubscript:
+				return this.renderContainerNS(elem, ns.mathML, "msub");
+
+			case DomType.MmlDegree:
+			case DomType.MmlSuperArgument:
+			case DomType.MmlSubArgument:
+				return this.renderContainerNS(elem, ns.mathML, "mn");
+
+			case DomType.MmlFunctionName:
+				return this.renderContainerNS(elem, ns.mathML, "ms");
+	
+			case DomType.MmlDelimiter:
+				return this.renderMmlDelimiter(elem);
+
+			case DomType.MmlRun:
+				return this.renderMmlRun(elem);
+
+			case DomType.MmlNary:
+				return this.renderMmlNary(elem);
+
+			case DomType.MmlPreSubSuper:
+				return this.renderMmlPreSubSuper(elem);
+
+			case DomType.MmlBar:
+				return this.renderMmlBar(elem);
+	
+			case DomType.MmlEquationArray:
+				return this.renderMllList(elem);
+
+			case DomType.Inserted:
+				return this.renderInserted(elem as WmlChange);
+
+			case DomType.Deleted:
+				return this.renderDeleted(elem as WmlChange);
+
+			case DomType.CommentRangeStart:
+				return this.renderCommentRangeStart(elem);
+
+			case DomType.CommentRangeEnd:
+				return this.renderCommentRangeEnd(elem);
+
+			case DomType.CommentReference:
+				return this.renderCommentReference(elem);
+
+			case DomType.AltChunk:
+				return this.renderAltChunk(elem);
+		}
+
+		return null;
+	}
+	renderElements(elems: OpenXmlElement[], into?: Node): Node[] {
+		if (elems == null)
+			return null;
+
+		var result = elems.flatMap(e => this.renderElement(e)).filter(e => e != null);
+
+		if (into)
+			result.forEach(c => into.appendChild(isString(c) ? document.createTextNode(c) : c));
+
+		return result;
+	}
+
+	renderContainer<T extends keyof HTMLElementTagNameMap>(elem: OpenXmlElement, tagName: T, props?: Record<string, any>): HTMLElementTagNameMap[T] {
+		return this.h({ tagName, children: this.renderElements(elem.children), ...props }) as any;
+	}
+
+	renderContainerNS(elem: OpenXmlElement, ns: ns, tagName: string, props?: Record<string, any>) {
+		return this.h({ ns, tagName, children: this.renderElements(elem.children), ...props });
+	}
+
+	/**
+	 * Marks the cached-result runs of PAGE / NUMPAGES complex fields with a
+	 * marker class (`docx-field-page` / `docx-field-numpages`), so the actual
+	 * numbers can be substituted once page layout is final (see the end of
+	 * renderSections and pagination.ts). Field runs themselves are skipped
+	 * by renderRun, leaving the cached value as a plain run between the
+	 * separate and end markers.
+	 */
+	private markPageFieldRuns(elem: WmlParagraph) {
+		let instruction: string = null;
+		let inResult = false;
+
+		for (const run of elem.children ?? []) {
+			if (run.type != DomType.Run) continue;
+
+			for (const sub of run.children ?? []) {
+				if (sub.type == DomType.ComplexField) {
+					const charType = (sub as WmlFieldChar).charType;
+					if (charType == "begin") { instruction = null; inResult = false; }
+					else if (charType == "separate") inResult = true;
+					else if (charType == "end") { instruction = null; inResult = false; }
+				} else if (sub.type == DomType.Instruction) {
+					instruction = (sub as WmlInstructionText).text?.trim().split(/\s/)[0]?.toUpperCase();
+				}
+			}
+
+			if (inResult && (instruction == "PAGE" || instruction == "NUMPAGES") && !(run as WmlRun).fieldRun) {
+				run.className = cx(run.className, `${this.className}-field-${instruction.toLowerCase()}`);
+			}
+		}
+	}
+
+	/**
+	 * Substitutes final page numbers into PAGE / NUMPAGES field markers
+	 * across the given page sections. Numbering is continuous from 1 —
+	 * per-section restarts (w:pgNumType) are not modeled yet.
+	 */
+	private resolvePageFields(pages: HTMLElement[]) {
+		const total = `${pages.length}`;
+
+		pages.forEach((page, i) => {
+			for (const el of Array.from(page.querySelectorAll(`.${this.className}-field-page`)))
+				el.textContent = `${i + 1}`;
+			for (const el of Array.from(page.querySelectorAll(`.${this.className}-field-numpages`)))
+				el.textContent = total;
+		});
+	}
+
+	renderParagraph(elem: WmlParagraph) {
+		this.markPageFieldRuns(elem);
+
+		var result = this.toHTML(elem, ns.html, "p");
+
+		const style = this.findStyle(elem.styleName);
+		elem.tabs ??= style?.paragraphProps?.tabs;  //TODO
+
+		const numbering = elem.numbering ?? style?.paragraphProps?.numbering;
+
+		if (numbering) {
+			result.classList.add(this.numberingClass(numbering.id, numbering.level));
+		}
+
+		// Legacy Word 2003 layout (compatMode 11, typical for WPS-authored
+		// documents) expands space runs even on the last line of a justified
+		// paragraph — e.g. the 密级…发文字号 header line spread across the
+		// text width by a run of spaces. CSS justify never stretches the last
+		// line, so opt such paragraphs into text-align-last, but only when
+		// they actually contain a deliberate interior space gap (otherwise
+		// every justified body paragraph's last line would be stretched).
+		if (this.legacyCompat && this.textAlignOf(elem) === "justify"
+			&& / {2,}| {2,}|　/.test(result.textContent)) {
+			result.style.setProperty("text-align-last", "justify");
+		}
+
+		return result;
+	}
+
+	/** Effective text-align of a paragraph: direct formatting, then its
+	 * style, then the default paragraph style, then docDefaults. */
+	private textAlignOf(elem: WmlParagraph): string | null {
+		if (elem.cssStyle?.["text-align"])
+			return elem.cssStyle["text-align"];
+
+		const from = (s: IDomStyle) =>
+			s?.styles?.find(x => x.target == "p")?.values?.["text-align"];
+
+		return from(this.findStyle(elem.styleName))
+			?? from(this.defaultParagraphStyle)
+			?? from(this.docDefaultsStyle)
+			?? null;
+	}
+
+	renderHyperlink(elem: WmlHyperlink) {
+		const res = this.toH(elem, ns.html, "a");
+		res.href = '';
+
+		if (elem.id) {
+			const rel = this.document.documentPart.rels.find(it => it.id == elem.id && it.targetMode === "External");
+			res.href = rel?.target ?? res.href;
+		}
+
+		if (elem.anchor) {
+			res.href += `#${elem.anchor}`;
+		}
+
+		return this.h(res);
+	}
+	
+	renderSmartTag(elem: WmlSmartTag) {
+		return this.renderContainer(elem, "span");
+	}
+	
+	renderCommentRangeStart(commentStart: WmlCommentRangeStart) {
+		if (!this.options.renderComments)
+			return null;
+
+		const rng = new Range();
+		this.commentHighlight?.add(rng);
+
+		const result = this.h({ tagName: "#comment", children: [`start of comment #${commentStart.id}`] });
+		this.later(() => rng.setStart(result, 0));
+		this.commentMap[commentStart.id] = rng;
+
+		return result
+	}
+
+	renderCommentRangeEnd(commentEnd: WmlCommentRangeStart) {
+		if (!this.options.renderComments)
+			return null;
+
+		const rng = this.commentMap[commentEnd.id];
+		const result = this.h({ tagName: "#comment", children: [`end of comment #${commentEnd.id}`] });
+		this.later(() => rng?.setEnd(result, 0));
+
+		return result;
+	}
+
+	renderCommentReference(commentRef: WmlCommentReference) {
+		if (!this.options.renderComments)
+			return null;
+
+		var comment = this.document.commentsPart?.commentMap[commentRef.id];
+
+		if (!comment)
+			return null;
+
+		const commentRefEl = this.h({ tagName: "span", className: `${this.className}-comment-ref`, children: ['💬'] });
+		const commentsContainerEl = this.h({
+			tagName: "div", className: `${this.className}-comment-popover`, children: [
+				this.h({ tagName: 'div', className: `${this.className}-comment-author`, children: [comment.author] }),
+				this.h({ tagName: 'div', className: `${this.className}-comment-date`, children: [new Date(comment.date).toLocaleString()] }),
+				...this.renderElements(comment.children)
+			]
+		});
+
+		return this.h({ tagName:  "#fragment", children: [
+			this.h({ tagName: "#comment", children: [`comment #${comment.id} by ${comment.author} on ${comment.date}`] }),
+			commentRefEl,
+			commentsContainerEl
+		] });
+	}
+
+	renderAltChunk(elem: WmlAltChunk) {
+		if (!this.options.renderAltChunks)
+			return null;
+
+		var result = this.h({ tagName: "iframe" }) as HTMLIFrameElement;
+		
+		this.tasks.push(this.document.loadAltChunk(elem.id, this.currentPart).then(x => {
+			result.srcdoc = x;
+		}));
+
+		return result;
+	}
+
+	renderDrawing(elem: OpenXmlElement) {
+		var result = this.toHTML(elem, ns.html, "div");
+
+		result.style.display = "inline-block";
+		result.style.position = "relative";
+		result.style.textIndent = "0px";
+
+		return result;
+	}
+
+	renderImage(elem: IDomImage) {
+		let result = this.toHTML(elem, ns.html, "img", []);
+		let transform = elem.cssStyle?.transform;
+
+		if (elem.srcRect && elem.srcRect.some(x => x != 0)) {
+			var [left, top, right, bottom] = elem.srcRect;
+			transform = `scale(${1 / (1 - left - right)}, ${1 / (1 - top - bottom)})`;
+			result.style['clip-path'] = `rect(${(100 * top).toFixed(2)}% ${(100 * (1 - right)).toFixed(2)}% ${(100 * (1 - bottom)).toFixed(2)}% ${(100 * left).toFixed(2)}%)`;
+		}
+
+		if (elem.rotation)
+			transform = `rotate(${elem.rotation}deg) ${transform ?? ''}`;
+
+		result.style.transform = transform?.trim();
+
+		if (this.document) {
+			this.tasks.push(this.document.loadDocumentImage(elem.src, this.currentPart).then(x => {
+				result.src = x;
+			}));
+		}
+
+		return result;
+	}
+
+	renderText(elem: WmlText) {
+		return this.h(elem.text);
+	}
+
+	renderDeletedText(elem: WmlText) {
+		return this.options.renderChanges ? this.renderText(elem) : null;
+	}
+
+	renderBreak(elem: WmlBreak) {
+		return elem.break == "textWrapping" ? this.h({ tagName: "br" }) : null;
+	}
+
+	renderInserted(elem: WmlChange): Node | Node[] {
+		if (this.options.renderChanges)
+			return this.renderChange(elem, "ins");
+
+		return this.renderElements(elem.children);
+	}
+
+	renderDeleted(elem: WmlChange): Node {
+		if (this.options.renderChanges)
+			return this.renderChange(elem, "del");
+
+		return null;
+	}
+
+	renderChange(elem: WmlChange, tag: string) {
+		return this.renderContainer(elem, tag as any, {
+			dateTime: elem.date		
+		});
+	}
+
+	renderSymbol(elem: WmlSymbol) {
+		return this.h({ tagName: "span", children: [String.fromCharCode(elem.char)], style: { fontFamily: elem.font } });
+	}
+
+	renderFootnoteReference(elem: WmlNoteReference) {
+		this.currentFootnoteIds.push(elem.id);
+		return this.h({ tagName: "sup", children: [`${this.currentFootnoteIds.length}`] });
+	}
+
+	renderEndnoteReference(elem: WmlNoteReference) {
+		this.currentEndnoteIds.push(elem.id);
+		return this.h({ tagName: "sup", children: [`${this.currentEndnoteIds.length}`] });
+	}
+
+	renderTab(elem: OpenXmlElement) {
+		var tabSpan = this.h({ tagName: "span", children: ["\u2003"] }) as HTMLElement;//"&nbsp;";
+
+		if (this.options.experimental) {
+			tabSpan.className = this.tabStopClass();
+			var stops = findParent<WmlParagraph>(elem, DomType.Paragraph)?.tabs;
+			this.currentTabs.push({ stops, span: tabSpan });
+		}
+
+		return tabSpan;
+	}
+
+	renderBookmarkStart(elem: WmlBookmarkStart) {
+		return this.h({ tagName: "span", id: elem.name });
+	}
+
+	renderRun(elem: WmlRun) {
+		if (elem.fieldRun)
+			return null;
+
+		let children = this.renderElements(elem.children);
+
+		if (elem.verticalAlign) {
+			children = [this.h({ tagName: elem.verticalAlign, children: this.renderElements(elem.children) })];
+		}
+
+		const result = this.toHTML(elem, ns.html, "span", children);
+
+		if (elem.id)
+			result.id = elem.id;
+
+		return result;
+	}
+
+	renderTable(elem: WmlTable) {
+		this.tableCellPositions.push(this.currentCellPosition);
+		this.tableVerticalMerges.push(this.currentVerticalMerge);
+		this.currentVerticalMerge = {};
+		this.currentCellPosition = { col: 0, row: 0 };
+
+		const children = [];
+
+		if (elem.columns)
+			children.push(this.renderTableColumns(elem.columns));
+
+		children.push(...this.renderElements(elem.children));
+
+		this.currentVerticalMerge = this.tableVerticalMerges.pop();
+		this.currentCellPosition = this.tableCellPositions.pop();
+		return this.toHTML(elem, ns.html, "table", children);
+	}
+
+	renderTableColumns(columns: WmlTableColumn[]) {
+		const children = columns.map(x => this.h({ tagName: "col", style: { width: x.width } }));
+		return this.h({ tagName: "colgroup", children });
+	}
+
+	renderTableRow(elem: WmlTableRow) {
+		this.currentCellPosition.col = 0;
+
+		const children = [];
+
+		if (elem.gridBefore)
+			children.push(this.renderTableCellPlaceholder(elem.gridBefore));
+
+		children.push(...this.renderElements(elem.children));
+
+		if (elem.gridAfter)
+			children.push(this.renderTableCellPlaceholder(elem.gridAfter));
+
+		this.currentCellPosition.row++;
+
+		return this.toHTML(elem, ns.html, "tr", children) as HTMLTableRowElement;
+	}
+
+	renderTableCellPlaceholder(colSpan: number) {
+		return this.h({ tagName: "td", colSpan, style: { border: "none" } });
+	}
+
+	renderTableCell(elem: WmlTableCell) {
+		let result = this.toHTML(elem, ns.html, "td");
+
+		const key = this.currentCellPosition.col;
+
+		if (elem.verticalMerge) {
+			if (elem.verticalMerge == "restart") {
+				this.currentVerticalMerge[key] = result;
+				result.rowSpan = 1;
+			} else if (this.currentVerticalMerge[key]) {
+				this.currentVerticalMerge[key].rowSpan += 1;
+				result.style.display = "none";
+			}
+		} else {
+			this.currentVerticalMerge[key] = null;
+		}
+
+		if (elem.span)
+			result.colSpan = elem.span;
+
+		this.currentCellPosition.col += result.colSpan;
+
+		return result;
+	}
+
+	renderVmlPicture(elem: OpenXmlElement) {
+		return this.renderContainer(elem, "div");
+	}
+
+	renderVmlElement(elem: VmlElement): SVGElement {
+		var container = this.h({ ns: ns.svg, tagName: "svg", style: elem.cssStyleText }) as SVGElement;
+
+		const result = this.renderVmlChildElement(elem);
+
+		if (elem.imageHref?.id) {
+			this.tasks.push(this.document?.loadDocumentImage(elem.imageHref.id, this.currentPart)
+				.then(x => result.setAttribute("href", x)));
+		}
+
+		container.appendChild(result);
+
+		requestAnimationFrame(() => {
+			const bb = (container.firstElementChild as any).getBBox();
+
+			container.setAttribute("width", `${Math.ceil(bb.x +  bb.width)}`);
+			container.setAttribute("height", `${Math.ceil(bb.y + bb.height)}`);
+		});
+
+		return container;
+	}
+
+	renderVmlChildElement(elem: VmlElement): any {
+		const result = this.createSvgElement(elem.tagName as any);
+		Object.entries(elem.attrs).forEach(([k, v]) => result.setAttribute(k, v));
+
+		for (let child of elem.children) {
+			if (child.type == DomType.VmlElement) {
+				result.appendChild(this.renderVmlChildElement(child as VmlElement));
+			} else {
+				result.appendChild(...asArray(this.renderElement(child as any)));
+			}
+		}
+
+		return result;
+	}
+
+	renderMmlRadical(elem: OpenXmlElement) {
+		const base = elem.children.find(el => el.type == DomType.MmlBase);
+
+		if (elem.props?.hideDegree) {
+			return this.createMathMLElement("msqrt", null, this.renderElements([base]));
+		}
+
+		const degree = elem.children.find(el => el.type == DomType.MmlDegree);
+		return this.createMathMLElement("mroot", null, this.renderElements([base, degree]));
+	}
+
+	renderMmlDelimiter(elem: OpenXmlElement) {		
+		const children = [];
+
+		children.push(this.createMathMLElement("mo", null, [elem.props.beginChar ?? '(']));
+		children.push(...this.renderElements(elem.children));
+		children.push(this.createMathMLElement("mo", null, [elem.props.endChar ?? ')']));
+
+		return this.createMathMLElement("mrow", null, children);
+	}
+
+	renderMmlNary(elem: OpenXmlElement) {		
+		const children = [];
+		const grouped = keyBy(elem.children, x => x.type);
+
+		const sup = grouped[DomType.MmlSuperArgument];
+		const sub = grouped[DomType.MmlSubArgument];
+		const supElem = sup ? this.createMathMLElement("mo", null, asArray(this.renderElement(sup))) : null;
+		const subElem = sub ? this.createMathMLElement("mo", null, asArray(this.renderElement(sub))) : null;
+
+		const charElem = this.createMathMLElement("mo", null, [elem.props?.char ?? '\u222B']);
+
+		if (supElem || subElem) {
+			children.push(this.createMathMLElement("munderover", null, [charElem, subElem, supElem]));
+		} else if(supElem) {
+			children.push(this.createMathMLElement("mover", null, [charElem, supElem]));
+		} else if(subElem) {
+			children.push(this.createMathMLElement("munder", null, [charElem, subElem]));
+		} else {
+			children.push(charElem);
+		}
+
+		children.push(...this.renderElements(grouped[DomType.MmlBase].children));
+
+		return this.createMathMLElement("mrow", null, children);
+	}
+
+	renderMmlPreSubSuper(elem: OpenXmlElement) {
+		const children = [];
+		const grouped = keyBy(elem.children, x => x.type);
+
+		const sup = grouped[DomType.MmlSuperArgument];
+		const sub = grouped[DomType.MmlSubArgument];
+		const supElem = sup ? this.createMathMLElement("mo", null, asArray(this.renderElement(sup))) : null;
+		const subElem = sub ? this.createMathMLElement("mo", null, asArray(this.renderElement(sub))) : null;
+		const stubElem = this.createMathMLElement("mo", null);
+
+		children.push(this.createMathMLElement("msubsup", null, [stubElem, subElem, supElem]));
+		children.push(...this.renderElements(grouped[DomType.MmlBase].children));
+
+		return this.createMathMLElement("mrow", null, children);
+	}
+
+	renderMmlGroupChar(elem: OpenXmlElement) {
+		const tagName = elem.props.verticalJustification === "bot" ? "mover" : "munder";
+		const result = this.renderContainerNS(elem, ns.mathML, tagName);
+
+		if (elem.props.char) {
+			result.appendChild(this.createMathMLElement("mo", null, [elem.props.char]));
+		}
+
+		return result;
+	}
+
+	renderMmlBar(elem: OpenXmlElement) {
+		const style = {} as any;
+
+		switch(elem.props.position) {
+			case "top": style.textDecoration = "overline"; break
+			case "bottom": style.textDecoration = "underline"; break
+		}
+
+		return this.renderContainerNS(elem, ns.mathML, "mrow", { style }) as MathMLElement;
+	}
+
+	renderMmlRun(elem: OpenXmlElement) {
+		return this.toHTML(elem, ns.mathML, "ms");
+	}
+
+	renderMllList(elem: OpenXmlElement) {
+		const children = this.renderElements(elem.children).map(x => this.createMathMLElement("mtr", null, [
+			this.createMathMLElement("mtd", null, [x])
+		]));
+
+		return this.toHTML(elem, ns.mathML, "mtable", children);
+	}
+
+	toH(elem: OpenXmlElement, ns: ns, tagName: string, children: Node[] = null) {
+		const { "$lang": lang, ...style } = elem.cssStyle ?? {};
+		const className = cx(elem.className, elem.styleName && this.processStyleName(elem.styleName));
+		return { ns, tagName, className, lang, style, children: children ?? this.renderElements(elem.children) } as any;
+	}
+
+	toHTML(elem: OpenXmlElement, ns: ns, tagName: string, children: Node[] = null) {
+		return this.h(this.toH(elem, ns, tagName, children)) as any;
+	}
+
+	findStyle(styleName: string) {
+		return styleName && this.styleMap?.[styleName];
+	}
+
+	numberingClass(id: string, lvl: number) {
+		return `${this.className}-num-${id}-${lvl}`;
+	}
+
+	tabStopClass() {
+		return `${this.className}-tab-stop`;
+	}
+
+	styleToString(selectors: string, values: Record<string, string>, cssText: string = null) {
+		let result = `${selectors} {\r\n`;
+
+		for (const key in values) {
+			if (key.startsWith('$'))
+				continue;
+			
+			result += `  ${key}: ${values[key]};\r\n`;
+		}
+
+		if (cssText)
+			result += cssText;
+
+		return result + "}\r\n";
+	}
+
+	numberingCounter(id: string, lvl: number) {
+		return `${this.className}-num-${id}-${lvl}`;
+	}
+
+	levelTextToContent(text: string, suff: string, id: string, numformat: string) {
+		const suffMap = {
+			"tab": "\\9",
+			"space": "\\a0",
+		};
+
+		var result = text.replace(/%\d*/g, s => {
+			let lvl = parseInt(s.substring(1), 10) - 1;
+			return `"counter(${this.numberingCounter(id, lvl)}, ${numformat})"`;
+		});
+
+		return `"${result}${suffMap[suff] ?? ""}"`;
+	}
+
+	numFormatToCssValue(format: string) {
+		var mapping = {
+			none: "none",
+			bullet: "disc",
+			decimal: "decimal",
+			lowerLetter: "lower-alpha",
+			upperLetter: "upper-alpha",
+			lowerRoman: "lower-roman",
+			upperRoman: "upper-roman",
+			decimalZero: "decimal-leading-zero", // 01,02,03,...
+			// ordinal: "", // 1st, 2nd, 3rd,...
+			// ordinalText: "", //First, Second, Third, ...
+			// cardinalText: "", //One,Two Three,...
+			// numberInDash: "", //-1-,-2-,-3-, ...
+			// hex: "upper-hexadecimal",
+			aiueo: "katakana",
+			aiueoFullWidth: "katakana",
+			chineseCounting: "simp-chinese-informal",
+			chineseCountingThousand: "simp-chinese-informal",
+			chineseLegalSimplified: "simp-chinese-formal", // 中文大写
+			chosung: "hangul-consonant",
+			ideographDigital: "cjk-ideographic",
+			ideographTraditional: "cjk-heavenly-stem", // 十天干
+			ideographLegalTraditional: "trad-chinese-formal",
+			ideographZodiac: "cjk-earthly-branch", // 十二地支
+			iroha: "katakana-iroha",
+			irohaFullWidth: "katakana-iroha",
+			japaneseCounting: "japanese-informal",
+			japaneseDigitalTenThousand: "cjk-decimal",
+			japaneseLegal: "japanese-formal",
+			thaiNumbers: "thai",
+			koreanCounting: "korean-hangul-formal",
+			koreanDigital: "korean-hangul-formal",
+			koreanDigital2: "korean-hanja-informal",
+			hebrew1: "hebrew",
+			hebrew2: "hebrew",
+			hindiNumbers: "devanagari",
+			ganada: "hangul",
+			taiwaneseCounting: "cjk-ideographic",
+			taiwaneseCountingThousand: "cjk-ideographic",
+			taiwaneseDigital:  "cjk-decimal",
+		};
+
+		return mapping[format] ?? format;
+	}
+
+	refreshTabStops() {
+		if (!this.options.experimental)
+			return;
+
+		setTimeout(() => {
+			const pixelToPoint = computePixelToPoint();
+
+			for (let tab of this.currentTabs) {
+				updateTabStop(tab.span, tab.stops, this.defaultTabSize, pixelToPoint);
+			}
+		}, 500);
+	}
+
+	createElementNS(ns: any, tagName: string, props?: Partial<Record<any, any>>, children?: any[]) {
+		return this.h({ ns, tagName, children, ...props }) as any;
+	}
+
+	createElement<T extends keyof HTMLElementTagNameMap>(tagName: T, props?: Partial<Record<keyof HTMLElementTagNameMap[T], any>>, children?: any[]): HTMLElementTagNameMap[T] {
+		return this.createElementNS(ns.html, tagName, props, children);
+	}
+
+	createMathMLElement<T extends keyof MathMLElementTagNameMap>(tagName: T, props?: Partial<Record<keyof MathMLElementTagNameMap[T], any>>, children?: any[]): MathMLElementTagNameMap[T] {
+		return this.createElementNS(ns.mathML, tagName, props, children);
+	}
+
+	createSvgElement<T extends keyof SVGElementTagNameMap>(tagName: T, props?: Partial<Record<keyof SVGElementTagNameMap[T], any>>, children?: any[]): SVGElementTagNameMap[T] {
+		return this.createElementNS(ns.svg, tagName, props, children);
+	}
+
+	later(func: Function) { 
+		this.postRenderTasks.push(func);
+	}
+}
+
+function findParent<T extends OpenXmlElement>(elem: OpenXmlElement, type: DomType): T {
+	var parent = elem.parent;
+
+	while (parent != null && parent.type != type)
+		parent = parent.parent;
+
+	return <T>parent;
+}
+

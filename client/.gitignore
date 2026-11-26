@@ -15,8 +15,8 @@ __pycache__/
 /.g[r]ok/
 
 # crates.io extraction marker and upstream-only GitHub workflows/templates.
-/vendor/cpal-loopback/.cargo-ok
-/vendor/cpal-loopback/.github/
+/third-party/rust/cpal-loopback/.cargo-ok
+/third-party/rust/cpal-loopback/.github/
 
 # Spare generated icons not used by the current macOS/Windows bundle.icon list.
 # Keep the five configured PNG/ICO/ICNS inputs tracked.
@@ -37,13 +37,13 @@ __pycache__/
 /src-tauri/target/
 /src-tauri/gen/
 # 内嵌 Runtime 已由主仓库直接管理，仅忽略其本机构建产物。
-/vendor/echo-agent-build/target/
-/vendor/glib/target/
-/vendor/glib/Cargo.lock
-/vendor/lru-0.12/target/
-/vendor/lru-0.12/Cargo.lock
-/vendor/lru-0.16/target/
-/vendor/lru-0.16/Cargo.lock
+/agent/target/
+/third-party/rust/glib/target/
+/third-party/rust/glib/Cargo.lock
+/third-party/rust/lru-0.12/target/
+/third-party/rust/lru-0.12/Cargo.lock
+/third-party/rust/lru-0.16/target/
+/third-party/rust/lru-0.16/Cargo.lock
 /src-tauri/resources/office/node/*
 /src-tauri/resources/office/worker.mjs
 /src-tauri/resources/office/licenses/

@@ -1640,7 +1640,7 @@ pub(crate) async fn update_session_configuration(
 
 pub(crate) async fn reconcile_all_sessions(app: &AppHandle) {
     let (tx, sessions) = {
-        let runtime = app.state::<crate::commands::AppState>();
+        let runtime = app.state::<crate::harness::state::HarnessState>();
         let tx = runtime.tx.lock().unwrap().clone();
         let sessions = runtime.session_ids();
         (tx, sessions)

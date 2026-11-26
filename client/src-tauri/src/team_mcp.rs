@@ -140,7 +140,7 @@ fn notify_changed(session_id: &str) {
 fn team_workspace(session_id: Option<&str>) -> Result<Option<PathBuf>, String> {
     match (EVENT_APP.get(), session_id) {
         (Some(app), Some(session)) => app
-            .state::<crate::commands::AppState>()
+            .state::<crate::harness::state::HarnessState>()
             .session_workspace(session)
             .map(Some),
         _ => Ok(None),
@@ -165,7 +165,7 @@ fn team_key(session_id: Option<&str>, team_id: &str) -> String {
 
 #[tauri::command]
 pub fn team_create(
-    state: tauri::State<'_, crate::commands::AppState>,
+    state: tauri::State<'_, crate::harness::state::HarnessState>,
     session_id: String,
     input: CreateTeamInput,
 ) -> Result<CreateTeamOutput, String> {
@@ -175,7 +175,7 @@ pub fn team_create(
 
 #[tauri::command]
 pub fn team_disband(
-    state: tauri::State<'_, crate::commands::AppState>,
+    state: tauri::State<'_, crate::harness::state::HarnessState>,
     session_id: String,
     team_id: String,
 ) -> Result<TeamDeleteOutput, String> {
@@ -203,7 +203,7 @@ pub(crate) fn prepare_prompt(
         .iter()
         .map(|agent| agent.name.clone())
         .collect::<Vec<_>>();
-    let request = crate::team_orchestration::explicit_team_request(visible_text, &names)?;
+    let request = crate::harness::team_orchestration::explicit_team_request(visible_text, &names)?;
     let mut selected_id = None;
     if let Some(request) = request {
         selected_id = Some(request.name.clone());
@@ -229,7 +229,7 @@ pub(crate) fn prepare_prompt(
     }
     let mut teams = team_snapshot(session_id.to_string())?;
     if selected_id.is_none() {
-        selected_id = crate::team_orchestration::referenced_team(
+        selected_id = crate::harness::team_orchestration::referenced_team(
             visible_text,
             &teams
                 .iter()
@@ -1771,7 +1771,7 @@ mod tests {
         let text = "请使用已经有的业务分析师、代码专家、文档助手创建团队123，分别分析需求并生成代码和需求文档";
         let context = prepare_prompt("session-a", "prompt-a", text).unwrap();
         assert!(context.contains("<echoagent_team_context>"));
-        let blocks = crate::agent_runtime::build_team_prompt_blocks(
+        let blocks = crate::harness::agent_runtime::build_team_prompt_blocks(
             "runtime-session",
             "runtime-prompt",
             text,
@@ -1787,7 +1787,7 @@ mod tests {
             panic!("expected user text block");
         }
         assert_eq!(team_snapshot("runtime-session".into()).unwrap().len(), 1);
-        assert!(crate::agent_runtime::build_team_prompt_blocks(
+        assert!(crate::harness::agent_runtime::build_team_prompt_blocks(
             "rejected-session",
             "rejected-prompt",
             text,

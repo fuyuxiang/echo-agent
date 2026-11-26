@@ -1,0 +1,9 @@
+---
+source: terminal/echo-agent-pager/src/scrollback/blocks/tool/edit.rs
+expression: diff_outputs_to_string(&outputs)
+---
+  1 1  short line
+    2  this is a very long line that 
+       will definitely wrap to multiple 
+       lines
+  2 3  another short one

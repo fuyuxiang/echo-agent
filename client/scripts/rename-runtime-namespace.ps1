@@ -1,6 +1,6 @@
 #Requires -Version 5.0
 param(
-    [string]$RuntimeRoot = (Join-Path (Split-Path -Parent $PSScriptRoot) "vendor\echo-agent-build")
+    [string]$RuntimeRoot = (Join-Path (Split-Path -Parent $PSScriptRoot) "agent")
 )
 
 $ErrorActionPreference = "Stop"

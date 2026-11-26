@@ -504,7 +504,7 @@ fn organization_skills_root() -> PathBuf {
 }
 
 fn notify_skills_changed(app: &AppHandle, reason: &str) {
-    let runtime = app.state::<crate::commands::AppState>();
+    let runtime = app.state::<crate::harness::state::HarnessState>();
     if let Err(error) = crate::agent_admin::request_internal_reload(&runtime, "skills") {
         if error == "agent not initialized" {
             tracing::debug!(%reason, "organization Skills changed before agent initialization");
@@ -523,7 +523,7 @@ fn emit_skills_changed(app: &AppHandle, reason: &str) {
 
 async fn apply_skills_change(app: &AppHandle, reason: &str) -> Result<(), String> {
     let tx = app
-        .state::<crate::commands::AppState>()
+        .state::<crate::harness::state::HarnessState>()
         .tx
         .lock()
         .unwrap()
@@ -540,13 +540,13 @@ pub(crate) fn notify_models_changed(app: &AppHandle, reason: &str) {
     let app = app.clone();
     let reason = reason.to_string();
     tauri::async_runtime::spawn(async move {
-        let runtime = app.state::<crate::commands::AppState>();
+        let runtime = app.state::<crate::harness::state::HarnessState>();
         // Clone the sender in a separate statement so the MutexGuard is
         // dropped before awaiting the Runtime reload future (`tokio::spawn`
         // requires the future to be Send on Windows/Tauri).
         let tx = runtime.tx.lock().unwrap().clone();
         let reload_result = if let Some(tx) = tx {
-            crate::commands::reconcile_models_and_sync(&app, &runtime, &tx).await
+            crate::harness::commands::reconcile_models_and_sync(&app, &runtime, &tx).await
         } else {
             Err("agent not initialized".to_string())
         };
@@ -2807,7 +2807,7 @@ pub(crate) fn copy_project_binding(source: &str, target: &str) -> Result<(), Str
 #[tauri::command]
 pub async fn org_bind_project_session(
     app: AppHandle,
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     session_id: String,
     project_id: String,
     task_id: Option<String>,
@@ -3037,18 +3037,18 @@ pub(crate) async fn record_project_run_binding(
     };
     if status == "running" {
         let tx = app
-            .state::<crate::commands::AppState>()
+            .state::<crate::harness::state::HarnessState>()
             .tx
             .lock()
             .unwrap()
             .clone();
         if let Some(tx) = tx {
             if app
-                .state::<crate::commands::AppState>()
+                .state::<crate::harness::state::HarnessState>()
                 .session_workspace(session)
                 .is_ok()
             {
-                if let Ok(info) = crate::agent_runtime::session_info(&tx, session).await {
+                if let Ok(info) = crate::harness::agent_runtime::session_info(&tx, session).await {
                     if let Some(model) = info.get("model").and_then(Value::as_str) {
                         pending.body["modelId"] = json!(model);
                     }
@@ -3178,7 +3178,7 @@ pub(crate) async fn project_session_scope(
 #[tauri::command]
 pub async fn org_project_session_scope(
     app: AppHandle,
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     session_id: String,
     expected_generation: u64,
 ) -> Result<Option<String>, String> {
@@ -6370,7 +6370,7 @@ async fn send_client_heartbeat(inner: &Arc<OrgInner>) -> Result<(), String> {
     };
     let model_fingerprint = crate::providers::organization_model_config_revision();
     let models_applied = inner.app.get().is_some_and(|app| {
-        app.state::<crate::commands::AppState>()
+        app.state::<crate::harness::state::HarnessState>()
             .model_config_is_current()
     });
     let now = std::time::SystemTime::now()

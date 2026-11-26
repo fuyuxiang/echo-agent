@@ -1,7 +1,7 @@
 //! Desktop continuation: inclusive history cuts and durable, retryable provenance.
 use crate::{
-    commands::AppState,
     ext::{call_ext, raw_params},
+    harness::state::HarnessState,
     meta::SessionContinuation,
     sessions::SessionSummary,
 };
@@ -85,7 +85,7 @@ fn continuation_title(source: &str, rows: &[SessionSummary]) -> String {
 
 #[tauri::command]
 pub async fn session_continue(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: String,
     cwd: String,
     target_prompt_index: Option<u32>,
@@ -104,7 +104,7 @@ pub async fn session_continue(
 }
 
 async fn continue_session(
-    state: &AppState,
+    state: &HarnessState,
     session_id: String,
     cwd: String,
     target_prompt_index: Option<u32>,
@@ -127,7 +127,7 @@ async fn continue_session(
         .try_lock_owned()
         .map_err(|_| "原对话正在执行任务或清理，请稍后重试")?;
     // Serialize with permission/workspace transitions and other continuation requests.
-    let _guard = crate::permission_config::permission_transition_lock()
+    let _guard = crate::harness::permission_config::permission_transition_lock()
         .lock()
         .await;
     let workspace = state.session_workspace(&session_id)?;
@@ -469,7 +469,7 @@ mod tests {
             }
         }
         let (client, mut agent) = echo_agent_acp::acp_channels();
-        let state = AppState::default();
+        let state = HarnessState::default();
         *state.tx.lock().unwrap() = Some(client.tx.clone());
         state
             .record_session_workspace("original", &workspace)

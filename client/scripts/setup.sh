@@ -3,7 +3,7 @@
 #  EchoAgent source setup check (macOS / Linux)
 #
 #  The embedded Runtime is committed directly to this repository. This script
-#  verifies that a checkout contains the complete vendored source snapshot.
+#  verifies that a checkout contains the maintained Agent source.
 #  Idempotent: safe to re-run.
 #
 #  Usage:
@@ -20,8 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-log_step "Verifying vendored Runtime source"
-node "$PROJECT_ROOT/scripts/verify-vendored-runtime.mjs"
+log_step "Verifying Agent source"
+node "$PROJECT_ROOT/scripts/verify-agent-source.mjs"
 log_ok "No submodule initialization or upstream checkout is required"
 
 log_step "Setup complete"

@@ -5,7 +5,7 @@
  *
  * Source of truth: the `agent-client-protocol` 0.10.4 crate (used by EchoAgent)
  * and the echo.agent extensions documented in
- *   echo-agent-build/crates/codegen/echo-agent-runtime/src/extensions/notification.rs
+ *   echo-agent-build/crates/echo-agent-runtime/src/extensions/notification.rs
  *
  * The Rust backend serializes these with serde and emits them as the `payload`
  * of `agent://update` / `agent://permission` / `agent://complete` events.

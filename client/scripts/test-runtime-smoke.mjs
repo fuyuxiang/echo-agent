@@ -24,7 +24,7 @@ try {
   throw error;
 }
 const cwd = resolve("src-tauri");
-const runtimeSmoke = "agent_runtime::tests::spawn_smoke_spawn_initialize_new_session";
+const runtimeSmoke = "harness::agent_runtime::tests::spawn_smoke_spawn_initialize_new_session";
 const retiredSelection = '[models]\ndefault = "echoagent-ojlab/Echo Reed"\nallowed_models = ["echoagent-ojlab/*"]\n'
   + '[model_providers.echoagent-ojlab]\nbase_url = "http://removed.invalid/v1"\nechoagent_managed_by = "builtin"\n'
   + ["Echo Brook", "Echo Cedar", "Echo Grove", "Echo Reed", "Echo Willow", "chat-xc", "chat-glm", "chat-qwen"]
@@ -35,12 +35,12 @@ for (const { name, selection, scenario, storage = '' } of [
   { name: runtimeSmoke, selection: '[models]\ndefault = "  "', scenario: "Auto with a blank preference" },
   { name: runtimeSmoke, selection: retiredSelection, scenario: "retired catalog, preference, and model filters" },
   {
-    name: "agent_runtime::tests::persisted_sessions_survive_clock_skew_on_initialize_and_load",
+    name: "harness::agent_runtime::tests::persisted_sessions_survive_clock_skew_on_initialize_and_load",
     selection: '[models]\ndefault = "review/mock"',
     scenario: "past and future session timestamps with a legacy retention setting",
     storage: '[storage]\ncleanup_ttl_days = 1',
   },
-  { name: "skills::runtime_tests::resident_skill_reload_smoke", selection: '[models]\ndefault = "review/mock"', scenario: "resident skill reload" },
+  { name: "harness::skills::runtime_tests::resident_skill_reload_smoke", selection: '[models]\ndefault = "review/mock"', scenario: "resident skill reload" },
   { name: "mcp::tests::global_toggle_applies_to_loaded_sessions_new_sessions_and_agent_pool", selection: '[models]\ndefault = "review/mock"', scenario: "durable MCP disable, restore and deletion across live sessions and agent pool" },
   { name: "providers::tests::unsaved_provider_probes_never_send_an_inherited_key_to_another_origin", selection: '[models]\ndefault = "review/mock"', scenario: "provider probes with distinct loopback origins" },
 ]) {

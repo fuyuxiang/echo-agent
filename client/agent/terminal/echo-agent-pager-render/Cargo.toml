@@ -1,0 +1,120 @@
+[package]
+name = "echo-agent-pager-render"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+
+[dependencies]
+# TTY safety
+dunce = { workspace = true }
+echo-agent-tty-utils = { workspace = true }
+
+# Rendering
+ratatui = { workspace = true, features = [
+    "crossterm",
+    "unstable-widget-ref",
+    "unstable-backend-writer",
+] }
+ratatui-core = { workspace = true }
+crossterm = { workspace = true, features = ["event-stream", "bracketed-paste"] }
+textwrap = { workspace = true }
+regex = { workspace = true }
+unicode-bidi = { workspace = true }
+unicode-bidi-mirroring = { workspace = true }
+unicode-width = { workspace = true }
+unicode-segmentation = { workspace = true }
+linkify = { workspace = true }
+tui-scrollbar = { workspace = true }
+
+# Markdown / syntax highlighting
+echo-agent-markdown = { workspace = true }
+syntect = { workspace = true }
+anstyle = { workspace = true }
+supports-color = { workspace = true }
+
+# Data
+serde = { workspace = true, features = ["derive"] }
+toml = { workspace = true }
+toml_edit = { workspace = true, features = ["serde"] }
+documented = { workspace = true }
+
+# VTE terminal emulation for native rendering of command output (SGR, cursor, \r)
+vte = { workspace = true }
+
+# System appearance detection (dark/light mode)
+dark-light = "2"
+
+# Utilities
+strum = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true, features = [
+    "sync",
+    "rt",
+    "macros",
+    "rt-multi-thread",
+    "signal",
+    "io-util",
+    "io-std",
+] }
+tracing = { workspace = true }
+
+# Prompt text input
+echo-agent-ratatui-textarea = { workspace = true }
+echo-agent-ratatui-inline = { workspace = true }
+
+# ACP
+agent-client-protocol = { workspace = true }
+echo-agent-config = { workspace = true }
+echo-agent-shared = { workspace = true }
+echo-agent-workspace = { workspace = true }
+echo-agent-telemetry = { workspace = true }
+echo-agent-tools = { workspace = true }
+echo-agent-paths = { path = "../../crates/echo-agent-paths" }
+
+# Base64 encoding for image data
+base64 = { workspace = true }
+
+# Image decoding/resizing for clipboard image validation before send
+image = { workspace = true, features = ["png", "jpeg", "tiff", "gif", "webp"] }
+
+# ID generation
+uuid = { workspace = true, features = ["v4"] }
+
+# Path computation
+dirs = { workspace = true }
+shellexpand = "3.1"
+
+# Parsing
+url = { workspace = true }
+
+# Hot-reload config (dev mode)
+notify = { workspace = true, optional = true }
+
+# libc: poll/read for non-blocking terminal reads in theme/osc11.rs.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+# EnumDisplaySettingsW for primary-display refresh probe (host/display_refresh);
+# ShellExecuteW for opening URLs without cmd.exe (link_opener).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+serial_test = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+# Exposes `#[cfg(test)]` test-only helpers (mock setters, test guards,
+# deterministic pinning) to downstream crates' test builds. Enabled by
+test-support = []
+# CI builds a single shared rlib variant per crate, so the pager's CI
+# test target links the same render lib as production. Enabling the test-only
+# helpers in the CI default set keeps them present for the pager test while
+# leaving cargo's `default` (and thus cargo production builds) without them.
+# The helpers are inert unless their mock setters are called.
+default-bazel = ["test-support"]

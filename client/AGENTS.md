@@ -28,3 +28,12 @@ git diff --cached --check
 - 变更涉及依赖、工作流或打包时，分别跑对应的依赖审计、`actionlint -shellcheck= -pyflakes=` 或平台打包预检，按工作流中的实际命令核对。
 - 任一适用检查失败时，修复后重跑通过再提交。涉及当前机器无法执行的平台验证时，记录依赖远端验证的项目，并跟进 GitHub Actions 的实际结果。
 - 推送后按提交 SHA 核对 `ci`、`desktop-validation` 和适用的 `workflow-validation`。仍在运行、取消或失败的验证需要继续跟进，直到适用检查通过，或确认存在需要用户介入的阻塞。
+
+## 架构与源码归属
+
+- 先查阅 [架构与维护边界](docs/architecture.md)，按数据所有权和实际调用入口选择模块。
+- `src/` 负责界面和前端状态。`src-tauri/` 负责 Tauri IPC、平台服务与桌面业务。`src-tauri/src/harness/` 协调桌面 Runtime 代次、会话、权限和事件。
+- Agent 多轮执行、模型流、工具调度、上下文与会话持久化由 `agent/crates/` 的现有 crate 维护。桌面通过进程内 ACP 接入。`agent/terminal/` 保留终端入口和独立验证。
+- 通用依赖由锁文件管理。局部定制源码集中在 `third-party/`，记录来源、版本或提交、完整性、许可证、修改与验证入口。资源许可证在 `LICENSES/` 或其随包资源目录维护。
+- 调整模块或路径时，核对 Windows、macOS、Linux 的条件分支与 Cargo workspace，检查 CI 触发、审计、资源打包和旧数据读取，并运行 `node scripts/verify-agent-source.mjs`。
+- DOCX 渲染器在 `third-party/docx-preview/` 从 TypeScript 构建。修改分页、分节和字体加载时，验证源码包类型、原始 Word 回归与 `pnpm test:ui:office-workbench`。

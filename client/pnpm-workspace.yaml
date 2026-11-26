@@ -1,5 +1,6 @@
 packages:
   - '.'
+  - 'third-party/docx-preview'
 
 # pnpm 10+ blocks dependency postinstall scripts by default for security.
 # esbuild needs its postinstall to fetch the platform binary; without it vite

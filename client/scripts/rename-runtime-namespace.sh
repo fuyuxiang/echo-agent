@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-RUNTIME_ROOT="${1:-$PROJECT_ROOT/vendor/echo-agent-build}"
+RUNTIME_ROOT="${1:-$PROJECT_ROOT/agent}"
 
 if [[ ! -f "$RUNTIME_ROOT/Cargo.toml" ]]; then
     printf 'Embedded Runtime source is incomplete at: %s\n' "$RUNTIME_ROOT" >&2

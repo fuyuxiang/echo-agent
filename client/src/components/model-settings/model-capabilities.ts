@@ -1,5 +1,5 @@
 import type { ApiBackend, ModelReasoningEffort } from "@/lib/agent-client";
-import bundledProfiles from "../../../vendor/echo-agent-build/crates/codegen/echo-agent-runtime/src/agent/model_capability_profiles.json";
+import bundledProfiles from "../../../agent/crates/echo-agent-runtime/src/agent/model_capability_profiles.json";
 
 interface ModelCapabilityProfile {
   model: string;

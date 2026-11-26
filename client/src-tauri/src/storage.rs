@@ -734,13 +734,13 @@ fn remove_provider_at(path: &Path, id: &str) -> Result<(), String> {
 
 #[tauri::command]
 pub fn storage_provider_upsert(config: StorageProviderConfig) -> Result<(), String> {
-    crate::policy::require_feature("cloud-storage")?;
+    crate::harness::policy::require_feature("cloud-storage")?;
     upsert_provider_at(&config_path(), config)
 }
 
 #[tauri::command]
 pub fn storage_provider_remove(id: String) -> Result<(), String> {
-    crate::policy::require_feature("cloud-storage")?;
+    crate::harness::policy::require_feature("cloud-storage")?;
     remove_provider_at(&config_path(), &id)
 }
 
@@ -761,7 +761,7 @@ async fn propfind(
 
 #[tauri::command]
 pub async fn storage_provider_test(id: String) -> Result<(), String> {
-    crate::policy::require_feature("cloud-storage")?;
+    crate::harness::policy::require_feature("cloud-storage")?;
     let config = provider(&id)?;
     let response = propfind(&config, "/", "0").await?;
     if response.status().is_success() || response.status().as_u16() == 207 {
@@ -773,7 +773,7 @@ pub async fn storage_provider_test(id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn storage_list(id: String, path: String) -> Result<Vec<StorageEntry>, String> {
-    crate::policy::require_feature("cloud-storage")?;
+    crate::harness::policy::require_feature("cloud-storage")?;
     let config = provider(&id)?;
     let path = normalize_path(&path)?;
     let response = propfind(&config, &path, "1").await?;
@@ -787,7 +787,7 @@ pub async fn storage_list(id: String, path: String) -> Result<Vec<StorageEntry>,
 
 #[tauri::command]
 pub async fn storage_read_text(id: String, path: String) -> Result<String, String> {
-    crate::policy::require_feature("cloud-storage")?;
+    crate::harness::policy::require_feature("cloud-storage")?;
     let config = provider(&id)?;
     let path = normalize_path(&path)?;
     let response = request(&config, reqwest::Method::GET, &path)?
@@ -803,14 +803,14 @@ pub async fn storage_read_text(id: String, path: String) -> Result<String, Strin
 
 #[tauri::command]
 pub async fn storage_write_text(id: String, path: String, content: String) -> Result<(), String> {
-    crate::policy::require_feature("cloud-storage")?;
+    crate::harness::policy::require_feature("cloud-storage")?;
     let config = provider(&id)?;
     put_text(&config, &path, content, false).await
 }
 
 #[tauri::command]
 pub async fn storage_create_text(id: String, path: String, content: String) -> Result<(), String> {
-    crate::policy::require_feature("cloud-storage")?;
+    crate::harness::policy::require_feature("cloud-storage")?;
     let config = provider(&id)?;
     put_text(&config, &path, content, true).await
 }
@@ -861,7 +861,7 @@ pub async fn storage_upload_file(
     path: String,
     local_path: String,
 ) -> Result<u64, String> {
-    crate::policy::require_feature("cloud-storage")?;
+    crate::harness::policy::require_feature("cloud-storage")?;
     let config = provider(&id)?;
     let path = normalize_mutation_path(&path)?;
     let source = checked_local_path(&local_path, "上传源")?;
@@ -921,7 +921,7 @@ pub async fn storage_download_file(
     path: String,
     local_path: String,
 ) -> Result<u64, String> {
-    crate::policy::require_feature("cloud-storage")?;
+    crate::harness::policy::require_feature("cloud-storage")?;
     let config = provider(&id)?;
     let path = normalize_path(&path)?;
     let requested_destination = checked_local_path(&local_path, "下载目标")?;
@@ -1005,7 +1005,7 @@ pub async fn storage_download_file(
 
 #[tauri::command]
 pub async fn storage_delete(id: String, path: String) -> Result<(), String> {
-    crate::policy::require_feature("cloud-storage")?;
+    crate::harness::policy::require_feature("cloud-storage")?;
     let config = provider(&id)?;
     let path = normalize_mutation_path(&path)?;
     let response = request(&config, reqwest::Method::DELETE, &path)?
@@ -1021,7 +1021,7 @@ pub async fn storage_delete(id: String, path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn storage_make_dir(id: String, path: String) -> Result<(), String> {
-    crate::policy::require_feature("cloud-storage")?;
+    crate::harness::policy::require_feature("cloud-storage")?;
     let config = provider(&id)?;
     let path = normalize_mutation_path(&path)?;
     let method = reqwest::Method::from_bytes(b"MKCOL").unwrap();

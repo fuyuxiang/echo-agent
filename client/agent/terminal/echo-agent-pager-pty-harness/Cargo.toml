@@ -1,0 +1,92 @@
+[package]
+name = "echo-agent-pager-pty-harness"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+authors = ["EchoAgent"]
+description = "Shared PTY harness + scenario library for echo-agent-pager e2e tests and benchmarks."
+publish = false
+
+# Not imported into the production pager binary — the pager's Cargo.toml
+# only references this crate via [dev-dependencies], so `cargo build -p
+# echo-agent-pager` never compiles any of this.
+
+[dependencies]
+# Headless PTY controller with alacritty_terminal-based terminal emulation,
+# vim key notation parser, styled/HTML output, and HTTP server.
+dunce = { workspace = true }
+echo-agent-pty = { path = "../../crates/echo-agent-pty" }
+
+# PTY spawning + input/output
+portable-pty = { workspace = true }
+# Real OS signals (libc::kill) for the SIGINT/SIGTERM/SIGHUP e2e path.
+libc = { workspace = true }
+
+# alacritty_terminal re-exports `vte` which timing.rs uses for frame marker
+# detection. screen.rs uses echo-agent-pty's Terminal (backed by alacritty_terminal)
+# instead of the old vt100 dependency.
+alacritty_terminal = { workspace = true }
+
+# Shared mock inference server used to drive content into the pager
+# during scenarios (content.rs wraps it).
+echo-agent-test-support = { workspace = true }
+
+# Async runtime + common helpers shared with the pager.
+tokio = { workspace = true, features = [
+    "sync",
+    "rt",
+    "macros",
+    "rt-multi-thread",
+    "io-util",
+    "io-std",
+    "time",
+    "net",
+] }
+
+anyhow = { workspace = true }
+base64 = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+image = { workspace = true, features = ["png"] }
+tempfile = { workspace = true }
+echo-agent-tty-utils = { workspace = true }
+
+clap = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+reqwest = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing = { workspace = true }
+
+[[test]]
+name = "env_op_compile"
+path = "tests/env_op_compile.rs"
+
+[[bin]]
+name = "pty-scenario"
+path = "src/bin/pty_scenario.rs"
+
+# scroll-matrix — scroll validation matrix sweep. The curated tier also runs
+# in CI (tests/scroll_matrix_curated.rs); this binary is the local full-sweep
+# and single-cell-rerun entry point.
+[[bin]]
+name = "scroll-matrix"
+path = "src/bin/scroll_matrix.rs"
+
+# pty_bench scenario runner — produces a standalone binary the CI pipeline
+# pre-compiles and executes directly against a release pager artifact.
+# Lives here (not in the pager crate) so it can share the harness source
+# without any path hacks.
+[[bench]]
+name = "pty_bench"
+path = "benches/pty_bench.rs"
+harness = false
+
+# paste_latency — clipboard paste latency CLI (macOS-only at runtime: drives
+# the REAL host pasteboard). Standalone so `--binary` can target old pager
+# artifacts for before/after comparisons.
+[[bench]]
+name = "paste_latency"
+path = "benches/paste_latency.rs"
+harness = false

@@ -17,8 +17,8 @@ use tauri::{AppHandle, Listener, Manager, State};
 use url::Url;
 use uuid::Uuid;
 
-use crate::bridge::{CompleteEvent, PermissionFrontend, QuestionFrontend};
-use crate::commands::AppState;
+use crate::harness::bridge::{CompleteEvent, PermissionFrontend, QuestionFrontend};
+use crate::harness::state::HarnessState;
 use crate::sessions::SessionSummary;
 
 const API_BASE: &str = "https://ilinkai.weixin.qq.com";
@@ -1707,7 +1707,8 @@ pub(crate) fn init(app: &AppHandle) {
     });
     let plan_app = app.clone();
     app.listen("agent://plan-approval", move |event| {
-        let Ok(plan) = serde_json::from_str::<crate::bridge::PlanApprovalFrontend>(event.payload())
+        let Ok(plan) =
+            serde_json::from_str::<crate::harness::bridge::PlanApprovalFrontend>(event.payload())
         else {
             return;
         };
@@ -2550,8 +2551,8 @@ async fn route_message(
             .iter()
             .find(|s| Some(&s.session_id) == binding.active_session.as_ref())
             .ok_or("尚未选择任务")?;
-        crate::commands::agent_cancel(
-            app.state::<AppState>(),
+        crate::harness::commands::agent_cancel(
+            app.state::<HarnessState>(),
             current.session_id.clone(),
             Some("stop".into()),
             None,
@@ -2647,9 +2648,9 @@ async fn route_message(
             }
             Ok(())
         })?;
-        let session_id = crate::commands::agent_new_session(
+        let session_id = crate::harness::commands::agent_new_session(
             app.clone(),
-            app.state::<AppState>(),
+            app.state::<HarnessState>(),
             cwd,
             None,
             Some("ask".into()),
@@ -2669,7 +2670,7 @@ async fn route_message(
             Some(&session_id),
         )
         .await?;
-        return crate::commands::agent_send_from_weixin(
+        return crate::harness::commands::agent_send_from_weixin(
             app.clone(),
             authorization,
             session_id,
@@ -2685,19 +2686,19 @@ async fn route_message(
         .ok_or("尚未选择任务，请发送“任务”选择已有会话，或发送“新任务：...”")?;
     ensure_runtime(app).await?;
     if app
-        .state::<AppState>()
+        .state::<HarnessState>()
         .session_workspace(&current.session_id)
         .is_err()
     {
-        crate::commands::agent_load_session(
+        crate::harness::commands::agent_load_session(
             app.clone(),
-            app.state::<AppState>(),
+            app.state::<HarnessState>(),
             current.session_id.clone(),
             current.cwd.clone(),
         )
         .await?;
     }
-    crate::commands::agent_send_from_weixin(
+    crate::harness::commands::agent_send_from_weixin(
         app.clone(),
         authorization,
         current.session_id.clone(),
@@ -2719,14 +2720,14 @@ async fn route_message(
 }
 
 async fn ensure_runtime(app: &AppHandle) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let init = crate::commands::agent_init(
+    let state = app.state::<HarnessState>();
+    let init = crate::harness::commands::agent_init(
         app.clone(),
         state,
-        app.state::<crate::bridge::Permissions>(),
-        app.state::<crate::bridge::Questions>(),
-        app.state::<crate::bridge::PlanApprovals>(),
-        app.state::<crate::bridge::FolderTrusts>(),
+        app.state::<crate::harness::bridge::Permissions>(),
+        app.state::<crate::harness::bridge::Questions>(),
+        app.state::<crate::harness::bridge::PlanApprovals>(),
+        app.state::<crate::harness::bridge::FolderTrusts>(),
         None,
     )
     .await?;
@@ -2765,9 +2766,9 @@ async fn resolve_interaction(
                 "拒绝" => deny.ok_or("此操作不支持微信拒绝")?,
                 _ => return Err("此确认只支持“允许”或“拒绝”".into()),
             };
-            crate::commands::agent_resolve_permission(
+            crate::harness::commands::agent_resolve_permission(
                 app.clone(),
-                app.state::<crate::bridge::Permissions>(),
+                app.state::<crate::harness::bridge::Permissions>(),
                 pending.request_id,
                 Some(option),
                 Some(false),
@@ -2815,15 +2816,15 @@ async fn resolve_interaction(
                 .map(|(question, value)| {
                     (
                         question,
-                        crate::commands::QuestionAnnotationDto {
+                        crate::harness::commands::QuestionAnnotationDto {
                             preview: None,
                             notes: Some(value),
                         },
                     )
                 })
                 .collect();
-            crate::commands::agent_resolve_question(
-                app.state::<crate::bridge::Questions>(),
+            crate::harness::commands::agent_resolve_question(
+                app.state::<crate::harness::bridge::Questions>(),
                 pending.request_id,
                 Some(answers),
                 Some(annotations),
@@ -2842,8 +2843,8 @@ async fn resolve_interaction(
                 "拒绝" => "cancelled",
                 _ => return Err("请用“通过”或“拒绝”回复计划".into()),
             };
-            crate::commands::agent_resolve_plan_approval(
-                app.state::<crate::bridge::PlanApprovals>(),
+            crate::harness::commands::agent_resolve_plan_approval(
+                app.state::<crate::harness::bridge::PlanApprovals>(),
                 pending.request_id,
                 outcome.into(),
                 None,

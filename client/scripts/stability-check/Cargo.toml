@@ -48,4 +48,4 @@ objc2 = { version = "0.6.4", default-features = false, features = ["std"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }
 
 [patch.crates-io]
-glib = { path = "../../vendor/glib" }
+glib = { path = "../../third-party/rust/glib" }

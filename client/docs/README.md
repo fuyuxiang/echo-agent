@@ -31,6 +31,7 @@
 
 | 主题 | 文档 |
 | --- | --- |
+| 源码布局、桌面 Harness、Agent Runtime 与依赖方向 | [架构与维护边界](architecture.md) |
 | 测试层级、回归入口及证据要求 | [开发与验收](testing.md) |
 | 原生桌面任务的准备和独立核验 | [桌面控制验收](desktop-control/validation.md) |
 | 桌面调用统计与性能比较 | [性能验证](desktop-control/performance.md) |

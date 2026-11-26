@@ -1,0 +1,100 @@
+[package]
+name = "echo-agent-pager-bin"
+version = "1.0.8"
+edition.workspace = true
+license = "Apache-2.0"
+authors = ["EchoAgent"]
+default-run = "echo-agent-pager"
+
+# Composition-root binary for the EchoAgent Build TUI. The artifact is still named
+# `echo-agent-pager`. This package exists so the binary can link both the pager
+# library and the optional `echo-agent-pager-minimal` render mode: `minimal`
+# depends on `echo-agent-pager`, so the pager library cannot depend back on it
+# (cargo cycle). The binary installs the minimal-mode IoC hooks at startup.
+[[bin]]
+name = "echo-agent-pager"
+path = "src/main.rs"
+
+[dependencies]
+# The pager library (all application logic + the public API main.rs drives).
+echo-agent-pager = { path = "../echo-agent-pager" }
+# Optional scrollback-native render mode, wired in via the fn-pointer seam.
+echo-agent-pager-minimal = { path = "../echo-agent-pager-minimal" }
+
+# Agent runtime + leader/stdio/headless entry points.
+echo-agent-runtime = { workspace = true }
+echo-agent-update = { path = "../../crates/echo-agent-update" }
+echo-agent-version = { workspace = true }
+echo-agent-telemetry = { workspace = true }
+echo-agent-workspace = { workspace = true }
+echo-agent-crash-handler = { path = "../../crates/echo-agent-crash-handler" }
+echo-agent-acp = { workspace = true }
+
+# Async runtime + misc.
+tokio = { workspace = true, features = [
+    "sync",
+    "rt",
+    "macros",
+    "rt-multi-thread",
+    "signal",
+    "io-util",
+    "io-std",
+] }
+tokio-util = { workspace = true, features = ["compat"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+dunce = { workspace = true }
+semver = { workspace = true }
+echo-agent-tty-utils = { workspace = true }
+# `collect_crashed()` for the startup crash notice.
+echo-agent-active-sessions = { workspace = true }
+echo-agent-config = { workspace = true }
+echo-agent-sandbox = { path = "../../crates/echo-agent-sandbox", default-features = false }
+echo-agent-extra-ca = { workspace = true }
+
+# Binary hardening: compile-time string + control-flow obfuscation.
+obfstr = { workspace = true }
+cryptify = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+# Default allocator on Unix; gated by the `jemalloc` feature (see main.rs
+# `#[global_allocator]`, cfg(all(feature = "jemalloc", unix))).
+# `stats` is binary-scoped only (not workspace-wide) so this CLI jemalloc
+# link gets --enable-stats for stats.allocated / stats.resident mallctl.
+tikv-jemallocator = { workspace = true, optional = true, features = ["stats"] }
+# Raw mallctl for the memory-cliff arena purge hook (see
+# `purge_jemalloc_retained_pages` + the `install_release_hook` call in
+# main.rs). Same version family as the
+# allocator; adds no new build units beyond what tikv-jemallocator pulls in.
+tikv-jemalloc-sys = { workspace = true, optional = true }
+# Heap-profile / stats mallctl helpers (prof.active, prof.dump, epoch, stats.*).
+tikv-jemalloc-ctl = { workspace = true, optional = true, features = ["stats", "use_std"] }
+
+[dev-dependencies]
+serial_test = { workspace = true }
+# `PagerArgs::try_parse_from` in the CLI-parsing unit tests (needs the
+# `clap::Parser` trait in scope).
+clap = { workspace = true, features = ["derive"] }
+tempfile = { workspace = true }
+
+[features]
+default = [
+    "jemalloc",
+    "sandbox-enforce",
+    ]
+default-bazel = [
+    "jemalloc",
+    "sandbox-enforce",
+    "local-workspace",
+    ]
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]
+sandbox-enforce = ["echo-agent-pager/sandbox-enforce"]
+local-workspace = ["echo-agent-pager/local-workspace"]
+release-dist = [
+    "echo-agent-pager/release-dist",
+    ]

@@ -12,7 +12,7 @@
 #    powershell -ExecutionPolicy Bypass -File scripts/build.ps1 -AllowUnsignedPlatform  # development only
 #
 #  Prerequisites:
-#    The complete vendored Runtime source is included in the repository.
+#    The complete Agent source is included in the repository.
 #    `scripts/setup.ps1` can be used to verify checkout integrity.
 # ===========================================================================
 
@@ -114,10 +114,10 @@ try {
 
     # ---------------------------------------------------------------------------
     # 4. Vendored Runtime sanity check. Path dependencies in Cargo.toml resolve
-    #    directly into vendor/echo-agent-build, which is tracked by this repository.
+    #    directly into agent, which is tracked by this repository.
     # ---------------------------------------------------------------------------
-    Log-Step "Checking vendored Runtime source"
-    Invoke-PackagingCommand node @((Join-Path $ProjectRoot "scripts\verify-vendored-runtime.mjs"))
+    Log-Step "Checking Agent source"
+    Invoke-PackagingCommand node @((Join-Path $ProjectRoot "scripts\verify-agent-source.mjs"))
     Log-Ok "Vendored Runtime source is complete"
 
     # ---------------------------------------------------------------------------

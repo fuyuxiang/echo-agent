@@ -49,4 +49,4 @@
 - 缺少命令或连接器：显示「缺少运行依赖」；连接器尚需账号配置或授权：显示「尚未完成配置」。
 - 自动化任务只接受提示词 Skill 或预检就绪的可执行 Skill。声明的工作区写入、网络和外部操作会进入安装风险报告。
 
-清单最大 256 KiB；注入运行上下文的契约最大 4 KiB，超出时预检拒绝。具体字段和校验逻辑以 [`capability.rs`](../vendor/echo-agent-build/crates/codegen/echo-agent-tools/src/implementations/skills/capability.rs)、[`validate.rs`](../vendor/echo-agent-build/crates/codegen/echo-agent-tools/src/implementations/skills/capability/validate.rs) 及桌面端 [`skill_installer.rs`](../src-tauri/src/skill_installer.rs) 为准。
+清单最大 256 KiB；注入运行上下文的契约最大 4 KiB，超出时预检拒绝。具体字段和校验逻辑以 [`capability.rs`](../agent/crates/echo-agent-tools/src/implementations/skills/capability.rs)、[`validate.rs`](../agent/crates/echo-agent-tools/src/implementations/skills/capability/validate.rs) 及桌面端 [`skill_installer.rs`](../src-tauri/src/skill_installer.rs) 为准。

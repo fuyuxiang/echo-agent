@@ -133,7 +133,7 @@ pub struct CreateInput {
 #[tauri::command]
 pub async fn group_create(
     app: tauri::AppHandle,
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     input: CreateInput,
 ) -> Result<Group, String> {
     let project_binding = if let Some(project_id) = &input.project_id {
@@ -163,7 +163,7 @@ pub async fn group_create(
     if input.source_session_id.is_some() != input.source_team_id.is_some() {
         return Err("来源会话与任务编组必须同时指定".into());
     }
-    crate::policy::require_feature("sessions")?;
+    crate::harness::policy::require_feature("sessions")?;
     let cwd = app
         .state::<crate::shell_fs::FilesystemAccess>()
         .require_workspace(&input.cwd)?
@@ -187,8 +187,8 @@ pub async fn group_create(
     )? {
         return Ok(existing);
     }
-    crate::commands::ensure_runtime_ready(&app, &state, Some(&input.model_id)).await?;
-    crate::policy::require_model(&input.model_id)?;
+    crate::harness::commands::ensure_runtime_ready(&app, &state, Some(&input.model_id)).await?;
+    crate::harness::policy::require_model(&input.model_id)?;
     let definitions = crate::agents_store::team_agents()?;
     let name = text(&input.name, 80, "专家团名称")?;
     let goal = input.goal.unwrap_or_default();
@@ -245,8 +245,9 @@ pub async fn group_create(
                 .and_then(|models| models.get(&expert))
                 .map(String::as_str),
         )?;
-        crate::commands::ensure_runtime_ready(&app, &state, Some(&effective_model)).await?;
-        crate::policy::require_model(&effective_model)?;
+        crate::harness::commands::ensure_runtime_ready(&app, &state, Some(&effective_model))
+            .await?;
+        crate::harness::policy::require_model(&effective_model)?;
         let role = input
             .roles
             .as_ref()
@@ -793,12 +794,12 @@ fn mentioned_targets(group: &Group, body: &str) -> Vec<String> {
 #[tauri::command]
 pub async fn group_send(
     app: tauri::AppHandle,
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     group_id: String,
     mut input: SendInput,
 ) -> Result<(), String> {
     if !is_stop_request(&input) {
-        crate::commands::ensure_runtime_ready(&app, &state, None).await?;
+        crate::harness::commands::ensure_runtime_ready(&app, &state, None).await?;
     }
     let _dispatch = tokio::time::timeout(
         std::time::Duration::from_secs(30),
@@ -883,7 +884,7 @@ async fn deliver_followup(
             if let Err(error) = crate::ext::call_ext::<Value>(tx, "echo.agent/interject", crate::ext::raw_params(&json!({
                     "sessionId":sid,"expectedPromptId":work.prompt_id,"interjectionId":message.id,
                     "text":followup_text,
-                    "content":crate::agent_runtime::build_prompt_blocks(&followup_text, &message.attachments, None).map_err(|e| e.to_string())?
+                    "content":crate::harness::agent_runtime::build_prompt_blocks(&followup_text, &message.attachments, None).map_err(|e| e.to_string())?
                 }))).await {
                     tracing::warn!(%error, "group follow-up retained for next dispatch");
                 }
@@ -895,7 +896,7 @@ async fn deliver_followup(
 #[tauri::command]
 pub async fn group_control(
     app: tauri::AppHandle,
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     group_id: String,
     action: String,
     work_id: Option<String>,
@@ -1035,7 +1036,8 @@ async fn cancel_group_sessions(
     let mut errors = vec![];
     if let Some(tx) = tx {
         for (sid, prompt) in sessions {
-            if let Err(error) = crate::agent_runtime::cancel(tx, &sid, "stop", Some(&prompt)).await
+            if let Err(error) =
+                crate::harness::agent_runtime::cancel(tx, &sid, "stop", Some(&prompt)).await
             {
                 tracing::warn!(session=%sid,%error,"group cancellation unacknowledged");
                 errors.push(error.to_string());
@@ -1094,7 +1096,7 @@ fn remove_group_memory(home: &std::path::Path, group_id: &str) -> Result<(), Str
 
 #[tauri::command]
 pub async fn group_delete(
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     group_id: String,
     stop_work: bool,
 ) -> Result<DeleteResult, String> {
@@ -1102,7 +1104,7 @@ pub async fn group_delete(
 }
 
 pub(super) async fn delete_group_data(
-    state: &crate::commands::AppState,
+    state: &crate::harness::state::HarnessState,
     group_id: String,
     stop_work: bool,
 ) -> Result<DeleteResult, String> {
@@ -1129,7 +1131,7 @@ pub(super) async fn delete_group_data(
         for (sid, prompt) in sessions {
             tokio::time::timeout(
                 std::time::Duration::from_secs(20),
-                crate::agent_runtime::cancel(&tx, &sid, "stop", Some(&prompt)),
+                crate::harness::agent_runtime::cancel(&tx, &sid, "stop", Some(&prompt)),
             )
             .await
             .map_err(|_| "停止工作超时，记录已保留，请稍后重试".to_string())?
@@ -1181,7 +1183,11 @@ pub(super) async fn delete_group_data(
         changed(&group_id);
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            crate::commands::delete_group_session_data(state, sid, std::path::Path::new(cwd)),
+            crate::harness::commands::delete_group_session_data(
+                state,
+                sid,
+                std::path::Path::new(cwd),
+            ),
         )
         .await
         .map_err(|_| "执行记录清理超时，专家团记录已保留，可稍后重试".to_string())?
@@ -1268,7 +1274,7 @@ pub struct MemberSettings {
 #[tauri::command]
 pub async fn group_settings(
     app: tauri::AppHandle,
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     group_id: String,
     input: SettingsInput,
 ) -> Result<(), String> {
@@ -1288,8 +1294,8 @@ pub async fn group_settings(
         })
         .transpose()?;
     for m in &input.members {
-        crate::commands::ensure_runtime_ready(&app, &state, Some(&m.model_id)).await?;
-        crate::policy::require_model(&m.model_id)?;
+        crate::harness::commands::ensure_runtime_ready(&app, &state, Some(&m.model_id)).await?;
+        crate::harness::policy::require_model(&m.model_id)?;
     }
     db()?.update(&group_id, |g| {
         if input

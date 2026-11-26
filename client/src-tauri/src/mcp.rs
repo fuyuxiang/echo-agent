@@ -21,8 +21,8 @@ use tauri_plugin_dialog::{
     DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
 };
 
-use crate::commands::AppState;
 use crate::ext::{call_ext, call_ext_value, raw_params};
+use crate::harness::state::HarnessState;
 use echo_agent_runtime::util::config::McpServerConfig;
 
 const MAX_MCP_CONFIG_BYTES: usize = 2 * 1024 * 1024;
@@ -46,7 +46,7 @@ async fn acquire_mcp_mutation() -> Result<tokio::sync::MutexGuard<'static, ()>, 
         .map_err(|_| "MCP 配置正在被其他操作修改，请稍后重试".to_string())
 }
 
-fn validate_optional_session(state: &AppState, session_id: Option<&str>) -> Result<(), String> {
+fn validate_optional_session(state: &HarnessState, session_id: Option<&str>) -> Result<(), String> {
     if let Some(session_id) = session_id {
         validate_session_id(session_id)?;
         state.session_workspace(session_id)?;
@@ -252,7 +252,7 @@ pub struct McpMutationResult {
 /// live session state; without it the agent-level catalog is returned.
 #[tauri::command]
 pub async fn mcp_list(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: Option<String>,
     refresh: Option<bool>,
 ) -> Result<Vec<McpServerEntry>, String> {
@@ -354,7 +354,7 @@ fn map_wire_entry(wire: McpServerWire) -> McpServerEntry {
 #[tauri::command]
 pub async fn mcp_upsert(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: Option<String>,
     server: McpUpsertRequest,
 ) -> Result<McpMutationResult, String> {
@@ -372,7 +372,7 @@ pub async fn mcp_upsert(
 /// Delete an MCP server by name.
 #[tauri::command]
 pub async fn mcp_delete(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: Option<String>,
     name: String,
 ) -> Result<McpMutationResult, String> {
@@ -390,7 +390,7 @@ pub async fn mcp_delete(
 #[tauri::command]
 pub async fn mcp_toggle(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: Option<String>,
     name: String,
     enabled: bool,
@@ -417,7 +417,7 @@ pub async fn mcp_toggle(
 /// includes project/plugin policy and performs a live connection probe.
 #[tauri::command]
 pub async fn mcp_setup(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: String,
     name: String,
     values: HashMap<String, String>,
@@ -447,7 +447,7 @@ pub async fn mcp_setup(
 /// Enable/disable one advertised tool for the current session.
 #[tauri::command]
 pub async fn mcp_toggle_tool(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: String,
     server_name: String,
     tool_name: String,
@@ -1222,7 +1222,7 @@ pub async fn mcp_config_read() -> Result<McpConfigFile, String> {
 #[tauri::command]
 pub async fn mcp_config_save(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     content: String,
     session_id: Option<String>,
 ) -> Result<McpConfigSaveResult, String> {
@@ -2061,7 +2061,7 @@ struct McpAuthTriggerWire {
 /// system browser itself (`webbrowser::open` in echo-agent-mcp).
 #[tauri::command]
 pub async fn mcp_auth_trigger(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: String,
     server_name: String,
 ) -> Result<McpAuthTriggerResult, String> {
@@ -2117,7 +2117,7 @@ struct McpAuthStatusWire {
 /// List servers that EchoAgent has marked `needs_auth` for this session.
 #[tauri::command]
 pub async fn mcp_auth_status(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: String,
 ) -> Result<Vec<McpAuthStatusEntry>, String> {
     validate_session_id(&session_id)?;
@@ -2236,7 +2236,7 @@ url = "https://fixture.example/mcp"
         .unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let cwd = workspace.path().to_path_buf();
-        let runtime = crate::agent_runtime::spawn_agent_runtime(cwd.clone()).unwrap();
+        let runtime = crate::harness::agent_runtime::spawn_agent_runtime(cwd.clone()).unwrap();
         let mut rx = runtime.rx;
         let receiver = tokio::spawn(async move {
             while let Some(message) = rx.recv().await {
@@ -2251,9 +2251,18 @@ url = "https://fixture.example/mcp"
                 }
             }
         });
-        crate::agent_runtime::initialize(&runtime.tx).await.unwrap();
-        let new_session =
-            || crate::agent_runtime::new_session_with_options(&runtime.tx, &cwd, None, None, None);
+        crate::harness::agent_runtime::initialize(&runtime.tx)
+            .await
+            .unwrap();
+        let new_session = || {
+            crate::harness::agent_runtime::new_session_with_options(
+                &runtime.tx,
+                &cwd,
+                None,
+                None,
+                None,
+            )
+        };
         let a = new_session().await.unwrap();
         let b = new_session().await.unwrap();
         let call = |session: Option<&str>| {

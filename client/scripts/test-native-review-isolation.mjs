@@ -21,7 +21,7 @@ test('native acceptance strips inherited credentials, discovery overrides, and r
 });
 
 test('Runtime production compatibility discovery consistently uses controlled getter', () => {
-  const base = 'vendor/echo-agent-build/crates/codegen';
+  const base = 'agent/crates';
   const walk = directory => readdirSync(directory, { withFileTypes: true }).flatMap(item => {
     const path = join(directory, item.name);
     return item.isDirectory() && item.name !== 'tests' ? walk(path)

@@ -11,7 +11,7 @@ import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const manifestPath = join(project, "vendor/echo-agent-build/crates/codegen/echo-agent-memory/src/model-assets.json");
+export const manifestPath = join(project, "agent/crates/echo-agent-memory/src/model-assets.json");
 export const defaultDirectory = join(project, "src-tauri/resources/retrieval-models");
 const archiveName = "retrieval-models-v1.tar.gz";
 const modelRelease = {

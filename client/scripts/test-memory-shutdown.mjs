@@ -37,7 +37,7 @@ idle_timeout_secs = 1
 [features]
 remote_fetch = false
 `);
-const name = "agent_runtime::tests::memory_shutdown_checkpoints_and_cancels_a_stalled_model";
+const name = "harness::agent_runtime::tests::memory_shutdown_checkpoints_and_cancels_a_stalled_model";
 const args = executable ? ["--ignored", "--exact", name] : ["test", "--locked", "--manifest-path", "src-tauri/Cargo.toml", "--lib", name, "--", "--ignored", "--exact"];
 // A proxy may retain its upstream socket after the client cancels. This
 // acceptance must observe the client transport directly at the local fixture.

@@ -29,9 +29,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, State};
 
-use crate::bridge::{FolderTrustOutcome, FolderTrusts};
-use crate::commands::AppState;
 use crate::ext::{call_ext, raw_params};
+use crate::harness::bridge::{FolderTrustOutcome, FolderTrusts};
+use crate::harness::state::HarnessState;
 use crate::shell_fs::FilesystemAccess;
 
 // ========================================================================
@@ -93,7 +93,7 @@ fn bounded_text(value: String, max_chars: usize) -> String {
     }
 }
 
-fn require_live_session(state: &AppState, session_id: &str) -> Result<PathBuf, String> {
+fn require_live_session(state: &HarnessState, session_id: &str) -> Result<PathBuf, String> {
     if !valid_admin_id(session_id) {
         return Err("会话 ID 无效或过长".into());
     }
@@ -268,7 +268,7 @@ fn open_memory_index_at(
         db_path,
         storage.clone(),
         Default::default(),
-        crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
+        crate::harness::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
     )
     .map(Some)
     .map_err(|error| format!("open memory index {}: {error}", db_path.display()))
@@ -378,7 +378,7 @@ fn sync_memory_indexes(
             &db_path,
             storage.clone(),
             Default::default(),
-            crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
+            crate::harness::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
         )
         .map_err(|error| format!("open memory index {}: {error}", db_path.display()))?;
         if deleted {
@@ -943,7 +943,7 @@ pub fn memory_clear_session_summaries(
 /// returns rewritten text; the caller explicitly reviews and saves it.
 #[tauri::command]
 pub async fn memory_rewrite(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: String,
     raw_text: String,
     context_summary: String,
@@ -982,7 +982,10 @@ pub async fn memory_rewrite(
 
 /// Flush in-flight memory writes to disk (`echo.agent/memory/flush`).
 #[tauri::command]
-pub async fn memory_flush(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
+pub async fn memory_flush(
+    state: State<'_, HarnessState>,
+    session_id: String,
+) -> Result<bool, String> {
     require_live_session(&state, &session_id)?;
     let tx = state
         .tx
@@ -1008,11 +1011,11 @@ pub async fn memory_flush(state: State<'_, AppState>, session_id: String) -> Res
 #[tauri::command]
 pub async fn memory_dream(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: String,
 ) -> Result<bool, String> {
     require_live_session(&state, &session_id)?;
-    crate::commands::ensure_runtime_ready(&app, &state, None).await?;
+    crate::harness::commands::ensure_runtime_ready(&app, &state, None).await?;
     let tx = state
         .tx
         .lock()
@@ -1064,7 +1067,7 @@ pub fn memory_records_get(
                 .count()
         })
         .unwrap_or(0);
-    let config = crate::agent_config::memory_config_get()?;
+    let config = crate::harness::agent_config::memory_config_get()?;
     let dream_undo = cwd.as_ref().and_then(|_| {
         echo_agent_memory::dream::latest_undo_version(&storage)
             .inspect_err(|error| tracing::warn!(%error, "unable to read memory undo version"))
@@ -1237,7 +1240,7 @@ struct RawSearchHit {
 #[tauri::command]
 pub async fn session_search(
     filesystem: State<'_, FilesystemAccess>,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     query: String,
     cwd: Option<String>,
     limit: Option<u32>,
@@ -1252,7 +1255,7 @@ pub async fn session_search(
 #[tauri::command]
 pub async fn session_search_page(
     filesystem: State<'_, FilesystemAccess>,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     query: String,
     cwd: Option<String>,
     limit: Option<u32>,
@@ -1271,7 +1274,7 @@ pub async fn session_search_page(
 
 async fn search_session_page(
     filesystem: &FilesystemAccess,
-    state: &AppState,
+    state: &HarnessState,
     query: String,
     cwd: Option<String>,
     limit: Option<u32>,
@@ -1393,7 +1396,7 @@ fn rewind_point_values(value: &serde_json::Value) -> Result<&[serde_json::Value]
 /// List the prompts a session can rewind to.
 #[tauri::command]
 pub async fn rewind_points(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: String,
 ) -> Result<Vec<RewindPoint>, String> {
     require_live_session(&state, &session_id)?;
@@ -1577,7 +1580,7 @@ fn rewind_execute_payload(
 
 #[tauri::command]
 pub async fn rewind_preview(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     filesystem: State<'_, FilesystemAccess>,
     session_id: String,
     target_prompt_index: u32,
@@ -1623,7 +1626,7 @@ fn valid_rewind_revision(revision: &str) -> bool {
 
 #[tauri::command]
 pub async fn rewind_execute(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     filesystem: State<'_, FilesystemAccess>,
     session_id: String,
     target_prompt_index: u32,
@@ -1663,7 +1666,7 @@ pub enum RewindUndoResult {
 
 #[tauri::command]
 pub async fn rewind_undo(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     filesystem: State<'_, FilesystemAccess>,
     session_id: String,
     preview_revision: Option<String>,
@@ -1690,7 +1693,7 @@ pub async fn rewind_undo(
 }
 
 async fn request_rewind(
-    state: &AppState,
+    state: &HarnessState,
     filesystem: &FilesystemAccess,
     session_id: &str,
     target_prompt_index: Option<u32>,
@@ -1706,8 +1709,9 @@ async fn request_rewind(
         crate::automations::require_no_pending_session_recovery(session_id)?;
     }
     require_live_session(state, session_id)?;
-    let workspace =
-        crate::commands::trusted_existing_session_cwd(state, filesystem, session_id, None)?;
+    let workspace = crate::harness::commands::trusted_existing_session_cwd(
+        state, filesystem, session_id, None,
+    )?;
     if payload.get("fileGuard").is_some() {
         crate::legacy_workspace::ensure_workspace_available(&workspace)?;
     }
@@ -1797,16 +1801,17 @@ fn parse_session_fork_response(
 /// explore a different direction. Returns the new session id.
 #[tauri::command]
 pub async fn session_fork(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: String,
     cwd: Option<String>,
 ) -> Result<String, String> {
     if !valid_admin_id(&session_id) {
         return Err("会话 ID 无效或过长".into());
     }
-    let _permission_transition_guard = crate::permission_config::permission_transition_lock()
-        .lock()
-        .await;
+    let _permission_transition_guard =
+        crate::harness::permission_config::permission_transition_lock()
+            .lock()
+            .await;
     let trusted_cwd = state.session_workspace(&session_id)?;
     if let Some(claimed) = cwd.as_deref() {
         let claimed = std::path::PathBuf::from(claimed)
@@ -1831,7 +1836,7 @@ pub async fn session_fork(
         .map_err(|error| format!("分叉会话 {forked_id} 已创建，但历史知识来源复制失败：{error}。原会话记录已保留，请在历史列表中打开分叉或重试。"))?;
     // A fork is a continuation of the same task context, so it inherits the
     // source task's permission mode without affecting either task afterwards.
-    if crate::policy::locked_permission_mode().is_none() {
+    if crate::harness::policy::locked_permission_mode().is_none() {
         let source_mode = crate::meta::permission_mode(&session_id);
         // Forking creates a persisted continuation, but does not make it a
         // resident Runtime session. If sidecar persistence is unavailable,
@@ -1865,7 +1870,7 @@ pub struct SlashCommand {
 #[tauri::command]
 pub async fn commands_list(
     filesystem: State<'_, FilesystemAccess>,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: Option<String>,
     cwd: Option<String>,
 ) -> Result<Vec<SlashCommand>, String> {
@@ -1960,7 +1965,7 @@ fn parse_slash_commands(v: &serde_json::Value) -> Vec<SlashCommand> {
 /// the command palette).
 #[tauri::command]
 pub async fn prompt_history(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     limit: Option<u32>,
 ) -> Result<Vec<String>, String> {
     let tx = state
@@ -2158,7 +2163,7 @@ async fn list_running_tasks(
 /// List running background tasks and subagents owned by one live session.
 #[tauri::command]
 pub async fn tasks_list(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: String,
 ) -> Result<Vec<RunningTask>, String> {
     if !valid_admin_id(&session_id) {
@@ -2215,7 +2220,7 @@ async fn kill_running_task(
 /// Kill a running background task or subagent through its owning endpoint.
 #[tauri::command]
 pub async fn task_kill(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: String,
     task_id: String,
     source: RunningTaskSource,
@@ -2266,7 +2271,7 @@ pub async fn folder_trust_respond(
 /// session-bound, authenticated automation MCP server.
 #[tauri::command]
 pub async fn set_agent_mode(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: String,
     mode: String,
 ) -> Result<(), String> {
@@ -2288,7 +2293,7 @@ pub async fn set_agent_mode(
         .unwrap()
         .clone()
         .ok_or("agent not initialized")?;
-    crate::agent_runtime::set_session_mode_id(&tx, &session_id, mode_id)
+    crate::harness::agent_runtime::set_session_mode_id(&tx, &session_id, mode_id)
         .await
         .map_err(|error| error.to_string())?;
     crate::automation::set_session_mode(&session_id, automation_mode).await?;
@@ -2300,7 +2305,7 @@ pub async fn set_agent_mode(
 /// the authoritative value with `CurrentModeUpdate`.
 #[tauri::command]
 pub async fn set_plan_mode(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: String,
     enabled: bool,
 ) -> Result<(), String> {
@@ -2311,7 +2316,7 @@ pub async fn set_plan_mode(
         .unwrap()
         .clone()
         .ok_or("agent not initialized")?;
-    crate::agent_runtime::set_session_mode(&tx, &session_id, enabled)
+    crate::harness::agent_runtime::set_session_mode(&tx, &session_id, enabled)
         .await
         .map_err(|error| error.to_string())?;
     crate::automation::set_session_mode(&session_id, crate::automation::AutomationMode::Default)
@@ -2324,7 +2329,7 @@ pub async fn set_plan_mode(
 /// is now a set, not a state-dependent toggle.
 #[tauri::command]
 pub async fn toggle_plan_mode(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: String,
     enabled: bool,
 ) -> Result<(), String> {
@@ -2341,7 +2346,7 @@ pub async fn toggle_plan_mode(
 #[tauri::command]
 pub async fn internal_reload(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     kind: String,
 ) -> Result<(), String> {
     let tx = state
@@ -2351,7 +2356,7 @@ pub async fn internal_reload(
         .clone()
         .ok_or("agent not initialized")?;
     if kind == "models" {
-        return crate::commands::reload_models_and_sync(&app, &state, &tx).await;
+        return crate::harness::commands::reload_models_and_sync(&app, &state, &tx).await;
     }
     request_internal_reload_and_wait(&tx, &kind).await
 }
@@ -2443,7 +2448,7 @@ pub(crate) async fn request_model_reload_and_wait(
 /// a frontend round-trip. Organization Skill synchronization uses this to
 /// tighten or expand every resident session immediately after its signed
 /// server directory set changes.
-pub(crate) fn request_internal_reload(state: &AppState, kind: &str) -> Result<(), String> {
+pub(crate) fn request_internal_reload(state: &HarnessState, kind: &str) -> Result<(), String> {
     use echo_agent_acp::{AcpAgentMessage, AcpArgs};
     let tx = state
         .tx
@@ -2618,8 +2623,8 @@ fn normalize_plugin_action(
         "reload" => ensure_action_keys(object, &["type"]),
         "install" => {
             ensure_action_keys(object, &["type", "source"])?;
-            crate::policy::require_feature("skills")?;
-            crate::policy::require_skill_upload()?;
+            crate::harness::policy::require_feature("skills")?;
+            crate::harness::policy::require_skill_upload()?;
             let source = required_action_string(object, "source", MAX_LOCAL_PATH_CHARS)?;
             let source = normalize_install_source(filesystem, source)?;
             object.insert("source".into(), serde_json::Value::String(source));
@@ -2639,8 +2644,8 @@ fn normalize_plugin_action(
         }
         "update" => {
             ensure_action_keys(object, &["type", "pluginId"])?;
-            crate::policy::require_feature("skills")?;
-            crate::policy::require_skill_upload()?;
+            crate::harness::policy::require_feature("skills")?;
+            crate::harness::policy::require_skill_upload()?;
             if let Some(plugin_id) = object.get("pluginId") {
                 if !plugin_id.is_null() {
                     let plugin_id = plugin_id
@@ -2653,8 +2658,8 @@ fn normalize_plugin_action(
         }
         "add" => {
             ensure_action_keys(object, &["type", "path"])?;
-            crate::policy::require_feature("skills")?;
-            crate::policy::require_skill_upload()?;
+            crate::harness::policy::require_feature("skills")?;
+            crate::harness::policy::require_skill_upload()?;
             let path = required_action_string(object, "path", MAX_LOCAL_PATH_CHARS)?;
             let path = filesystem.require_authorized_package_source(Path::new(path))?;
             if !path.is_dir() {
@@ -2693,7 +2698,7 @@ fn normalize_plugin_action(
         "enable" | "disable" => {
             ensure_action_keys(object, &["type", "pluginId"])?;
             if kind == "enable" {
-                crate::policy::require_feature("skills")?;
+                crate::harness::policy::require_feature("skills")?;
             }
             let plugin_id = required_action_string(object, "pluginId", MAX_ADMIN_ID_CHARS)?;
             require_listed_plugin_id(plugin_id)
@@ -2788,7 +2793,7 @@ fn annotate_plugin_management(value: &mut serde_json::Value) {
 /// can render the full shape (skill/agent/hook/mcp counts etc.).
 #[tauri::command]
 pub async fn plugins_list(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     session_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     if let Some(session_id) = session_id.as_deref() {
@@ -2817,7 +2822,7 @@ pub async fn plugins_list(
 /// Returns the action's outcome.
 #[tauri::command]
 pub async fn plugins_action(
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     filesystem: State<'_, FilesystemAccess>,
     session_id: String,
     mut action: serde_json::Value,
@@ -3396,7 +3401,7 @@ mod tests {
                 &storage.workspace_dir().join("index.sqlite"),
                 storage.clone(),
                 Default::default(),
-                crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
+                crate::harness::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
             )
             .unwrap();
             index.reindex_file(&global_file, "global").unwrap();
@@ -3423,7 +3428,7 @@ mod tests {
                 &storage.workspace_dir().join("index.sqlite"),
                 storage.clone(),
                 Default::default(),
-                crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
+                crate::harness::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
             )
             .unwrap();
             let generated = super::open_memory_index_at(storage, &storage.index_path())
@@ -3453,7 +3458,7 @@ mod tests {
             &second_storage.workspace_dir().join("index.sqlite"),
             second_storage,
             Default::default(),
-            crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
+            crate::harness::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
         )
         .unwrap();
         assert!(index
@@ -3499,7 +3504,7 @@ mod tests {
             &db_path,
             storage.clone(),
             Default::default(),
-            crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
+            crate::harness::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
         )
         .unwrap();
         index.reindex_file(&direct, "session").unwrap();
@@ -3524,7 +3529,7 @@ mod tests {
             &db_path,
             storage,
             Default::default(),
-            crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
+            crate::harness::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
         )
         .unwrap();
         let indexed = index.all_indexed_paths().unwrap();
@@ -3579,7 +3584,7 @@ mod tests {
             &db,
             storage.clone(),
             Default::default(),
-            crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
+            crate::harness::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
         )
         .unwrap();
         index.reindex_file(&owned[0], "session").unwrap();
@@ -3597,7 +3602,7 @@ mod tests {
             &db,
             storage,
             Default::default(),
-            crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
+            crate::harness::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
         )
         .unwrap();
         assert!(index.search_fts("FirstSourceToken", 10).unwrap().is_empty());

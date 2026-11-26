@@ -41,7 +41,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use tauri_plugin_autostart::ManagerExt;
 
-use crate::commands::AppState;
+use crate::harness::state::HarnessState;
 use crate::workflow_skills::{self, WorkflowBinding};
 
 #[cfg(unix)]
@@ -551,12 +551,12 @@ fn resident_runtime_has_work() -> bool {
 
 pub(crate) fn start_runtime_supervisor(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        use crate::bridge::{FolderTrusts, Permissions, PlanApprovals, Questions};
+        use crate::harness::bridge::{FolderTrusts, Permissions, PlanApprovals, Questions};
         use std::{sync::atomic::Ordering, time::Duration};
         let mut retry_delay = Duration::from_secs(2);
         loop {
             tokio::time::sleep(retry_delay).await;
-            let state = app.state::<AppState>();
+            let state = app.state::<HarnessState>();
             if crate::EXIT_IN_PROGRESS.load(Ordering::Acquire)
                 || state
                     .tx
@@ -564,7 +564,7 @@ pub(crate) fn start_runtime_supervisor(app: AppHandle) {
                     .unwrap()
                     .as_ref()
                     .is_some_and(|tx| !tx.is_closed())
-                || crate::policy::require_feature("automations").is_err()
+                || crate::harness::policy::require_feature("automations").is_err()
             {
                 retry_delay = Duration::from_secs(2);
                 continue;
@@ -574,7 +574,7 @@ pub(crate) fn start_runtime_supervisor(app: AppHandle) {
                 retry_delay = Duration::from_secs(10);
                 continue;
             }
-            let result = crate::commands::agent_init(
+            let result = crate::harness::commands::agent_init(
                 app.clone(),
                 state,
                 app.state::<Permissions>(),
@@ -1810,7 +1810,7 @@ pub fn automation_publication_decide(
     id: String,
     approve: bool,
 ) -> Result<(), String> {
-    crate::policy::require_feature("automations")?;
+    crate::harness::policy::require_feature("automations")?;
     let completion = {
         let _guard = record_access().lock().unwrap();
         let mut fact = pending_terminal(&id)?.ok_or("该运行没有待确认的发布")?;
@@ -2052,13 +2052,13 @@ async fn restore_launch_permissions(
     if !had_full_access {
         return Ok(());
     }
-    let _guard = crate::permission_config::permission_transition_lock()
+    let _guard = crate::harness::permission_config::permission_transition_lock()
         .lock()
         .await;
-    let target_mode = crate::permission_config::permission_mode_for_session();
+    let target_mode = crate::harness::permission_config::permission_mode_for_session();
     let mut reset = Ok(());
     for _ in 0..2 {
-        reset = crate::permission_config::sync_runtime_session_permission_mode(
+        reset = crate::harness::permission_config::sync_runtime_session_permission_mode(
             tx,
             session_id,
             &target_mode,
@@ -2137,7 +2137,7 @@ async fn run_session_cleanup(
 fn quarantine_permission_failure(app: &AppHandle, tx: &echo_agent_acp::AcpAgentTx, error: &str) {
     let reason = format!("自动化会话权限恢复失败（{error}）；Agent 已安全停止，请重新启动");
     if app
-        .state::<AppState>()
+        .state::<HarnessState>()
         .mark_runtime_dead_if_current(tx, &reason)
     {
         let _ = app.emit(
@@ -2165,7 +2165,7 @@ async fn cleanup_expired_session(
         },
         async {
             match tx {
-                Some(tx) => crate::agent_runtime::close_session(tx, session_id)
+                Some(tx) => crate::harness::agent_runtime::close_session(tx, session_id)
                     .await
                     .map_err(|e| e.to_string()),
                 None => Ok(()),
@@ -2179,7 +2179,8 @@ async fn cleanup_expired_session(
             quarantine_permission_failure(app, tx, error);
         }
     }
-    app.state::<AppState>().forget_session_workspace(session_id);
+    app.state::<HarnessState>()
+        .forget_session_workspace(session_id);
     outcome.result()
 }
 
@@ -2208,7 +2209,7 @@ fn persisted_turn_completion(
     mut reader: impl BufRead,
     session_id: &str,
     prompt_id: &str,
-) -> Option<crate::bridge::CompleteEvent> {
+) -> Option<crate::harness::bridge::CompleteEvent> {
     let mut line = Vec::new();
     let mut completion = None;
     loop {
@@ -2240,9 +2241,10 @@ fn persisted_turn_completion(
             if params["sessionId"].as_str() == Some(session_id)
                 && update["sessionUpdate"].as_str() == Some("turn_completed")
             {
-                if let Some(event) =
-                    crate::bridge::parse_live_durable_completion(session_id, params, update)
-                        .filter(|event| event.prompt_id == prompt_id)
+                if let Some(event) = crate::harness::bridge::parse_live_durable_completion(
+                    session_id, params, update,
+                )
+                .filter(|event| event.prompt_id == prompt_id)
                 {
                     completion = Some(event);
                 }
@@ -2267,7 +2269,7 @@ fn run_session_directory(record: &AutomationRunRecord) -> Option<PathBuf> {
 
 fn read_persisted_turn_completion(
     record: &AutomationRunRecord,
-) -> Option<crate::bridge::CompleteEvent> {
+) -> Option<crate::harness::bridge::CompleteEvent> {
     let session_id = record.session_id.as_deref()?;
     let prompt_id = record.prompt_id.as_deref()?;
     let directory = run_session_directory(record)?;
@@ -2371,7 +2373,7 @@ async fn recover_interrupted_runs(
             return;
         }
         if let Some(completion) = completion {
-            crate::bridge::handle_prompt_complete(app, completion).await;
+            crate::harness::bridge::handle_prompt_complete(app, completion).await;
             continue;
         }
         let _guard = record_access().lock().unwrap();
@@ -2427,7 +2429,7 @@ async fn recover_interrupted_runs(
 fn runtime_channel_is_current(app: &AppHandle, tx: &echo_agent_acp::AcpAgentTx) -> bool {
     !tx.is_closed()
         && app
-            .state::<AppState>()
+            .state::<HarnessState>()
             .tx
             .lock()
             .unwrap()
@@ -2859,7 +2861,7 @@ fn validate_automation_at(a: &Automation, now: DateTime<Local>) -> Result<(), St
         return Err("自动化权限模式无效".into());
     }
     if a.permission_mode == "fullAccess" {
-        crate::permission_config::ensure_always_approve_available()?;
+        crate::harness::permission_config::ensure_always_approve_available()?;
     }
     if !matches!(a.schedule_type.as_str(), "recurring" | "once") {
         return Err("自动化调度类型无效".into());
@@ -3029,11 +3031,11 @@ pub async fn automations_snapshot(app: AppHandle) -> Result<AutomationSnapshot, 
         }
         records
     };
-    let pending = crate::bridge::pending_interactions(
-        &app.state::<crate::bridge::Permissions>(),
-        &app.state::<crate::bridge::Questions>(),
-        &app.state::<crate::bridge::PlanApprovals>(),
-        &app.state::<crate::bridge::FolderTrusts>(),
+    let pending = crate::harness::bridge::pending_interactions(
+        &app.state::<crate::harness::bridge::Permissions>(),
+        &app.state::<crate::harness::bridge::Questions>(),
+        &app.state::<crate::harness::bridge::PlanApprovals>(),
+        &app.state::<crate::harness::bridge::FolderTrusts>(),
         None,
     )
     .await;
@@ -3262,10 +3264,10 @@ fn cleanup_record(id: &str) -> Result<AutomationRunRecord, String> {
 #[tauri::command]
 pub async fn automation_run_retry_cleanup(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     id: String,
 ) -> Result<(), String> {
-    crate::policy::require_feature("automations")?;
+    crate::harness::policy::require_feature("automations")?;
     let record = cleanup_record(&id)?;
     if !record_needs_cleanup(&record) {
         return Ok(());
@@ -3352,7 +3354,7 @@ fn bind_dedicated_session(automation: &Automation, session_id: &str) -> Result<(
 
 #[tauri::command]
 pub fn automations_reset_session(id: String) -> Result<Automation, String> {
-    crate::policy::require_feature("automations")?;
+    crate::harness::policy::require_feature("automations")?;
     let _guard = store_access().lock().unwrap();
     let mut store = read_store()?;
     let item = store
@@ -3370,10 +3372,10 @@ pub fn automations_reset_session(id: String) -> Result<Automation, String> {
 #[tauri::command]
 pub async fn automation_run_stop(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     id: String,
 ) -> Result<(), String> {
-    crate::policy::require_feature("automations")?;
+    crate::harness::policy::require_feature("automations")?;
     let (session_id, prompt_id, completion) = {
         let _guard = record_access().lock().unwrap();
         let mut store = read_records()?;
@@ -3431,7 +3433,7 @@ pub async fn automation_run_stop(
                     &session_id,
                     prompt_id.as_deref()
                 ),
-                crate::agent_runtime::cancel_from_user(
+                crate::harness::agent_runtime::cancel_from_user(
                     &tx,
                     &session_id,
                     "stop",
@@ -3439,7 +3441,7 @@ pub async fn automation_run_stop(
                 )
             );
             if let Err(error) = runtime {
-                if !error.is::<crate::agent_runtime::StalePromptCancel>() {
+                if !error.is::<crate::harness::agent_runtime::StalePromptCancel>() {
                     return Err(error.to_string());
                 }
             }
@@ -3773,7 +3775,7 @@ fn result_from_updates(bytes: &[u8], prompt_id: Option<&str>) -> AutomationRunRe
 
 #[tauri::command]
 pub async fn automation_run_result(id: String) -> Result<AutomationRunResult, String> {
-    crate::policy::require_feature("automations")?;
+    crate::harness::policy::require_feature("automations")?;
     tauri::async_runtime::spawn_blocking(move || read_run_result(&id))
         .await
         .map_err(|error| format!("读取运行结果失败：{error}"))?
@@ -3917,13 +3919,13 @@ pub(crate) fn workflow_run_evidence(id: &str) -> Result<workflow_skills::Evidenc
 #[tauri::command]
 pub fn automations_set_workflow_skill(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     id: String,
     expected: Option<WorkflowBinding>,
     workflow_id: Option<String>,
     version: Option<u32>,
 ) -> Result<Automation, String> {
-    crate::policy::require_feature("automations")?;
+    crate::harness::policy::require_feature("automations")?;
     let before = {
         let _guard = store_access().lock().unwrap();
         read_store()?
@@ -3947,7 +3949,7 @@ pub fn automations_set_workflow_skill(
             let cwd = app
                 .state::<crate::shell_fs::FilesystemAccess>()
                 .require_workspace(&cwd.to_string_lossy())?;
-            let model = crate::commands::resolve_automation_model_id(
+            let model = crate::harness::commands::resolve_automation_model_id(
                 Some(&app),
                 &state,
                 before.model_id.as_deref(),
@@ -3993,22 +3995,22 @@ pub fn automations_set_workflow_skill(
 #[tauri::command]
 pub fn automations_save(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     mut automation: Automation,
 ) -> Result<Automation, String> {
-    crate::policy::require_feature("automations")?;
+    crate::harness::policy::require_feature("automations")?;
     // Normalize before validation so an empty renderer field has exactly the
     // same Auto semantics as an omitted field.
     blank_to_none(&mut automation.model_id);
     if let Some(model_id) = automation.model_id.as_deref() {
-        crate::policy::require_model(model_id)?;
+        crate::harness::policy::require_model(model_id)?;
     }
     // Saving an ACTIVE-looking task that can never run is a product bug. Auto
     // and fixed selections must both resolve against the live Runtime now; the
     // same check is repeated at dispatch because configuration can later change.
     // Paused tasks remain editable while offline and are validated on resume/run.
     if automation.status.eq_ignore_ascii_case("ACTIVE") {
-        crate::commands::resolve_automation_model_id(
+        crate::harness::commands::resolve_automation_model_id(
             Some(&app),
             &state,
             automation.model_id.as_deref(),
@@ -4067,7 +4069,7 @@ pub fn automations_save(
 
 #[tauri::command]
 pub fn automations_delete(app: AppHandle, id: String) -> Result<(), String> {
-    crate::policy::require_feature("automations")?;
+    crate::harness::policy::require_feature("automations")?;
     let _record_guard = record_access().lock().unwrap();
     if read_records()?.records.iter().any(|record| {
         record.automation_id == id
@@ -4100,11 +4102,11 @@ pub fn automations_delete(app: AppHandle, id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn automations_set_status(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     id: String,
     status: String,
 ) -> Result<(), String> {
-    crate::policy::require_feature("automations")?;
+    crate::harness::policy::require_feature("automations")?;
     let _record_guard = record_access().lock().unwrap();
     let mut records = read_records()?;
     let _guard = store_access().lock().unwrap();
@@ -4115,7 +4117,7 @@ pub fn automations_set_status(
             .iter()
             .find(|automation| automation.id == id)
             .ok_or_else(|| format!("automation {id} not found"))?;
-        crate::commands::resolve_automation_model_id(
+        crate::harness::commands::resolve_automation_model_id(
             Some(&app),
             &state,
             automation.model_id.as_deref(),
@@ -4157,10 +4159,10 @@ pub fn automations_set_status(
 #[tauri::command]
 pub async fn automations_run(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     id: String,
 ) -> Result<String, String> {
-    crate::policy::require_feature("automations")?;
+    crate::harness::policy::require_feature("automations")?;
     require_automation_cleanup_complete(&id)?;
     let automation = {
         let _guard = store_access().lock().unwrap();
@@ -4190,7 +4192,7 @@ pub async fn automations_run(
         .unwrap()
         .clone()
         .ok_or("agent not initialized")?;
-    let resolved_model_id = crate::commands::resolve_automation_model_id(
+    let resolved_model_id = crate::harness::commands::resolve_automation_model_id(
         Some(&app),
         &state,
         automation.model_id.as_deref(),
@@ -4308,9 +4310,9 @@ async fn execute_automation_run(
     }
     let recovery = record_recovery(&record_id);
     let dispatch = match &recovery {
-        Ok(Some((_, model_id))) => crate::commands::resolve_automation_model_id(
+        Ok(Some((_, model_id))) => crate::harness::commands::resolve_automation_model_id(
             Some(&app),
-            &app.state::<AppState>(),
+            &app.state::<HarnessState>(),
             Some(model_id),
         ).map(|model| (model, "应用已恢复。仅依据会话中已保存的工具结果汇总结论，并明确哪些步骤尚未完成或无法确认。".to_owned())),
         Ok(None) => async {
@@ -4321,9 +4323,9 @@ async fn execute_automation_run(
             .await
             .map_err(|_| "读取自动化项目、技能或连接器配置超时，请重试")??;
             let prompt = automation_prompt(&automation, &context);
-            let model = crate::commands::select_automation_execution_model(
+            let model = crate::harness::commands::select_automation_execution_model(
                 &app,
-                &app.state::<AppState>(),
+                &app.state::<HarnessState>(),
                 &automation,
                 &prompt,
             )
@@ -4400,7 +4402,7 @@ async fn execute_automation_run(
     let mut session_guard = None;
     let recovery_session = recovery.ok().flatten().map(|(session, _)| session);
     let result = {
-        let state = app.state::<AppState>();
+        let state = app.state::<HarnessState>();
         tokio::time::timeout(
             AUTOMATION_RUN_TIMEOUT,
             run_automation_once(
@@ -4423,7 +4425,7 @@ async fn execute_automation_run(
 
     match result {
         Ok(Ok((session_id, completion))) => {
-            crate::bridge::handle_prompt_complete(&app, completion).await;
+            crate::harness::bridge::handle_prompt_complete(&app, completion).await;
             release_full_access_session(&app, &tx, &session_id).await;
         }
         Ok(Err(error)) => {
@@ -4433,7 +4435,7 @@ async fn execute_automation_run(
             match record_session_id(&record_id) {
                 Ok(Some(session_id)) => {
                     release_full_access_session(&app, &tx, &session_id).await;
-                    app.state::<AppState>()
+                    app.state::<HarnessState>()
                         .forget_session_workspace(&session_id);
                 }
                 Ok(None) => {}
@@ -4537,7 +4539,7 @@ async fn commit_created_automation_session(
     let mut permission_reset_error = None;
     if full_access {
         for _ in 0..2 {
-            match crate::permission_config::sync_runtime_session_permission_mode(
+            match crate::harness::permission_config::sync_runtime_session_permission_mode(
                 tx,
                 session_id,
                 target_mode,
@@ -4557,7 +4559,7 @@ async fn commit_created_automation_session(
     if let Some(error) = &permission_reset_error {
         quarantine(error);
     }
-    let error = match crate::agent_runtime::cancel(tx, session_id, "stop", None).await {
+    let error = match crate::harness::agent_runtime::cancel(tx, session_id, "stop", None).await {
         Ok(()) => error,
         Err(cancel_error) => format!("{error}；停止未完成的自动化会话失败：{cancel_error}"),
     };
@@ -4577,13 +4579,18 @@ async fn resume_automation_session(
     already_live: bool,
 ) -> Result<(), String> {
     if !already_live {
-        crate::agent_runtime::load_session(tx, session_id, cwd, permission_mode)
+        crate::harness::agent_runtime::load_session(tx, session_id, cwd, permission_mode)
             .await
             .map_err(|e| format!("无法恢复任务专属会话：{e}。请重置会话上下文后重试"))?;
     }
-    crate::agent_runtime::set_session_model_with_effort(tx, session_id, model_id, reasoning_effort)
-        .await
-        .map_err(|e| e.to_string())
+    crate::harness::agent_runtime::set_session_model_with_effort(
+        tx,
+        session_id,
+        model_id,
+        reasoning_effort,
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 struct AutomationRunRequest<'a> {
@@ -4598,11 +4605,11 @@ struct AutomationRunRequest<'a> {
 /// Create or resume the task's owned session and send one identified prompt.
 async fn run_automation_once(
     app: &AppHandle,
-    state: &AppState,
+    state: &HarnessState,
     tx: &echo_agent_acp::AcpAgentTx,
     request: AutomationRunRequest<'_>,
     session_guard: &mut Option<tokio::sync::OwnedMutexGuard<()>>,
-) -> Result<(String, crate::bridge::CompleteEvent), String> {
+) -> Result<(String, crate::harness::bridge::CompleteEvent), String> {
     let AutomationRunRequest {
         automation,
         cwd,
@@ -4612,9 +4619,9 @@ async fn run_automation_once(
         prompt,
     } = request;
     require_automation_cleanup_complete(&automation.id)?;
-    crate::policy::require_feature("automations")?;
-    crate::policy::require_model(resolved_model_id)?;
-    crate::commands::ensure_runtime_ready(app, state, Some(resolved_model_id)).await?;
+    crate::harness::policy::require_feature("automations")?;
+    crate::harness::policy::require_model(resolved_model_id)?;
+    crate::harness::commands::ensure_runtime_ready(app, state, Some(resolved_model_id)).await?;
     if !cwd.is_dir() {
         return Err(format!("自动化工作空间不存在：{}", cwd.display()));
     }
@@ -4677,12 +4684,12 @@ async fn run_automation_once(
         }
     }
     if full_access {
-        crate::permission_config::ensure_always_approve_available()?;
+        crate::harness::permission_config::ensure_always_approve_available()?;
     }
-    let permission_guard = crate::permission_config::permission_transition_lock()
+    let permission_guard = crate::harness::permission_config::permission_transition_lock()
         .lock()
         .await;
-    let target_mode = crate::permission_config::permission_mode_for_session();
+    let target_mode = crate::harness::permission_config::permission_mode_for_session();
     let (session_id, mut admission) = if let Some(session_id) = existing {
         // Do not replay into an already-live actor; resume persisted history
         // only after a restart, then reapply the task's exact execution model.
@@ -4706,7 +4713,7 @@ async fn run_automation_once(
                 .unwrap()
                 .insert(session_id.clone());
         }
-        crate::permission_config::sync_runtime_session_permission_mode(
+        crate::harness::permission_config::sync_runtime_session_permission_mode(
             tx,
             &session_id,
             if full_access {
@@ -4718,7 +4725,7 @@ async fn run_automation_once(
         .await?;
         (session_id, Some(admission))
     } else {
-        let session_id = crate::agent_runtime::new_session_with_options(
+        let session_id = crate::harness::agent_runtime::new_session_with_options(
             tx,
             cwd,
             Some(resolved_model_id),
@@ -4799,13 +4806,13 @@ async fn run_automation_once(
             },
         );
     }
-    let completion = crate::agent_runtime::prompt_for_automation(
+    let completion = crate::harness::agent_runtime::prompt_for_automation(
         tx,
         &admission,
         &session_id,
         &prompt_id,
         prompt,
-        crate::agent_runtime::AutomationPromptOptions {
+        crate::harness::agent_runtime::AutomationPromptOptions {
             checkpoint: automation.recover_after_interruption,
             recovering,
             pinned_workflow_id: automation
@@ -4949,9 +4956,11 @@ async fn resolve_execution_context(
     }
 
     if !automation.skills.is_empty() {
-        let catalog =
-            crate::skills::skills_list_with_tx(tx, Some(cwd.to_string_lossy().into_owned()))
-                .await?;
+        let catalog = crate::harness::skills::skills_list_with_tx(
+            tx,
+            Some(cwd.to_string_lossy().into_owned()),
+        )
+        .await?;
         for selected in &automation.skills {
             let skill = catalog
                 .iter()
@@ -5054,7 +5063,7 @@ fn automation_prompt(automation: &Automation, resolved: &AutomationExecutionCont
 
 #[tauri::command]
 pub fn automation_records_archive(id: String, archived: bool) -> Result<(), String> {
-    crate::policy::require_feature("automations")?;
+    crate::harness::policy::require_feature("automations")?;
     let _guard = record_access().lock().unwrap();
     let mut records = read_records()?;
     let record = records
@@ -5078,7 +5087,7 @@ pub fn automation_records_archive(id: String, archived: bool) -> Result<(), Stri
 
 #[tauri::command]
 pub fn automation_records_delete(id: String) -> Result<(), String> {
-    crate::policy::require_feature("automations")?;
+    crate::harness::policy::require_feature("automations")?;
     let _guard = record_access().lock().unwrap();
     let mut records = read_records()?;
     let record = records
@@ -5229,8 +5238,8 @@ fn recover_queued_dispatches(
 
 /// Scheduler tick. Fires any automation whose `next_run_at` has passed.
 pub async fn scheduler_tick(app: &AppHandle, tx: &echo_agent_acp::AcpAgentTx, default_cwd: &Path) {
-    let state = app.state::<AppState>();
-    if let Err(error) = crate::commands::ensure_runtime_ready(app, &state, None).await {
+    let state = app.state::<HarnessState>();
+    if let Err(error) = crate::harness::commands::ensure_runtime_ready(app, &state, None).await {
         tracing::debug!(%error, "automation scheduler paused while Agent Runtime is not ready");
         return;
     }
@@ -6312,11 +6321,11 @@ mod tests {
                 "cancellationCategory".into(),
                 serde_json::json!("HookDenied"),
             )])));
-            let response_event = crate::agent_runtime::completion_from_prompt_response(
+            let response_event = crate::harness::agent_runtime::completion_from_prompt_response(
                 response, "session", "prompt",
             )
             .unwrap();
-            let notification = crate::bridge::parse_complete_event(
+            let notification = crate::harness::bridge::parse_complete_event(
                 &serde_json::json!({"sessionId":"session","promptId":"prompt","stopReason":"cancelled","_meta":{"cancellationCategory":"HookDenied"}}),
             );
             let events = if response_first {
@@ -6336,8 +6345,8 @@ mod tests {
             let record = records.records.first_mut().unwrap();
             let mut notifications = 0;
             for event in events {
-                let ok = crate::bridge::completion_disposition(&event)
-                    == crate::bridge::CompletionDisposition::Success;
+                let ok = crate::harness::bridge::completion_disposition(&event)
+                    == crate::harness::bridge::CompletionDisposition::Success;
                 notifications += usize::from(finalize_record(
                     record,
                     ok,

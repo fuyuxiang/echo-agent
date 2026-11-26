@@ -540,7 +540,7 @@ async fn export_to_path_for_session(
 pub async fn document_export(
     app: AppHandle,
     access: tauri::State<'_, crate::shell_fs::FilesystemAccess>,
-    state: tauri::State<'_, crate::commands::AppState>,
+    state: tauri::State<'_, crate::harness::state::HarnessState>,
     session_id: Option<String>,
     request: DocumentExportRequest,
 ) -> Result<Option<DocumentExportReceipt>, String> {

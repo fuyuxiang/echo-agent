@@ -802,14 +802,14 @@ impl AutomationManager {
         self.emit_status(session_id).await;
         let tx = self
             .app
-            .state::<crate::commands::AppState>()
+            .state::<crate::harness::state::HarnessState>()
             .tx
             .lock()
             .unwrap()
             .clone();
         let runtime = async {
             if let Some(tx) = tx {
-                crate::agent_runtime::cancel(&tx, session_id, "pause", None)
+                crate::harness::agent_runtime::cancel(&tx, session_id, "pause", None)
                     .await
                     .map_err(|e| e.to_string())?;
             }
@@ -846,7 +846,7 @@ impl AutomationManager {
         session.task.lock().unwrap().pause(reason);
         let tx = self
             .app
-            .state::<crate::commands::AppState>()
+            .state::<crate::harness::state::HarnessState>()
             .tx
             .lock()
             .unwrap()
@@ -854,7 +854,7 @@ impl AutomationManager {
         let runtime = async {
             if let Some(tx) = tx {
                 if let Err(error) =
-                    crate::agent_runtime::cancel(&tx, session_id, "pause", None).await
+                    crate::harness::agent_runtime::cancel(&tx, session_id, "pause", None).await
                 {
                     let error = error.to_string();
                     // A restored history can have no live model actor yet.
@@ -3458,13 +3458,13 @@ fn computer_approval_plan(
 async fn ensure_image_model(manager: &AutomationManager, session_id: &str) -> Result<(), String> {
     let tx = manager
         .app
-        .state::<crate::commands::AppState>()
+        .state::<crate::harness::state::HarnessState>()
         .tx
         .lock()
         .unwrap()
         .clone()
         .ok_or("agent_not_ready")?;
-    let info = crate::agent_runtime::session_info(&tx, session_id)
+    let info = crate::harness::agent_runtime::session_info(&tx, session_id)
         .await
         .map_err(|e| e.to_string())?;
     if let Some(model) = info["model"].as_str() {
@@ -3531,7 +3531,7 @@ async fn computer_tool(
             workspace: Some(
                 manager
                     .app
-                    .state::<crate::commands::AppState>()
+                    .state::<crate::harness::state::HarnessState>()
                     .session_workspace(session_id)?,
             ),
         };
@@ -3571,7 +3571,7 @@ async fn computer_tool(
             workspace: Some(
                 manager
                     .app
-                    .state::<crate::commands::AppState>()
+                    .state::<crate::harness::state::HarnessState>()
                     .session_workspace(session_id)?,
             ),
         };
@@ -4101,7 +4101,7 @@ fn validate_upload_paths(
     const MAX_TOTAL_BYTES: u64 = 500 * 1024 * 1024;
 
     let requested = required_string_array(args, "paths", 20)?;
-    let state = manager.app.state::<crate::commands::AppState>();
+    let state = manager.app.state::<crate::harness::state::HarnessState>();
     let workspace = state.session_workspace(session_id)?;
     let workspace = workspace
         .canonicalize()

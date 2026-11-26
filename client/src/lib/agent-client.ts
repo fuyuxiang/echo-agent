@@ -3,7 +3,7 @@ import { isPrivateMemoryLookup } from "./private-memory-lookup";
 /**
  * agent-client — typed wrappers over the EchoAgent Tauri commands and events.
  *
- * The Rust backend (src-tauri/src/commands.rs) exposes a command table that
+ * The Rust backend (src-tauri/src/harness/commands.rs) exposes a command table that
  * drives the in-process EchoAgent agent over ACP. Streamed updates arrive as the
  * `agent://update`, `agent://permission`, `agent://complete` events, whose
  * payloads are the types in ./types.ts.

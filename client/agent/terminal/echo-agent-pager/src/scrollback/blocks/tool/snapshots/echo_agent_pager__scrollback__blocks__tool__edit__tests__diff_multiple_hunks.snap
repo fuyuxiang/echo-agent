@@ -1,0 +1,9 @@
+---
+source: terminal/echo-agent-pager/src/scrollback/blocks/tool/edit.rs
+expression: diff_outputs_to_string(&outputs)
+---
+  5  first hunk context
+  6  deleted in first
+  … 43 unchanged lines
+  49  second hunk context
+  50  inserted in second

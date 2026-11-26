@@ -14,9 +14,6 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: [
-      // The package's development condition points at unpublished TS sources.
-      // Always bundle its shipped ESM build in dev, tests, and production.
-      { find: /^@apollo-design\/docx-preview$/, replacement: path.resolve(__dirname, "node_modules/@apollo-design/docx-preview/dist/docx-preview.mjs") },
       // Mirror EchoAgent's `@` alias so ported components resolve unchanged.
       { find: "@", replacement: path.resolve(__dirname, "src") },
     ],

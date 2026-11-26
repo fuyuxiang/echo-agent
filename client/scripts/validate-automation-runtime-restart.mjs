@@ -78,7 +78,7 @@ const root = await realpath(await mkdtemp("/tmp/echo-runtime-recovery-"));
 const cwd = join(root, "workspace");
 await mkdir(cwd);
 await mkdir(join(root, "legacy"));
-const testName = "agent_runtime::tests::automation_runtime_recovery_real_model";
+const testName = "harness::agent_runtime::tests::automation_runtime_recovery_real_model";
 let current = null;
 let gated = false;
 let providerRequests = 0;

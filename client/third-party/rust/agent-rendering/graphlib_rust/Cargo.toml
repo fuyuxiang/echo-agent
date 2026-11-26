@@ -1,0 +1,48 @@
+# Vendored third-party crate.
+#
+# Upstream:  graphlib_rust 0.0.2 (Apache-2.0)
+# Source of truth: https://crates.io/crates/graphlib_rust/0.0.2
+#
+# Why vendored: the Rust port of dagre.js's graphlib, used by the vendored
+# `dagre_rust` layout engine and directly by the Warp `mermaid-to-svg` engine.
+# It is a young single-author crate on the untrusted-input render path, so
+# vendoring gives a full audit surface and immunity to upstream yanks. See
+# third_party/mermaid-to-svg and crates/echo-agent-mermaid.
+#
+# ============================================================================
+# VENDORING NOTES — re-apply / re-bless ALL of the following on every upgrade:
+# ============================================================================
+# Local modifications to the upstream source:
+#  1. `cargo fmt` (rustfmt) applied so the crate satisfies the workspace fmt
+#     gate; no semantic change. The `ordered_hashmap` dep is repointed to the
+#     sibling vendored crate (path dep below).
+#
+# Re-audit checklist:
+#  - No `unsafe`, no filesystem / env / network I/O in the vendored source.
+[package]
+workspace = "../../../../agent"
+name = "graphlib_rust"
+version = "0.0.2"
+edition = "2021"
+description = "Dagre's graphlib in Rust (vendored, library-only)"
+license = "Apache-2.0"
+repository = "https://github.com/r3alst/graphlib-rust"
+publish = false
+
+[lib]
+name = "graphlib_rust"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+ordered_hashmap = { path = "../ordered_hashmap" }
+
+# Vendored third-party code is not restyled to our lint standards, so silence
+# the lints it trips under the workspace's `-D warnings` (the source is kept
+# verbatim — only this manifest carries the allows). Our own crate
+# (echo-agent-mermaid) is still fully linted.
+[lints.rust]
+noop_method_call = "allow"
+
+[lints.clippy]
+all = { level = "allow", priority = -1 }

@@ -231,14 +231,14 @@ paths = ["{relative_plugin}"]
         std::time::Duration::from_secs(60),
         tokio::task::spawn_blocking({
             let cwd = workspace.path().to_path_buf();
-            move || crate::agent_runtime::spawn_agent_runtime(cwd)
+            move || crate::harness::agent_runtime::spawn_agent_runtime(cwd)
         }),
     )
     .await
     .unwrap()
     .unwrap()
     .unwrap();
-    let crate::agent_runtime::AgentHandle {
+    let crate::harness::agent_runtime::AgentHandle {
         tx,
         mut rx,
         cancel,
@@ -328,7 +328,7 @@ paths = ["{relative_plugin}"]
     });
     tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        crate::agent_runtime::initialize(&tx),
+        crate::harness::agent_runtime::initialize(&tx),
     )
     .await
     .expect("isolated Runtime ACP initialize exceeded 30s")
@@ -375,9 +375,9 @@ paths = ["{relative_plugin}"]
         .any(|t| t["name"] == "create_team"));
     let sid = tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        crate::agent_runtime::group_session(
+        crate::harness::agent_runtime::group_session(
             &tx,
-            crate::agent_runtime::GroupSessionRequest {
+            crate::harness::agent_runtime::GroupSessionRequest {
                 cwd: workspace.path(),
                 model: "group-test/mock",
                 profile: &profile,
@@ -406,7 +406,7 @@ paths = ["{relative_plugin}"]
     remember_owner(&sid, &gid, &member);
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        crate::agent_runtime::group_prompt(&tx, &sid, "prompt-1", "请确认身份", &[]),
+        crate::harness::agent_runtime::group_prompt(&tx, &sid, "prompt-1", "请确认身份", &[]),
     )
     .await
     .unwrap()
@@ -456,7 +456,7 @@ paths = ["{relative_plugin}"]
             .unwrap();
         let completion = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            crate::agent_runtime::group_prompt(&tx, &sid, prompt_id, probe, &[]),
+            crate::harness::agent_runtime::group_prompt(&tx, &sid, prompt_id, probe, &[]),
         )
         .await
         .unwrap()
@@ -483,9 +483,9 @@ paths = ["{relative_plugin}"]
     // first classifier block must reach approval; bypass must not weaken the
     // read-only leaf allowlist; Ask must clear both native bypass flags again.
     for (index, mode) in ["auto", "always-approve", "ask"].into_iter().enumerate() {
-        crate::agent_runtime::group_session(
+        crate::harness::agent_runtime::group_session(
             &tx,
-            crate::agent_runtime::GroupSessionRequest {
+            crate::harness::agent_runtime::GroupSessionRequest {
                 cwd: workspace.path(),
                 model: "group-test/mock",
                 profile: &profile,
@@ -513,9 +513,15 @@ paths = ["{relative_plugin}"]
             })
             .unwrap();
         let output_start = chunks.lock().unwrap().len();
-        crate::agent_runtime::group_prompt(&tx, &sid, &prompt, "GROUP_MCP_ALLOWED_PROBE", &[])
-            .await
-            .unwrap();
+        crate::harness::agent_runtime::group_prompt(
+            &tx,
+            &sid,
+            &prompt,
+            "GROUP_MCP_ALLOWED_PROBE",
+            &[],
+        )
+        .await
+        .unwrap();
         assert!(
             chunks.lock().unwrap()[output_start..].contains("READ_ONLY_TOOL_PROBE_OK"),
             "mode {mode} must finish the actual tool after approval"
@@ -538,7 +544,7 @@ paths = ["{relative_plugin}"]
                 })
                 .unwrap();
             let output_start = chunks.lock().unwrap().len();
-            crate::agent_runtime::group_prompt(
+            crate::harness::agent_runtime::group_prompt(
                 &tx,
                 &sid,
                 "bypass-readonly-deny",
@@ -588,9 +594,9 @@ paths = ["{relative_plugin}"]
     .await
     .unwrap();
     assert_eq!(closed["outcome"], "closed");
-    crate::agent_runtime::group_session(
+    crate::harness::agent_runtime::group_session(
         &tx,
-        crate::agent_runtime::GroupSessionRequest {
+        crate::harness::agent_runtime::GroupSessionRequest {
             cwd: workspace.path(),
             model: "group-test/mock",
             profile: &profile,
@@ -604,7 +610,7 @@ paths = ["{relative_plugin}"]
     )
     .await
     .unwrap();
-    crate::agent_runtime::group_prompt(&tx, &sid, "prompt-2", "继续确认身份", &[])
+    crate::harness::agent_runtime::group_prompt(&tx, &sid, "prompt-2", "继续确认身份", &[])
         .await
         .unwrap();
     {
@@ -674,9 +680,9 @@ paths = ["{relative_plugin}"]
     // multi-agent dispatch and its lifetime. Native goals/workflows/subagents
     // must not create invisible background work outside the group work graph.
     let executor = group.members[1].id.clone();
-    let execution_sid = crate::agent_runtime::group_session(
+    let execution_sid = crate::harness::agent_runtime::group_session(
         &tx,
-        crate::agent_runtime::GroupSessionRequest {
+        crate::harness::agent_runtime::GroupSessionRequest {
             cwd: workspace.path(),
             model: "group-test/mock",
             profile: &profile,
@@ -709,7 +715,7 @@ paths = ["{relative_plugin}"]
         })
         .unwrap();
     remember_owner(&execution_sid, &gid, &executor);
-    crate::agent_runtime::group_prompt(
+    crate::harness::agent_runtime::group_prompt(
         &tx,
         &execution_sid,
         "execution-prompt",
@@ -797,7 +803,7 @@ paths = ["{relative_plugin}"]
     )
     .unwrap()
     .expect("explicit scoped memory must be saved");
-    let probe = crate::agent_runtime::GroupSessionRequest {
+    let probe = crate::harness::agent_runtime::GroupSessionRequest {
         cwd: workspace.path(),
         model: "group-test/reviewer",
         profile: &profile,
@@ -831,7 +837,7 @@ paths = ["{relative_plugin}"]
     .unwrap();
     memory_probe(
         &tx,
-        crate::agent_runtime::GroupSessionRequest {
+        crate::harness::agent_runtime::GroupSessionRequest {
             cwd: workspace.path(),
             model: "group-test/reviewer",
             profile: &profile,
@@ -876,7 +882,7 @@ paths = ["{relative_plugin}"]
     // New model, new actor, same member memory namespace.
     memory_probe(
         &tx,
-        crate::agent_runtime::GroupSessionRequest {
+        crate::harness::agent_runtime::GroupSessionRequest {
             cwd: workspace.path(),
             model: "group-test/mock",
             profile: &profile,
@@ -910,7 +916,7 @@ paths = ["{relative_plugin}"]
     .unwrap();
     memory_probe(
         &tx,
-        crate::agent_runtime::GroupSessionRequest {
+        crate::harness::agent_runtime::GroupSessionRequest {
             cwd: workspace.path(),
             model: "group-test/mock",
             profile: &profile,
@@ -936,7 +942,7 @@ paths = ["{relative_plugin}"]
     );
     memory_probe(
         &tx,
-        crate::agent_runtime::GroupSessionRequest {
+        crate::harness::agent_runtime::GroupSessionRequest {
             cwd: workspace.path(),
             model: "group-test/mock",
             profile: &profile,
@@ -1029,7 +1035,7 @@ paths = ["{relative_plugin}"]
     }
     // Exercise the exact implementation used by the Tauri command with an
     // empty in-memory workspace map, as after an application restart.
-    let state = crate::commands::AppState::default();
+    let state = crate::harness::state::HarnessState::default();
     *state.tx.lock().unwrap() = Some(tx.clone());
     let deleted = delete_group_data(&state, gid.clone(), true).await.unwrap();
     assert_eq!(deleted.session_ids.len(), native_sessions.len());
@@ -1062,7 +1068,7 @@ paths = ["{relative_plugin}"]
         std::fs::write(path.join("updates.jsonl"), "private orphan history").unwrap();
     }
     std::fs::write(orphan_paths[0].join("summary.json"), "{broken").unwrap();
-    crate::agent_runtime::delete_session(&tx, &orphan_id, None)
+    crate::harness::agent_runtime::delete_session(&tx, &orphan_id, None)
         .await
         .unwrap();
     assert!(orphan_paths.iter().all(|path| !path.exists()));
@@ -1075,7 +1081,7 @@ paths = ["{relative_plugin}"]
         let redirected = home.join("sessions/orphan-a").join(&redirected_id);
         std::os::unix::fs::symlink(&protected, &redirected).unwrap();
         assert!(
-            crate::agent_runtime::delete_session(&tx, &redirected_id, None)
+            crate::harness::agent_runtime::delete_session(&tx, &redirected_id, None)
                 .await
                 .is_err()
         );
@@ -1095,14 +1101,14 @@ paths = ["{relative_plugin}"]
 
 async fn memory_probe(
     tx: &echo_agent_acp::AcpAgentTx,
-    request: crate::agent_runtime::GroupSessionRequest<'_>,
+    request: crate::harness::agent_runtime::GroupSessionRequest<'_>,
     prompt: &str,
 ) -> String {
     let gid = request.group_id.to_string();
     let member = request.member_id.to_string();
     let model = request.model.to_string();
     let discussion = request.discussion;
-    let sid = crate::agent_runtime::group_session(tx, request)
+    let sid = crate::harness::agent_runtime::group_session(tx, request)
         .await
         .unwrap();
     db().unwrap()
@@ -1140,7 +1146,7 @@ async fn memory_probe(
         &Knowledge::default(),
     )
     .unwrap();
-    crate::agent_runtime::group_prompt(tx, &sid, prompt, &text, &[])
+    crate::harness::agent_runtime::group_prompt(tx, &sid, prompt, &text, &[])
         .await
         .unwrap();
     runtime::flush(&sid).unwrap();
@@ -1196,9 +1202,15 @@ async fn followup_contract(
         let sid = sid.to_owned();
         let prompt = work.prompt_id.clone();
         async move {
-            crate::agent_runtime::group_prompt(&tx, &sid, &prompt, "INTERJECTION_PROBE", &[])
-                .await
-                .unwrap()
+            crate::harness::agent_runtime::group_prompt(
+                &tx,
+                &sid,
+                &prompt,
+                "INTERJECTION_PROBE",
+                &[],
+            )
+            .await
+            .unwrap()
         }
     });
     tokio::time::timeout(std::time::Duration::from_secs(10), async {

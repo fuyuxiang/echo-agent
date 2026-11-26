@@ -981,7 +981,7 @@ pub(crate) fn preload_speech(app: &tauri::AppHandle) {
 
 fn resolve_minutes_target(
     app: &tauri::AppHandle,
-    state: &crate::commands::AppState,
+    state: &crate::harness::state::HarnessState,
 ) -> Result<
     (
         MeetingMinutesTarget,
@@ -990,7 +990,7 @@ fn resolve_minutes_target(
     String,
 > {
     let revision = crate::providers::model_config_revision();
-    let model_id = crate::commands::meeting_default_model_id(app, state)?;
+    let model_id = crate::harness::commands::meeting_default_model_id(app, state)?;
     let access = crate::providers::configured_model_access(&model_id)
         .map_err(|error| error.replace("模型", "默认会议纪要模型"))?;
     if revision != crate::providers::model_config_revision() {
@@ -1011,7 +1011,7 @@ fn resolve_minutes_target(
 #[tauri::command]
 pub fn meeting_minutes_target(
     app: tauri::AppHandle,
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
 ) -> Result<MeetingMinutesTarget, String> {
     resolve_minutes_target(&app, &state).map(|(target, _)| target)
 }
@@ -1077,7 +1077,7 @@ async fn summarize(
 #[tauri::command]
 pub async fn meeting_process(
     app: tauri::AppHandle,
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     meeting_id: String,
     auto_minutes: Option<bool>,
 ) -> Result<MeetingRecord, String> {
@@ -1110,7 +1110,7 @@ pub async fn meeting_process(
 #[tauri::command]
 pub async fn meeting_regenerate_minutes(
     app: tauri::AppHandle,
-    state: State<'_, crate::commands::AppState>,
+    state: State<'_, crate::harness::state::HarnessState>,
     meeting_id: String,
     target: MeetingMinutesTarget,
 ) -> Result<MeetingRecord, String> {

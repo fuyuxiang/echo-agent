@@ -292,9 +292,9 @@ fn embedding_config() -> MemoryEmbeddingConfig {
     crate::retrieval_models::initialize();
     MemoryEmbeddingConfig {
         provider: "local".to_owned(),
-        model: Some(crate::agent_runtime::MEMORY_EMBEDDING_MODEL.to_owned()),
-        dimensions: crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
-        endpoint: Some(crate::agent_runtime::MEMORY_EMBEDDING_ENDPOINT.to_owned()),
+        model: Some(crate::harness::agent_runtime::MEMORY_EMBEDDING_MODEL.to_owned()),
+        dimensions: crate::harness::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
+        endpoint: Some(crate::harness::agent_runtime::MEMORY_EMBEDDING_ENDPOINT.to_owned()),
         api_key: None,
         send_dimensions: false,
     }
@@ -317,8 +317,9 @@ fn coarse_search_config(candidate_count: usize) -> MemorySearchConfig {
 fn reranker_config() -> MemorySearchConfig {
     let mut config = MemorySearchConfig::default();
     config.reranker.enabled = true;
-    config.reranker.endpoint = Some(crate::agent_runtime::MEMORY_RERANK_ENDPOINT.to_owned());
-    config.reranker.model = Some(crate::agent_runtime::MEMORY_RERANK_MODEL.to_owned());
+    config.reranker.endpoint =
+        Some(crate::harness::agent_runtime::MEMORY_RERANK_ENDPOINT.to_owned());
+    config.reranker.model = Some(crate::harness::agent_runtime::MEMORY_RERANK_MODEL.to_owned());
     config.reranker.api_key = None;
     config
 }
@@ -326,7 +327,7 @@ fn reranker_config() -> MemorySearchConfig {
 fn embedding_provider() -> Option<ConfiguredEmbeddingProvider> {
     ConfiguredEmbeddingProvider::from_session(
         &embedding_config(),
-        crate::agent_runtime::MEMORY_EMBEDDING_ENDPOINT.to_owned(),
+        crate::harness::agent_runtime::MEMORY_EMBEDDING_ENDPOINT.to_owned(),
         String::new(),
     )
 }
@@ -644,7 +645,7 @@ fn open_index_at(root: &Path) -> Result<MemoryIndex, String> {
         &root.join(INDEX_DATABASE),
         memory_storage_at(root),
         MemoryIndexConfig::default(),
-        crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
+        crate::harness::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
     )
     .map_err(|error| format!("open personal knowledge index: {error}"))
 }
@@ -792,7 +793,7 @@ fn sync_index(force: bool) -> Result<SyncResult, String> {
         version: INDEX_VERSION,
         generation: root.file_name().unwrap().to_string_lossy().into_owned(),
         index_fingerprint: target_fingerprint(),
-        embedding_model: crate::agent_runtime::MEMORY_EMBEDDING_MODEL.to_owned(),
+        embedding_model: crate::harness::agent_runtime::MEMORY_EMBEDDING_MODEL.to_owned(),
         last_updated_at: Some(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -883,7 +884,7 @@ async fn embed_pending(root: &Path, max_batches: Option<usize>) -> Result<(usize
             .map_err(|error| format!("personal knowledge embedding request failed: {error}"))?;
         if embeddings.len() != batch.len()
             || embeddings.iter().any(|embedding| {
-                embedding.len() != crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS
+                embedding.len() != crate::harness::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS
                     || embedding.iter().any(|value| !value.is_finite())
             })
         {
@@ -997,8 +998,8 @@ fn index_status_snapshot() -> PersonalKnowledgeIndexStatus {
         embedded_chunk_count,
         pending_embedding_count,
         last_updated_at: manifest.last_updated_at,
-        embedding_model: crate::agent_runtime::MEMORY_EMBEDDING_MODEL,
-        rerank_model: crate::agent_runtime::MEMORY_RERANK_MODEL,
+        embedding_model: crate::harness::agent_runtime::MEMORY_EMBEDDING_MODEL,
+        rerank_model: crate::harness::agent_runtime::MEMORY_RERANK_MODEL,
     }
 }
 
@@ -1274,7 +1275,7 @@ async fn search_hybrid(
     let backend = MemoryBackendImpl::new(root.join(INDEX_DATABASE), memory_storage_at(&root))
         .with_embedding(
             embedding_config(),
-            crate::agent_runtime::MEMORY_EMBEDDING_ENDPOINT.to_owned(),
+            crate::harness::agent_runtime::MEMORY_EMBEDDING_ENDPOINT.to_owned(),
             None,
         )
         .with_search_config(config)
@@ -1948,7 +1949,7 @@ mod tests {
         assert_eq!(embedding.dimensions, 768);
         assert_eq!(
             embedding.endpoint.as_deref(),
-            Some(crate::agent_runtime::MEMORY_EMBEDDING_ENDPOINT)
+            Some(crate::harness::agent_runtime::MEMORY_EMBEDDING_ENDPOINT)
         );
         assert!(embedding.api_key.is_none());
         assert_eq!(
@@ -1957,7 +1958,7 @@ mod tests {
         );
         assert_eq!(
             search.reranker.endpoint.as_deref(),
-            Some(crate::agent_runtime::MEMORY_RERANK_ENDPOINT)
+            Some(crate::harness::agent_runtime::MEMORY_RERANK_ENDPOINT)
         );
         assert!(search.reranker.api_key.is_none());
         assert!(search.reranker.enabled);
@@ -2002,7 +2003,7 @@ mod tests {
     fn indexed_cache_results_are_mapped_back_to_original_sources() {
         let manifest = IndexManifest {
             version: INDEX_VERSION,
-            embedding_model: crate::agent_runtime::MEMORY_EMBEDDING_MODEL.to_owned(),
+            embedding_model: crate::harness::agent_runtime::MEMORY_EMBEDDING_MODEL.to_owned(),
             generation: String::new(),
             index_fingerprint: String::new(),
             warnings: Vec::new(),

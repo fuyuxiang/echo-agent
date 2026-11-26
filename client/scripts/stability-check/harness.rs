@@ -11,7 +11,7 @@ mod desktop_window;
 fn show_main_window(_: &tauri::AppHandle) {}
 fn request_graceful_exit(_: tauri::AppHandle) {}
 extern crate self as echo_agent_tools;
-#[path = "../../vendor/echo-agent-build/crates/codegen/echo-agent-tools/src/util/process_safety.rs"]
+#[path = "../../agent/crates/echo-agent-tools/src/util/process_safety.rs"]
 pub mod process_safety;
 pub mod util {
     pub use crate::process_safety;

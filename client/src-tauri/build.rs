@@ -3,7 +3,7 @@ use std::process::Command;
 fn check_release_models(manifest_dir: &std::path::Path) {
     for (source, directory, prepare) in [
         (
-            "../vendor/echo-agent-build/crates/codegen/echo-agent-memory/src/model-assets.json",
+            "../agent/crates/echo-agent-memory/src/model-assets.json",
             "resources/retrieval-models",
             "pnpm retrieval:prepare",
         ),

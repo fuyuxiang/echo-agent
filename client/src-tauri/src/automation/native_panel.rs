@@ -1996,7 +1996,7 @@ mod desktop {
     ) -> Result<SourceFile, String> {
         let app = window.app_handle();
         let workspace = app
-            .state::<crate::commands::AppState>()
+            .state::<crate::harness::state::HarnessState>()
             .session_workspace(session)?;
         let filesystem = app.state::<crate::shell_fs::FilesystemAccess>();
         let root = filesystem.require_workspace(&workspace.to_string_lossy())?;

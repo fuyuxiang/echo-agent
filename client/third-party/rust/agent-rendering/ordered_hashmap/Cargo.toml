@@ -1,0 +1,52 @@
+# Vendored third-party crate.
+#
+# Upstream:  ordered_hashmap 0.0.3 (Apache-2.0)
+# Source of truth: https://crates.io/crates/ordered_hashmap/0.0.3
+#
+# Why vendored: transitive dependency of the vendored `graphlib_rust` and
+# `dagre_rust` layout crates (the Warp `mermaid-to-svg` engine stack). It is a
+# young single-author crate on the untrusted-input render path, so vendoring
+# gives a full audit surface and immunity to upstream yanks. See
+# crates/echo-agent-mermaid and third_party/mermaid-to-svg.
+#
+# ============================================================================
+# VENDORING NOTES — re-apply / re-bless ALL of the following on every upgrade:
+# ============================================================================
+# Local modifications to the upstream source:
+#  1. NOT VENDORED: the upstream `tests/` integration test (library-only
+#     vendoring; the tests add no layout/render coverage).
+#  2. `cargo fmt` (rustfmt) applied to `src/lib.rs` so the crate satisfies the
+#     workspace fmt gate; no semantic change.
+#
+# Re-audit checklist:
+#  - UNSAFE: src/lib.rs has two `unsafe` blocks in `iter_mut`/`values_mut`
+#    (raw-pointer re-borrow to hand out `&mut` while iterating `keys`). Sound
+#    today (the keys vec and the map are disjoint fields, never aliased); the
+#    `[lints.clippy] all = allow` below does NOT relax unsafe review — re-verify
+#    on every upgrade.
+[package]
+workspace = "../../../../agent"
+name = "ordered_hashmap"
+version = "0.0.3"
+edition = "2021"
+description = "Ordered HashMap preserving insertion order (vendored, library-only)"
+license = "Apache-2.0"
+repository = "https://github.com/r3alst/ordered-hashmap"
+publish = false
+
+[lib]
+name = "ordered_hashmap"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+
+# Vendored third-party code is not restyled to our lint standards, so silence
+# the lints it trips under the workspace's `-D warnings` (the source is kept
+# verbatim — only this manifest carries the allows). Our own crate
+# (echo-agent-mermaid) is still fully linted.
+[lints.rust]
+mismatched_lifetime_syntaxes = "allow"
+
+[lints.clippy]
+all = { level = "allow", priority = -1 }

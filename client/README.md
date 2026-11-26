@@ -89,13 +89,14 @@ macOS 首次使用需在系统设置中为实际运行的应用授予“辅助�
 
 ## 架构与数据流
 
-EchoAgent 使用 React 18 构建界面，Tauri 2 与 Rust 负责桌面能力、状态和进程管理。Agent Runtime 作为**进程内组件**运行，通过类型化 ACP Channel 与宿主通信。浏览器和电脑操作通过绑定当前任务的本地 MCP 服务交给 Runtime 使用。
+EchoAgent 使用 React 18 构建界面，Tauri 2 与 Rust 负责桌面能力、状态和进程管理。Desktop Harness 协调运行代次、会话、权限与事件，通过类型化 ACP Channel 调用同进程的 Agent Runtime。Runtime 负责多轮执行、模型调用、工具、记忆和会话持久化。浏览器和电脑操作由当前任务绑定的本地 MCP 服务提供。
 
 ```mermaid
 flowchart LR
     User["用户"] --> UI["React 界面"]
     UI <-->|Tauri 命令与事件| Host["Rust 桌面宿主"]
-    Host <-->|ACP Channel| Runtime["内嵌 Agent Runtime"]
+    Host --> Harness["Desktop Harness"]
+    Harness <-->|ACP Channel| Runtime["内嵌 Agent Runtime"]
     Host --> Office["Office Worker 与随包 Node.js"]
     Host --> Workspace["工作目录与本地数据"]
     Runtime --> Workspace
@@ -105,9 +106,12 @@ flowchart LR
 | 目录 | 职责 |
 | --- | --- |
 | [`src/`](src/) | React 界面、状态管理与前端领域逻辑。 |
-| [`src-tauri/src/`](src-tauri/src/) | Tauri 命令、ACP 桥接、权限策略、存储、文档及自动化后端。 |
-| [`vendor/echo-agent-build/`](vendor/echo-agent-build/) | 锁定的内嵌 Agent Runtime 源码快照。 |
+| [`src-tauri/`](src-tauri/) | Tauri 宿主与平台、业务服务。桌面运行控制位于 [`src/harness/`](src-tauri/src/harness/)。 |
+| [`agent/`](agent/) | 自主维护的 Agent 源码与 Cargo workspace。内嵌 Runtime 在 `crates/`，终端客户端在 `terminal/`。 |
+| [`third-party/`](third-party/) · [`LICENSES/`](LICENSES/) | 本地维护的第三方源码及独立分发资源的许可。 |
 | [`scripts/`](scripts/) · [`docs/`](docs/) | 构建、验证、发行脚本与专题文档。 |
+
+完整调用链、模块归属、目录对照和依赖规则见 [架构与维护边界](docs/architecture.md)。
 
 插件可启用／禁用，按来源卸载受管理的安装包或移除用户配置路径。卸载前会列出同一安装包内受影响的插件，外部来源可打开目录管理。操作失败保留错误信息以便重试。
 
@@ -125,7 +129,7 @@ macOS 使用单色品牌标识，点击展开菜单；Windows 使用透明背景
 
 个人知识库结合中文双字词索引、英文关键词与向量召回，再筛选和重排相关段落；支持保留 Word 段落／表格、Excel 工作表／共享字符串和 PPT 实际展示顺序与页码。宽表按单元格地址保留全部非空值，避免空列展开或数据覆盖；模型维护操作失败时仍保留可用模型，并单独显示错误。长中文文本按 token 预算切分，并保留标题和重叠上下文。升级模型会在独立索引代次中准备，原始文档与旧索引保留。日常记忆自动回忆不运行重排，语义等待预算为 650ms，超时返回关键词结果；显式深度查询可重排。组织知识继续使用组织服务的模型、权限、范围和引用，不复用个人索引；知识来源会保存在会话中，阻止检索结论经自动整理变成个人事实。
 
-向量生成和重排在本机完成；参与回答的资料和自动整理记忆的内容仍会交给当前对话模型。离线模型目录结构为 `embedding/{model.onnx,tokenizer.json}` 与 `reranker/{model.onnx,tokenizer.json}`；准确下载版本、文件名和 SHA256 在 `vendor/echo-agent-build/crates/codegen/echo-agent-memory/src/model-assets.json`。原模型说明：[Embedding](https://huggingface.co/BAAI/bge-base-zh-v1.5)、[Reranker](https://huggingface.co/BAAI/bge-reranker-base)。
+向量生成和重排在本机完成；参与回答的资料和自动整理记忆的内容仍会交给当前对话模型。离线模型目录结构为 `embedding/{model.onnx,tokenizer.json}` 与 `reranker/{model.onnx,tokenizer.json}`；准确下载版本、文件名和 SHA256 在 `agent/crates/echo-agent-memory/src/model-assets.json`。原模型说明：[Embedding](https://huggingface.co/BAAI/bge-base-zh-v1.5)、[Reranker](https://huggingface.co/BAAI/bge-reranker-base)。
 
 开发与打包时自动运行 `pnpm retrieval:prepare`，优先复用 `src-tauri/resources/retrieval-models/` 中已通过校验的模型。需要补齐时从固定的 [GitHub Release](https://github.com/fuyuxiang/echo-agent-desktop/releases/tag/retrieval-models-v1) 下载模型包，校验压缩包的 SHA256 后用系统 `tar` 解包，再逐文件校验。离线构建可运行 `pnpm retrieval:prepare --source /path/to/models`，或设置 `ECHO_RETRIEVAL_MODELS_SOURCE` 指向上述离线目录。`pnpm retrieval:check` 检查所有文件的 SHA256；Release 编译也会强制校验，缺失或损坏会中止构建。安装包携带模型与推理运行时的许可说明。
 

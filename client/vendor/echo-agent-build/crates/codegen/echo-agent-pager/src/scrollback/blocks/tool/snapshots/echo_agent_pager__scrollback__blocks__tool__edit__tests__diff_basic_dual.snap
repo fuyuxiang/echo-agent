@@ -1,8 +1,0 @@
----
-source: crates/codegen/echo-agent-pager/src/scrollback/blocks/tool/edit.rs
-expression: diff_outputs_to_string(&outputs)
----
-  10 10  let x = 1;
-  11     let y = 2;
-     11  let y = 3;
-  12 12  let z = 4;

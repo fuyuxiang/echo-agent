@@ -19,7 +19,7 @@ class DownloadIntegrityError(ValueError):
     """A response arrived, but it was not the pinned release archive."""
 
 
-# The Linux and macOS ARM hashes also appear in vendor/echo-agent-build/bin/protoc.
+# The Linux and macOS ARM hashes also appear in agent/bin/protoc.
 ASSETS = {
     ("Linux", "x86_64"): ("linux-x86_64", "3e866620c5be27664f3d2fa2d656b5f3e09b5152b42f1bedbf427b333e90021a"),
     ("Linux", "arm64"): ("linux-aarch_64", "6427349140e01f06e049e707a58709a4f221ae73ab9a0425bc4a00c8d0e1ab32"),

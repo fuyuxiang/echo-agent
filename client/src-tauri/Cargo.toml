@@ -34,12 +34,12 @@ notify-rust = "=4.18.0"
 # with the direct reqwest dependency below.
 # Same upstream version, with a host-managed Windows installer handoff so
 # failed installer launches cannot bypass recording/session persistence.
-tauri-plugin-updater = { path = "../vendor/tauri-plugin-updater", version = "=2.9.0" }
+tauri-plugin-updater = { path = "../third-party/rust/tauri-plugin-updater", version = "=2.9.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 rusqlite = { version = "0.41.1", features = ["bundled", "fallible_uint"] }
-echo-agent-core = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-core" }
+echo-agent-core = { path = "../agent/crates/echo-agent-core" }
 # In-process team MCP server (team_mcp.rs) — streamable-http JSON-RPC.
 # Already in Cargo.lock as a transitive dependency of the embedded upstream
 # runtime (axum 0.8); minimal
@@ -65,20 +65,20 @@ libc = "0.2"
 trash = "5"
 
 # EchoAgent's in-process runtime adapter. The Apache-2.0 Runtime source snapshot
-# is tracked directly at <repo>/vendor/echo-agent-build (see ECHOAGENT_VENDOR.json and
+# is tracked directly at <repo>/agent (see SOURCE.json and
 # THIRD_PARTY_NOTICES.md); these are relative path dependencies into it. Cargo
 # resolves their `.workspace = true` fields against that root Cargo.toml. We do
 # not join that workspace (see the explicit [workspace] table below).
-echo-agent-acp = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-acp" }
-echo-agent-runtime = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-runtime", features = ["desktop"] }
-echo-agent-workspace = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-workspace", default-features = false }
-echo-agent-sampler = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-sampler" }
-echo-agent-memory = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-memory", features = ["local-inference"] }
-echo-agent-tools = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-tools" }
-echo-agent-pty = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-pty" }
-echo-agent-tool-runtime = { path = "../vendor/echo-agent-build/crates/common/echo-agent-tool-runtime" }
-echo-agent-tool-protocol = { path = "../vendor/echo-agent-build/crates/common/echo-agent-tool-protocol" }
-echo-agent-tool-types = { path = "../vendor/echo-agent-build/crates/common/echo-agent-tool-types" }
+echo-agent-acp = { path = "../agent/crates/echo-agent-acp" }
+echo-agent-runtime = { path = "../agent/crates/echo-agent-runtime", features = ["desktop"] }
+echo-agent-workspace = { path = "../agent/crates/echo-agent-workspace", default-features = false }
+echo-agent-sampler = { path = "../agent/crates/echo-agent-sampler" }
+echo-agent-memory = { path = "../agent/crates/echo-agent-memory", features = ["local-inference"] }
+echo-agent-tools = { path = "../agent/crates/echo-agent-tools" }
+echo-agent-pty = { path = "../agent/crates/echo-agent-pty" }
+echo-agent-tool-runtime = { path = "../agent/crates/echo-agent-tool-runtime" }
+echo-agent-tool-protocol = { path = "../agent/crates/echo-agent-tool-protocol" }
+echo-agent-tool-types = { path = "../agent/crates/echo-agent-tool-types" }
 futures = "0.3"
 tokio-tungstenite = "0.29"
 schemars = "1"
@@ -116,7 +116,7 @@ symphonia = { version = "0.5", features = ["all"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 # Native input and output-loopback capture for meeting transcription.
-cpal = { path = "../vendor/cpal-loopback" }
+cpal = { path = "../third-party/rust/cpal-loopback" }
 # An isolated child view without the application WebView's IPC bridge.
 wry = { version = "=0.57.2", default-features = false }
 
@@ -172,7 +172,7 @@ x11rb = { version = "0.13.2", features = ["xtest"] }
 # Exposes Tauri MockRuntime for native command tests without opening a WebView.
 tauri = { version = "2.12.5", features = ["test"] }
 async-trait = "0.1"
-echo-agent-memory = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-memory", features = ["test-support"] }
+echo-agent-memory = { path = "../agent/crates/echo-agent-memory", features = ["test-support"] }
 
 # Keep source locations in backtraces without full type/variable debug info.
 # Tests inherit this profile. Cargo still reuses unchanged crates without the
@@ -195,11 +195,11 @@ members = ["."]
 
 [patch.crates-io]
 # Preserve ONNX 1.22 ABI while supporting both Cargo build-output layouts.
-ort-sys = { path = "../vendor/ort-sys" }
+ort-sys = { path = "../third-party/rust/ort-sys" }
 # Same 0.5.0 API/dependencies, fixing Windows argv and macOS plist encoding.
-auto-launch = { path = "../vendor/auto-launch" }
+auto-launch = { path = "../third-party/rust/auto-launch" }
 
 # GTK3 requires glib 0.18; backport the VariantStrIter memory-safety fix.
-glib = { path = "../vendor/glib" }
+glib = { path = "../third-party/rust/glib" }
 # Gitoxide uses std; avoid resolving faster-hex's unused heapless 0.8 backend.
-faster-hex = { path = "../vendor/faster-hex" }
+faster-hex = { path = "../third-party/rust/faster-hex" }

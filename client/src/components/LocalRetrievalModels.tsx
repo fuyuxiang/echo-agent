@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { filesystemPickDirectory, openExternalUrl } from "@/lib/agent-client";
 import { isTauriAvailable } from "@/lib/tauri-kb-reader";
 import { getRetrievalModelStatus, parseRetrievalModelStatus, RETRIEVAL_MODELS_CHANGED, type RetrievalModelStatus } from "@/lib/retrieval-model-status";
-import modelAssets from "../../vendor/echo-agent-build/crates/codegen/echo-agent-memory/src/model-assets.json";
+import modelAssets from "../../agent/crates/echo-agent-memory/src/model-assets.json";
 import "@/styles/local-retrieval.css";
 
 export function LocalRetrievalModels() {

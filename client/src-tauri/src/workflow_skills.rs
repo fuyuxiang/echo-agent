@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::{commands::AppState, shell_fs::FilesystemAccess};
+use crate::{harness::state::HarnessState, shell_fs::FilesystemAccess};
 
 pub(crate) const MAX_LIBRARY_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_INSTRUCTIONS: usize = 24_000;
@@ -435,14 +435,14 @@ fn validate_source(source: &WorkflowSource) -> Result<(), String> {
 
 fn resolve_capture(
     app: &AppHandle,
-    state: &AppState,
+    state: &HarnessState,
     capture: Capture,
     include_model: bool,
 ) -> Result<Evidence, String> {
     let filesystem = app.state::<FilesystemAccess>();
     let mut evidence = match capture {
         Capture::Scheduled { run_id } => {
-            crate::policy::require_feature("automations")?;
+            crate::harness::policy::require_feature("automations")?;
             crate::automations::workflow_run_evidence(&run_id)?
         }
         Capture::Chat {
@@ -498,7 +498,7 @@ async fn load_capture(
 ) -> Result<Evidence, String> {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
+        let state = app.state::<HarnessState>();
         resolve_capture(&app, &state, capture, include_model)
     })
     .await
@@ -671,7 +671,7 @@ pub fn workflow_skills_set_automatic(
 #[tauri::command]
 pub async fn workflow_skills_suggest(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     capture: Capture,
     correction: String,
     model_id: Option<String>,
@@ -693,7 +693,7 @@ pub async fn workflow_skills_suggest(
 
 async fn suggest_from_evidence(
     app: &AppHandle,
-    state: &AppState,
+    state: &HarnessState,
     evidence: &Evidence,
     correction: String,
     model_id: Option<String>,
@@ -722,7 +722,7 @@ async fn suggest_from_evidence(
             _ => return Err("请选择要更新的流程版本".into()),
         }
     };
-    let model = crate::commands::resolve_automation_model_id(
+    let model = crate::harness::commands::resolve_automation_model_id(
         Some(app),
         state,
         model_id.as_deref().or(evidence.model_id.as_deref()),
@@ -768,7 +768,7 @@ fn failed_check(version: &Version, report: &Evaluation) -> Option<Value> {
 #[tauri::command]
 pub async fn workflow_skills_suggest_revision(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     filesystem: State<'_, FilesystemAccess>,
     cwd: String,
     id: String,
@@ -786,7 +786,8 @@ pub async fn workflow_skills_suggest_revision(
             report.model_id.clone(),
         )
     };
-    let model = crate::commands::resolve_automation_model_id(Some(&app), &state, Some(&model_id))?;
+    let model =
+        crate::harness::commands::resolve_automation_model_id(Some(&app), &state, Some(&model_id))?;
     let access = crate::providers::configured_model_access(&model)?;
     let _slot = MODEL_REQUESTS
         .try_acquire()
@@ -933,13 +934,16 @@ async fn learn_from_chat(
     let Some(source_model) = evidence.model_id.as_deref() else {
         return Ok(());
     };
-    let state = app.state::<AppState>();
+    let state = app.state::<HarnessState>();
     let model = source_model.to_owned();
     let access = crate::providers::configured_model_access(&model)?;
     let tx = state.tx.lock().unwrap().clone().ok_or("技能库未连接")?;
     let (installed, _) = tokio::time::timeout(
         Duration::from_secs(6),
-        crate::skills::skills_config_with_tx(&tx, evidence.cwd.to_str().map(str::to_owned)),
+        crate::harness::skills::skills_config_with_tx(
+            &tx,
+            evidence.cwd.to_str().map(str::to_owned),
+        ),
     )
     .await
     .map_err(|_| "读取已安装技能超时")??;
@@ -1079,7 +1083,7 @@ async fn learn_from_chat(
         SaveOrigin::Chat { activate },
     )?;
     if updated.active_version == updated.versions.last().map(|version| version.number) {
-        if let Err(error) = crate::skills::refresh_live_skills(&state).await {
+        if let Err(error) = crate::harness::skills::refresh_live_skills(&state).await {
             tracing::warn!(%error, "learned skill saved; runtime refresh pending");
         }
     }
@@ -1094,7 +1098,7 @@ pub(crate) async fn review_failed_run(app: &AppHandle, cwd: &str, record_id: Str
         if !read_library(&directory)?.automatic_drafts {
             return Ok(());
         }
-        let state = app.state::<AppState>();
+        let state = app.state::<HarnessState>();
         let evidence = load_capture(app, Capture::Scheduled { run_id: record_id }, true).await?;
         if let Some(binding) = evidence
             .run_workflow
@@ -1113,7 +1117,7 @@ pub(crate) async fn review_failed_run(app: &AppHandle, cwd: &str, record_id: Str
 
 async fn auto_draft(
     app: &AppHandle,
-    state: &AppState,
+    state: &HarnessState,
     evidence: &Evidence,
     correction: String,
     binding: Option<WorkflowBinding>,
@@ -1405,7 +1409,7 @@ async fn measure(
 #[tauri::command]
 pub async fn workflow_skills_evaluate(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     filesystem: State<'_, FilesystemAccess>,
     cwd: String,
     id: String,
@@ -1418,7 +1422,7 @@ pub async fn workflow_skills_evaluate(
 
 async fn evaluate_version(
     app: &AppHandle,
-    state: &AppState,
+    state: &HarnessState,
     directory: &Path,
     id: String,
     version: u32,
@@ -1446,8 +1450,11 @@ async fn evaluate_version(
     if candidate.cases.is_empty() {
         return Err("请先保存至少一个带预期输出的验收用例".into());
     }
-    let model_id =
-        crate::commands::resolve_automation_model_id(Some(app), state, model_id.as_deref())?;
+    let model_id = crate::harness::commands::resolve_automation_model_id(
+        Some(app),
+        state,
+        model_id.as_deref(),
+    )?;
     let access = crate::providers::configured_model_access(&model_id)?;
     let _slot = MODEL_REQUESTS
         .try_acquire()
@@ -1508,7 +1515,7 @@ async fn evaluate_version(
 #[tauri::command]
 pub async fn workflow_skills_activate(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, HarnessState>,
     filesystem: State<'_, FilesystemAccess>,
     cwd: String,
     id: String,
@@ -1544,7 +1551,7 @@ pub async fn workflow_skills_activate(
         workflow
     };
     announce(&app);
-    if let Err(error) = crate::skills::refresh_live_skills(&state).await {
+    if let Err(error) = crate::harness::skills::refresh_live_skills(&state).await {
         tracing::warn!(%error, "workflow skill published; live runtime reload failed");
         return Err("技能库已更新，当前会话刷新失败，请重试或重新打开任务".into());
     }

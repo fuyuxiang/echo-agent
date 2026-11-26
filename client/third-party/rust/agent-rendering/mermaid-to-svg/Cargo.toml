@@ -1,0 +1,163 @@
+# Vendored third-party crate.
+#
+# Upstream:  warpdotdev/mermaid-to-svg (MIT) —
+#            https://github.com/warpdotdev/mermaid-to-svg
+#            rev 40cecf2be376e47e15053eadbfb782a531777420
+#
+# Why vendored (not a crates.io pin): the engine renders untrusted model output
+# and is a young dependency. Vendoring gives a full audit surface and immunity to
+# upstream yanks for the hardened CLI binary. Warp's engine delegates layout
+# to a Rust port of dagre.js (the same algorithm mermaid.js uses), which fixes
+# the cyclic-flowchart back-edge mis-routing of the previous engine. See
+# crates/echo-agent-mermaid.
+#
+# ============================================================================
+# VENDORING NOTES — single source of truth. Re-apply / re-bless ALL of the
+# following on every upstream upgrade:
+# ============================================================================
+#
+# Local modifications to the upstream source:
+#  1. NOT VENDORED: `src/bin/render_mermaid.rs` (CLI binary). Its `[[bin]]` and
+#     the dev-only deps (insta/rust-embed/resvg/roxmltree/image/anyhow/serde*)
+#     are dropped — `echo-agent-mermaid` rasterizes the SVG itself with the
+#     workspace `resvg`, so this is used as an SVG generator only.
+#  2. NOT VENDORED: every `*_tests.rs` snapshot/fixture test plus `reference_svg`
+#     and `fixtures` (they `include`/embed un-vendored `samples/` assets and need
+#     the dropped dev-deps). Their `#[cfg(test)] #[path = "..."] mod tests;`
+#     declarations and the `pub mod fixtures;` / `mod reference_svg;` lines were
+#     removed from the kept sources. The two *in-source* `mod tests` blocks
+#     (`src/lib.rs` public-API smoke tests, `src/mermaid_port/dagre_layout_port.rs`
+#     unit tests) use no dev-deps and are kept; `[lib] doctest = false`. One
+#     LOCAL ADDITION to the kept `src/lib.rs` tests: `test_simple_c4_diagram`
+#     (marked in-source), filling the only dispatched diagram type that upstream
+#     left without a `test_simple_*` smoke test.
+#  3. HERMETIC PATCH (src/mermaid_port/mod.rs): `is_enabled()` returns `false`
+#     unconditionally. Upstream read the `MERMAID_TO_SVG_USE_PORT` env var to
+#     enable an experimental flowchart layout "port"; reading the environment is
+#     non-deterministic over untrusted input, and the port mis-routes cyclic
+#     back-edges (detached arrowheads). The default `layout::compute_layout`
+#     path routes cycles correctly, so the port stays off. Because the port is
+#     unreachable, `mermaid_port::compute_layout_ported` carries an
+#     `#[allow(dead_code)]`; the module is kept verbatim (not deleted) so future
+#     re-vendor diffs stay minimal.
+#  4. Dropped the unused `petgraph` and `regex` dependencies (declared upstream,
+#     referenced nowhere in the vendored source; `cargo shear` confirms).
+#  5. `thiserror` pinned to "2" (upstream "1.0") to match the workspace; the
+#     `#[derive(Error)]` / `#[error("…")]` API used in `src/error.rs` is
+#     unchanged across the major.
+#  6. `cargo fmt` (rustfmt) applied so the crate satisfies the workspace fmt
+#     gate; no semantic change.
+#  7. LOCAL REWRITE (src/sequence_diagram.rs; deliberately NOT marked in-source
+#     — this note is the sole record, so re-apply it on every upstream
+#     upgrade): the upstream sequence parser hard-failed ("Unrecognized
+#     sequenceDiagram line") on most of the standard Mermaid sequence grammar. Added: `activate`/`deactivate`
+#     (+ the `+`/`-` message shorthand) drawn as lifeline activation bars;
+#     `actor`; `create`/`destroy`; `box … end`; `autonumber` (message-number
+#     prefixes); `title`; `accTitle`/`accDescr` (incl. `{ … }` blocks) and
+#     `links`/`link`/`properties` accepted-and-skipped; `par`/`and`,
+#     `critical`/`option`, `break`, `rect` fragments; the full arrow set
+#     (`->`, `-->`, `-x`, `--x`, `-)`, `--)`, `<<->>`, `<<-->>`) with per-type
+#     markers. Keyword matching is now case-insensitive and word-bounded
+#     (Mermaid's lexer is case-insensitive; `optimize…` is no longer an `opt`
+#     fragment). Arrow markers are theme-colored (were unstyled black,
+#     invisible-on-dark) and note text is fixed-dark on the fixed light-yellow
+#     note fill. Covered by the (likewise unmarked) `test_sequence_*` tests in
+#     src/lib.rs.
+#  8. LOCAL MODIFICATION (new `unicode-width` dep): text width estimates count
+#     East Asian wide characters as two narrow units via `text_wrap::
+#     display_width_units` (upstream counted chars/graphemes, halving CJK label
+#     widths so they overflowed their nodes). Touches `text_wrap.rs` and the
+#     local estimators in `sequence_diagram.rs` / `xychart_diagram.rs` /
+#     `mindmap_diagram.rs`; ASCII measurement is unchanged. Covered by the
+#     `test_cjk_*` tests in src/lib.rs.
+#  9. LOCAL MODIFICATION (src/parser.rs): support Mermaid's open edge-label
+#     syntax (`A -- text --> B`, `-- text ---`, `== text ==>`, `== text ===`,
+#     `-. text .-`; upstream only parsed the `|text|` form plus `-. text .->`),
+#     and make `find_edge_start` bracket/quote-aware so edge tokens inside node
+#     labels (`A["x --> y"]`) are not treated as edges. Upstream parsed
+#     `B -- 是 --> C` as a literal node named "B -- 是". Covered by the
+#     `test_open_edge_label_*` / `test_edge_tokens_inside_node_labels_*` tests
+#     in src/lib.rs.
+# 10. LOCAL MODIFICATION (src/text_wrap.rs): a single unbreakable token (a
+#     "word" with no internal whitespace) is kept whole on its own line and the
+#     box widens to fit it, instead of being hard-sliced mid-identifier at a
+#     grapheme boundary once it exceeds `wrapping_width` (upstream sliced
+#     `mark_filter_restore_context` into `mark_filter_restore_conte` + `xt`).
+#     This matches Mermaid's default `htmlLabels: true` rendering, which this
+#     port does not implement (src/config.rs), so it is MORE faithful to
+#     upstream Mermaid. Because `wrap_text_lines` is the shared wrapper, this
+#     applies to ALL of its callers — flowchart node labels, edge labels, and
+#     subgraph titles, plus state-diagram node/edge labels (state diagrams parse
+#     into the same `FlowchartGraph` and reuse this layout/renderer) — not just
+#     node boxes. The class/er/requirement diagrams have their own renderers that
+#     call only `line_width` (single-line, no wrapping), so they are unaffected.
+#     Only a pathologically long token — wider than
+#     SINGLE_TOKEN_WIDTH_CAP_FACTOR (5x) the wrap width — is force-broken,
+#     preferring the last identifier boundary (`_`/`-`/`.`/`/`) under the cap.
+#     Per-diagram width is now intentionally bounded only by the downstream
+#     rasterizer's PNG caps (echo-agent-mermaid), not by the layout — a deliberate
+#     legibility-vs-completeness tradeoff. Multi-word labels still wrap at spaces
+#     as before (`wrapping_width` unchanged). Covered by the unit tests in
+#     `src/text_wrap.rs`.
+# 11. LOCAL MODIFICATION (src/layout.rs): flowchart edges whose endpoint is a
+#     subgraph id (cluster-target edges) have the dagre route points that fall
+#     strictly inside the destination/source cluster rect trimmed (via
+#     `trim_cluster_interior_points`) before `clip_edge_to_boundaries`, so the
+#     edge approaches the cluster boundary from outside instead of routing to the
+#     first-declared interior member (`subgraph_entry_node_id`) and curling back.
+#     A single transition point is kept per trimmed side; the polyline never
+#     drops below two points. Only forward (non-back) cluster-target edges are
+#     affected — node-target edges and back edges are unchanged. Covered by the
+#     `trim_*` tests in src/layout.rs.
+# 12. LOCAL REWRITE (src/xychart_diagram.rs): upstream only parsed a numeric
+#     x-axis (`x-axis min --> max`) + a single `line`, hard-failing on the
+#     categorical form `x-axis ["a", …]` (so such charts fell back to a code
+#     block — "opening image for this diagram fails"). Added: categorical
+#     (band-scale) x-axis; optional quoted axis titles (y rotated, x centered);
+#     quote stripping for the title/labels; multiple `line` series in distinct
+#     palette colors; y auto-ranging when no explicit range is given; and
+#     theme-colored axes/text (was a fixed near-black, invisible on dark). `bar`
+#     stays unsupported (ignored). Covered by `xychart_diagram::tests` here and
+#     the `categorical_xychart_*` raster test in
+#     crates/echo-agent-mermaid/tests/pure_engine.rs.
+#
+# Re-audit checklist:
+#  - This crate's own source contains no `unsafe` and no filesystem / network I/O.
+#    Text metrics are font-free (fixed char-width in `src/text_wrap.rs`), so the
+#    engine performs NO system-font enumeration or on-disk font cache — glyph
+#    rasterization is the separate, bundled-font `echo-agent-mermaid::rasterize`.
+#  - SIBLING VENDORED LAYOUT DEPS (this header is the audit source-of-truth for
+#    the whole stack): `ordered_hashmap` retains two `unsafe` raw-pointer blocks
+#    in `iter_mut`/`values_mut` (documented + re-audited in its own Cargo.toml);
+#    `dagre_rust` and `graphlib_rust` contain no `unsafe` (dagre's upstream
+#    `static mut` counter was replaced with an `AtomicUsize` — see its Cargo.toml).
+#  - YAML frontmatter parsing (`src/config.rs`, `src/kanban_diagram.rs`) uses the
+#    workspace `serde_yaml`; it parses in-memory source only (no file/URL refs).
+[package]
+workspace = "../../../../agent"
+name = "mermaid-to-svg"
+version = "0.1.0"
+edition = "2021"
+description = "Convert Mermaid diagram source to SVG via a dagre layout port (vendored, library-only)"
+license = "MIT"
+repository = "https://github.com/warpdotdev/mermaid-to-svg"
+publish = false
+
+[lib]
+name = "mermaid_to_svg"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+thiserror = "2"
+dagre_rust = { path = "../dagre_rust" }
+graphlib_rust = { path = "../graphlib_rust" }
+unicode-segmentation = "1"
+unicode-width = "0.2"
+serde_yaml = "0.9"
+
+# Clippy lints local/path crates (this vendored crate is one) under the
+# workspace's `-D warnings`. We do not restyle upstream third-party code, so
+# allow clippy here; our own crate (echo-agent-mermaid) is still fully linted.
+[lints.clippy]
+all = { level = "allow", priority = -1 }

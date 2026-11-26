@@ -11,14 +11,14 @@ import { runNativeTestProcess } from './lib/native-test-process.mjs';
 
 assert.equal(process.argv.length, 2, 'This entry runs the complete memory library suite');
 const root = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
-const workspace = realpathSync(join(root, 'vendor/echo-agent-build/crates/codegen/echo-agent-memory'));
+const workspace = realpathSync(join(root, 'agent/crates/echo-agent-memory'));
 const targetPath = join(root, 'src-tauri/target');
 const home = realpathSync(mkdtempSync(join(tmpdir(), 'echo-memory-tests-')));
 const legacy = join(home, 'empty-legacy'); mkdirSync(legacy, { mode: 0o700 });
 const env = withNativeReviewLoopbackBypass({ ...cleanNativeReviewEnvironment(process.env),
   ECHO_AGENT_HOME: home, GROK_HOME: legacy, CARGO_TARGET_DIR: targetPath });
 console.log(`Isolated memory library test data: ${home}`);
-const build = spawnSync('cargo', ['test', '--locked', '--manifest-path', join(root, 'vendor/echo-agent-build/Cargo.toml'),
+const build = spawnSync('cargo', ['test', '--locked', '--manifest-path', join(root, 'agent/Cargo.toml'),
   '-p', 'echo-agent-memory', '--lib', '-j', '2', '--no-run', '--message-format=json'],
 { cwd: root, env, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'inherit'] });
 const messages = (build.stdout ?? '').split('\n').filter(Boolean).map(line => {

@@ -26,7 +26,7 @@ if (!checkOnly) {
     join(nodeDir, "../LICENSE"),
     join(nodeDir, `../node_modules/node-${process.platform}-${process.arch}/LICENSE`),
     join(nodeDir, "../share/doc/node/LICENSE"),
-    join(projectRoot, `vendor/nodejs/LICENSE-${process.versions.node}`),
+    join(projectRoot, `LICENSES/nodejs/LICENSE-${process.versions.node}`),
   ];
   const sourceLicense = licenseCandidates.find(existsSync);
   if (!sourceLicense) throw new Error("The bundled Office Node.js runtime needs its LICENSE file.");

@@ -1,12 +1,10 @@
 // EchoAgent Tauri backend library entry point.
 //
-// Spawns the in-process EchoAgent agent (agent_runtime::spawn_agent_runtime), wires the ACP stream
-// to Tauri events (bridge::spawn_dispatcher), and registers the command
+// Spawns the in-process EchoAgent agent (harness::agent_runtime::spawn_agent_runtime), wires the ACP stream
+// to Tauri events (harness::bridge::spawn_dispatcher), and registers the command
 // table (commands) that the React frontend invokes.
 
 mod agent_admin;
-mod agent_config;
-mod agent_runtime;
 mod agents_store;
 mod app_updater;
 mod attachment_blob;
@@ -14,10 +12,8 @@ mod attachment_preview;
 mod automation;
 mod automations;
 mod backup;
-mod bridge;
-mod commands;
 #[cfg(test)]
-#[path = "../../vendor/echo-agent-build/crates/codegen/echo-agent-runtime/src/session/acp_session_impl/desktop_delivery.rs"]
+#[path = "../../agent/crates/echo-agent-runtime/src/session/acp_session_impl/desktop_delivery.rs"]
 mod desktop_delivery_tests;
 mod desktop_preferences;
 mod desktop_tray;
@@ -32,6 +28,7 @@ mod document_workspace;
 mod expert_avatar;
 mod ext;
 mod groups;
+mod harness;
 mod host_watchdog;
 mod knowledge_documents;
 mod knowledge_traces;
@@ -59,9 +56,7 @@ mod office_node;
 mod org;
 mod org_mcp;
 mod paths;
-mod permission_config;
 mod personal_knowledge;
-mod policy;
 mod process_identity;
 mod process_supervisor;
 mod project_output;
@@ -75,16 +70,13 @@ mod resource_identity;
 mod retrieval_models;
 mod session_artifacts;
 mod session_continuation;
-mod session_creation;
 mod session_title;
 mod session_workspace;
 mod sessions;
 mod shell_fs;
 mod skill_installer;
-mod skills;
 mod storage;
 mod team_mcp;
-mod team_orchestration;
 mod webview_recovery;
 mod weixin;
 #[cfg(any(windows, test))]
@@ -92,8 +84,8 @@ mod windows_install;
 mod workflow_skills;
 mod workspace_ignore;
 
-use bridge::{FolderTrusts, Permissions, PlanApprovals, Questions};
-use commands::AppState;
+use harness::bridge::{FolderTrusts, Permissions, PlanApprovals, Questions};
+use harness::state::HarnessState;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::Emitter;
@@ -144,14 +136,14 @@ async fn required_shutdown<F: std::future::Future<Output = Result<(), String>>>(
 }
 
 async fn shutdown_before_exit(app: &tauri::AppHandle) -> Result<(), String> {
-    let state = app.state::<AppState>();
+    let state = app.state::<HarnessState>();
     tracing::info!("application shutdown started");
     // Start the runtime's session flush immediately. It has its own bounded
     // bound; a second two-second timeout would cancel it before persistence.
     let (automation, _, runtime) = tokio::join!(
         required_shutdown(automation::shutdown_all(), "Browser/Computer Use"),
         bounded_shutdown(weixin::shutdown(app), "weixin"),
-        commands::stop_agent_runtime(&state),
+        harness::commands::stop_agent_runtime(&state),
     );
     let errors = [automation.err(), runtime.err()]
         .into_iter()
@@ -326,7 +318,7 @@ pub(crate) fn abort_prepared_exit(app: &tauri::AppHandle, error: String, runtime
 async fn application_exit_activity(
     app: &tauri::AppHandle,
 ) -> Result<desktop_tray_model::ExitActivity, String> {
-    let state = app.state::<AppState>();
+    let state = app.state::<HarnessState>();
     let tx = state.tx.lock().map_err(|_| "Runtime 状态不可读")?.clone();
     let permissions = app.state::<Permissions>();
     let questions = app.state::<Questions>();
@@ -906,7 +898,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(webview_recovery::RendererRecovery::default())
-        .manage(AppState::default())
+        .manage(HarnessState::default())
         .manage(desktop_tray::DesktopTray::default())
         .manage(backup::BackupState::default())
         .manage(Permissions::new())
@@ -953,36 +945,36 @@ pub fn run() {
             backup::backup_export_ui_archive,
             backup::backup_last_error,
             // session lifecycle
-            commands::agent_init,
-            commands::agent_auth_status,
-            commands::agent_new_session,
-            commands::agent_prepare_task_workspace,
-            commands::agent_session_workspace_status,
-            commands::agent_load_session,
-            commands::agent_recover_session,
-            commands::agent_list_sessions,
-            commands::agent_list_all_sessions,
-            commands::agent_list_session_history,
-            commands::agent_find_session_summary,
-            commands::agent_find_session_summaries,
-            commands::agent_set_model,
-            commands::agent_list_workspaces,
-            commands::agent_set_knowledge_sources,
-            commands::agent_is_private_memory_query,
-            commands::agent_send,
-            commands::agent_cancel,
-            commands::agent_shutdown,
-            commands::agent_resolve_permission,
-            commands::agent_resolve_question,
-            commands::agent_resolve_plan_approval,
-            commands::agent_list_pending_interactions,
-            commands::agent_rename_session,
-            commands::agent_delete_session,
-            commands::agent_set_session_pinned,
-            commands::agent_set_session_archived,
-            commands::agent_set_session_status,
-            commands::agent_set_session_expert,
-            commands::agent_clear_session_expert,
+            harness::commands::agent_init,
+            harness::commands::agent_auth_status,
+            harness::commands::agent_new_session,
+            harness::commands::agent_prepare_task_workspace,
+            harness::commands::agent_session_workspace_status,
+            harness::commands::agent_load_session,
+            harness::commands::agent_recover_session,
+            harness::commands::agent_list_sessions,
+            harness::commands::agent_list_all_sessions,
+            harness::commands::agent_list_session_history,
+            harness::commands::agent_find_session_summary,
+            harness::commands::agent_find_session_summaries,
+            harness::commands::agent_set_model,
+            harness::commands::agent_list_workspaces,
+            harness::commands::agent_set_knowledge_sources,
+            harness::commands::agent_is_private_memory_query,
+            harness::commands::agent_send,
+            harness::commands::agent_cancel,
+            harness::commands::agent_shutdown,
+            harness::commands::agent_resolve_permission,
+            harness::commands::agent_resolve_question,
+            harness::commands::agent_resolve_plan_approval,
+            harness::commands::agent_list_pending_interactions,
+            harness::commands::agent_rename_session,
+            harness::commands::agent_delete_session,
+            harness::commands::agent_set_session_pinned,
+            harness::commands::agent_set_session_archived,
+            harness::commands::agent_set_session_status,
+            harness::commands::agent_set_session_expert,
+            harness::commands::agent_clear_session_expert,
             // signed desktop application updates (private organization CA)
             app_updater::app_update_check,
             app_updater::app_update_install,
@@ -990,9 +982,9 @@ pub fn run() {
             desktop_preferences::desktop_preferences_get,
             desktop_preferences::desktop_preferences_save,
             // context usage pill (echo.agent/session/info + echo.agent/session/usage)
-            commands::agent_session_info,
-            commands::agent_suggest_prompt,
-            commands::agent_session_usage,
+            harness::commands::agent_session_info,
+            harness::commands::agent_suggest_prompt,
+            harness::commands::agent_session_usage,
             // BYOK providers (~/.echo-agent/config.toml [model.*])
             providers::providers_list,
             providers::providers_save_provider,
@@ -1008,30 +1000,30 @@ pub fn run() {
             providers::providers_save,
             providers::providers_delete,
             // default permission rules (~/.echo-agent/config.toml [permission])
-            permission_config::permission_list,
-            permission_config::permission_save,
+            harness::permission_config::permission_list,
+            harness::permission_config::permission_save,
             // task-scoped permission mode (sidecar metadata + targeted live notify)
-            permission_config::permission_mode_get,
-            permission_config::permission_mode_set,
+            harness::permission_config::permission_mode_get,
+            harness::permission_config::permission_mode_set,
             // agent/assistant defaults (~/.echo-agent/config.toml [models].default + [ui].default_selected_permission)
-            permission_config::agents_defaults_get,
-            permission_config::agents_defaults_save,
+            harness::permission_config::agents_defaults_get,
+            harness::permission_config::agents_defaults_save,
             // authoritative local policy store
-            policy::policy_get,
-            policy::policy_save,
+            harness::policy::policy_get,
+            harness::policy::policy_save,
             // subagents config (~/.echo-agent/config.toml [subagents].max_depth)
-            agent_config::subagents_config_get,
-            agent_config::subagents_config_save,
+            harness::agent_config::subagents_config_get,
+            harness::agent_config::subagents_config_save,
             // web search config (~/.echo-agent/config.toml [models].web_search)
-            agent_config::web_search_config_get,
-            agent_config::web_search_config_save,
-            agent_config::memory_config_get,
-            agent_config::memory_config_save,
+            harness::agent_config::web_search_config_get,
+            harness::agent_config::web_search_config_save,
+            harness::agent_config::memory_config_get,
+            harness::agent_config::memory_config_save,
             // skills (echo.agent/skills/*)
-            skills::skills_list,
-            skills::skills_add,
-            skills::skills_remove,
-            skills::skills_toggle,
+            harness::skills::skills_list,
+            harness::skills::skills_add,
+            harness::skills::skills_remove,
+            harness::skills::skills_toggle,
             skill_installer::skills_inspect_package,
             skill_installer::skills_inspect_packages,
             skill_installer::skills_install_package,

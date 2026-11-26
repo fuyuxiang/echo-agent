@@ -1,8 +1,11 @@
 # Preserve the imported upstream snapshot byte-for-byte; its historical files
 # intentionally contain whitespace that does not follow EchoAgent's style.
-vendor/echo-agent-build/** -whitespace
+agent/** -whitespace
+# Preserve the upstream DOCX source and release declaration formatting.
+third-party/docx-preview/src/** -whitespace
+third-party/docx-preview/api.d.ts -text -whitespace
 # Template digests must stay portable across Git's Windows text conversion.
 src-tauri/icons/tray/mark.svg text eol=lf
 # Keep the vendored ONNX manifest, build inputs and provenance hashes portable.
-vendor/ort-sys/** text eol=lf
-vendor/faster-hex/** text eol=lf
+third-party/rust/ort-sys/** text eol=lf
+third-party/rust/faster-hex/** text eol=lf

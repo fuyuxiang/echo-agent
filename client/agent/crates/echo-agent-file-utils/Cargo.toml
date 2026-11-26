@@ -1,0 +1,63 @@
+[package]
+license = "Apache-2.0"
+name = "echo-agent-file-utils"
+version = "0.1.0"
+edition.workspace = true
+description = "Local data collection: upload queueing and blob storage"
+authors = ["EchoAgent"]
+
+[dependencies]
+anyhow = { workspace = true }
+base64.workspace = true
+dunce = { workspace = true }
+echo-agent-circuit-breaker = { workspace = true }
+echo-agent-version = { workspace = true }
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+    "rt-tokio",
+] }
+aws-config = { version = "1", default-features = false, features = [
+    "rt-tokio",
+    "sso",
+    "credentials-process",
+] }
+aws-smithy-http-client = { version = "1", features = ["rustls-ring"] }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+indexmap = { workspace = true }
+reqwest = { workspace = true }
+echo-agent-extra-ca = { workspace = true }
+reqwest-middleware = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "io-util", "fs"] }
+sha2 = { workspace = true, features = ["force-soft"] }
+echo-agent-auth = { path = "../echo-agent-auth", features = ["middleware"] }
+echo-agent-chat-proxy-types = { path = "../echo-agent-chat-proxy-types" }
+async-compression = { workspace = true, features = ["tokio"] }
+gcloud-storage = { workspace = true }
+opentelemetry = { workspace = true }
+reflink-copy = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+url = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true, features = ["io"] }
+zstd.workspace = true
+
+
+[features]
+default-bazel = []
+
+
+[dev-dependencies]
+tempfile = { workspace = true }
+axum = { workspace = true, features = ["multipart"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "net", "time"] }
+echo-agent-test-utils = { workspace = true }
+filetime = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

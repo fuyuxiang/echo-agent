@@ -9,12 +9,12 @@ licenses.
 - Runtime name: `echo-agent`
 - Rust entry crate: `echo-agent-runtime`
 - Source: https://github.com/fuyuxiang/echo-agent
-- Pinned revision: `c2ad97f8`
-- Integration: source snapshot tracked directly under `vendor/echo-agent-build/`
+- Imported revision: `c2ad97f87aea4303b6000a2c22128bc91ee76c9b`, recorded in `agent/SOURCE.json`
+- Integration: maintained Agent workspace under `agent/`
 - License: Apache License 2.0
 - Copyright: Copyright 2023-2026 EchoAgent contributors
-- Local license copy: `vendor/echo-agent-build/LICENSE`
-- Bundled dependency notices: `vendor/echo-agent-build/third_party/NOTICE`
+- Local license copy: `agent/LICENSE`
+- Bundled dependency notices: `third-party/rust/agent-rendering/NOTICE`
 
 EchoAgent Desktop consumes selected Rust crates from this `echo-agent` source
 snapshot as in-process path dependencies. The maintained snapshot uses
@@ -33,8 +33,8 @@ tree and its crate-specific license files.
 - Integration: `src-tauri/windows/installer.nsi`
 - License: MIT OR Apache-2.0
 - Copyright: Tauri Programme within The Commons Conservancy
-- Local license texts: `vendor/tauri-plugin-updater/LICENSE_MIT`,
-  `vendor/tauri-plugin-updater/LICENSE_APACHE-2.0`
+- Local license texts: `third-party/rust/tauri-plugin-updater/LICENSE_MIT`,
+  `third-party/rust/tauri-plugin-updater/LICENSE_APACHE-2.0`
 - EchoAgent changes validate durable installation directories and repair invalid
   legacy installation records and shortcuts. Review template changes whenever
   upgrading the pinned Tauri CLI.
@@ -43,11 +43,11 @@ tree and its crate-specific license files.
 
 - Source: https://github.com/tauri-apps/plugins-workspace/tree/updater-v2.9.0/plugins/updater
 - Version: `2.9.0` (unchanged from the original dependency)
-- Integration: source snapshot under `vendor/tauri-plugin-updater/`
+- Integration: source snapshot under `third-party/rust/tauri-plugin-updater/`
 - License: Apache-2.0 OR MIT
-- Local licenses: `vendor/tauri-plugin-updater/LICENSE_APACHE-2.0`,
-  `vendor/tauri-plugin-updater/LICENSE_MIT`
-- Local patch and upstream package checksum: `vendor/tauri-plugin-updater/ECHOAGENT_PATCH.md`
+- Local licenses: `third-party/rust/tauri-plugin-updater/LICENSE_APACHE-2.0`,
+  `third-party/rust/tauri-plugin-updater/LICENSE_MIT`
+- Local patch and upstream package checksum: `third-party/rust/tauri-plugin-updater/ECHOAGENT_PATCH.md`
 
 EchoAgent adds an opt-in installation method that returns control to the host
 after starting a Windows installer, so recording and task persistence can finish
@@ -59,9 +59,9 @@ and archive extraction protections remain intact.
 
 - Source: https://github.com/zzzgydi/auto-launch
 - Version: `0.5.0` (unchanged transitive dependency of Tauri autostart)
-- Integration: source under `vendor/auto-launch/`, desktop Cargo source patch
-- License: MIT; local copy `vendor/auto-launch/LICENSE`
-- Patch provenance/checksum: `vendor/auto-launch/ECHOAGENT_PATCH.md`
+- Integration: source under `third-party/rust/auto-launch/`, desktop Cargo source patch
+- License: MIT; local copy `third-party/rust/auto-launch/LICENSE`
+- Patch provenance/checksum: `third-party/rust/auto-launch/ECHOAGENT_PATCH.md`
 
 The local patch quotes Windows login command arguments and escapes macOS
 LaunchAgent XML, preserving paths with spaces, Chinese and XML characters.
@@ -75,18 +75,26 @@ Public APIs and other platform startup mechanisms remain unchanged.
 - License: Node.js license and bundled third-party notices, copied from the
   selected Node.js distribution into `office/node/LICENSE` in the app resources.
 - Fallback license copy for the pinned development runtime:
-  `vendor/nodejs/LICENSE-22.23.4` or `vendor/nodejs/LICENSE-24.22.1`.
+  `LICENSES/nodejs/LICENSE-22.23.4` or `LICENSES/nodejs/LICENSE-24.22.1`.
+
+## CPAL
+
+- Source: https://github.com/RustAudio/cpal, version `0.18.2`
+- Integration: source under `third-party/rust/cpal-loopback/`
+- License: Apache-2.0. The original text is at `third-party/rust/cpal-loopback/LICENSE`.
+- Local change: make macOS system-output recording use the loopback path on
+  duplex devices. See `third-party/rust/cpal-loopback/ECHOAGENT_PATCH.md`.
 
 ## Dependency security backports
 
 These source copies retain their original licenses. `SOURCE.json` in each
 directory records upstream versions, advisories and the local changes.
 
-- `vendor/glib/`: GLib Rust bindings 0.18.5, MIT, including the upstream
+- `third-party/rust/glib/`: GLib Rust bindings 0.18.5, MIT, including the upstream
   `VariantStrIter` out-pointer fix while retaining GTK3 compatibility.
-- `vendor/lru-0.12/` and `vendor/lru-0.16/`: lru 0.12.5 and 0.16.4, MIT,
+- `third-party/rust/lru-0.12/` and `third-party/rust/lru-0.16/`: lru 0.12.5 and 0.16.4, MIT,
   including upstream node-detachment and shared-key-reference safety fixes.
-- `vendor/faster-hex/`: faster-hex 0.10.1, MIT, with the unused heapless 0.8
+- `third-party/rust/faster-hex/`: faster-hex 0.10.1, MIT, with the unused heapless 0.8
   dependency removed from the Gitoxide build. Upstream third-party license
   notices are included in that directory.
 
@@ -96,10 +104,10 @@ Rust patch entries select these copies. Their original license files are include
 
 - Source: https://github.com/our-forks/async-openai
 - Pinned revision: `95b52ebdedf42143083cf3d6f0e0be7c84e9c808`
-- Integration: build-dependency source under `vendor/async-openai/`
+- Integration: Runtime model SDK source under `third-party/rust/async-openai/`
 - License: MIT
 - Copyright: Copyright 2022 Himanshu Neema
-- Local license copy: `vendor/async-openai/LICENSE`
+- Local license copy: `third-party/rust/async-openai/LICENSE`
 
 The vendored source contains the `async-openai` and `async-openai-macros`
 crates used by the embedded Runtime. Non-build example assets and generated API
@@ -109,9 +117,9 @@ reference input are intentionally excluded.
 
 - Source: https://github.com/helix-editor/nucleo
 - Pinned revision: `5b74652e482f7c07d827f18c6d21e7540c242c69`
-- Integration: build-dependency source under `vendor/nucleo/`
+- Integration: Runtime fuzzy matcher source under `third-party/rust/nucleo/`
 - License: Mozilla Public License 2.0
-- Local license copy: `vendor/nucleo/LICENSE`
+- Local license copy: `third-party/rust/nucleo/LICENSE`
 
 The vendored source contains the `nucleo` and `nucleo-matcher` crates used by
 the embedded Runtime. The upstream license and source form are retained.
@@ -147,11 +155,12 @@ package manifest. Exact package versions are pinned in `pnpm-lock.yaml`.
   when a PowerPoint file is opened.
 - `@apollo-design/docx-preview` 0.9.0:
   https://github.com/apollocmh/docx-preview (Apache-2.0), based on
-  https://github.com/VolodymyrBaydalka/docxjs. EchoAgent patches section grouping
-  in the distributed builds to preserve next-page, continuous and explicit
-  page breaks, and waits for fonts in the actual rendering document. The patch
-  is tracked under `patches/` and tested against DOCX
-  files generated with distinct section types.
+  https://github.com/VolodymyrBaydalka/docxjs. The local TypeScript source package
+  under `third-party/docx-preview/` maintains section and explicit page breaks
+  and waits for fonts in the rendering document. Its README records the source
+  revision, release integrity and attribution. The upstream LICENSE and NOTICE
+  are included. The renderer's `@noble/ciphers` and `@noble/hashes` 2.4.0
+  dependencies are MIT licensed and retain their upstream versions.
 - `pdfjs-dist` 6.5.438: https://github.com/mozilla/pdf.js (Apache-2.0).
   Its worker, CMaps, fonts, ICC profiles and WASM decoders are bundled locally.
 - `ssf` 0.11.2: https://github.com/SheetJS/ssf (Apache-2.0), used with the
@@ -164,7 +173,7 @@ Rendering runs locally and does not upload documents to a preview service.
 ## Local retrieval inference and model assets
 
 - `ort` 2.0.0-rc.10: https://github.com/pykeio/ort (MIT OR Apache-2.0).
-- `ort-sys` 2.0.0-rc.10: source under `vendor/ort-sys/` (MIT OR Apache-2.0),
+- `ort-sys` 2.0.0-rc.10: source under `third-party/rust/ort-sys/` (MIT OR Apache-2.0),
   with Cargo output-layout and Windows checkout compatibility fixes. Upstream
   license copies and patch provenance are retained in that directory.
 - ONNX Runtime 1.22.0: https://github.com/microsoft/onnxruntime/tree/v1.22.0 (MIT); CPU inference runtime linked into the desktop application.

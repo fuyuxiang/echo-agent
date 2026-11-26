@@ -298,7 +298,7 @@ async fn call_tool(app: &AppHandle, session_id: &str, params: &Value) -> Result<
     // Use the live native session binding. Historical listings are capped and
     // can omit an older task even while it is open in the desktop.
     let session_cwd = app
-        .state::<crate::commands::AppState>()
+        .state::<crate::harness::state::HarnessState>()
         .session_workspace(session_id)?;
     let access = app.state::<crate::shell_fs::FilesystemAccess>();
     let workspace = access.require_workspace(&session_cwd.to_string_lossy())?;
@@ -370,7 +370,7 @@ async fn verify_for_session<R: tauri::Runtime>(
 ) -> Result<Value, String> {
     let requested = args["path"].as_str().ok_or("缺少文档路径")?;
     let cwd = app
-        .state::<crate::commands::AppState>()
+        .state::<crate::harness::state::HarnessState>()
         .session_workspace(session_id)?;
     let access = app.state::<crate::shell_fs::FilesystemAccess>();
     let workspace = access.require_workspace(&cwd.to_string_lossy())?;
@@ -537,7 +537,7 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         let other_workspace = dunce::canonicalize(other.path()).unwrap();
         let app = tauri::test::mock_builder()
-            .manage(crate::commands::AppState::default())
+            .manage(crate::harness::state::HarnessState::default())
             .manage(crate::shell_fs::FilesystemAccess::new())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
@@ -550,7 +550,7 @@ mod tests {
             .unwrap();
         let session = format!("office-verify-{}", uuid::Uuid::now_v7());
         let foreign_session = format!("office-verify-{}", uuid::Uuid::now_v7());
-        let state = app.state::<crate::commands::AppState>();
+        let state = app.state::<crate::harness::state::HarnessState>();
         state
             .record_session_workspace(&session, &workspace)
             .unwrap();

@@ -39,7 +39,7 @@ mod admission;
 #[path = "../../src-tauri/src/automation/task.rs"]
 mod task;
 
-#[path = "../../vendor/echo-agent-build/crates/codegen/echo-agent-runtime/src/session/helpers/tool_input_parsing.rs"]
+#[path = "../../agent/crates/echo-agent-runtime/src/session/helpers/tool_input_parsing.rs"]
 mod tool_input_parsing;
 
 #[path = "../../src-tauri/src/automation/arguments.rs"]
