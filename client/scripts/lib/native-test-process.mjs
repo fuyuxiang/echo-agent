@@ -47,6 +47,8 @@ export function reportNativeTestFailure(status, tails, env = process.env, title 
   // to stderr. Combining them loses stdout, and a 12k annotation is itself
   // truncated by GitHub before its useful tail. Retain each channel within
   // the annotation limit and preserve the complete streams as artifacts.
+  // A child can leave stderr mid-line. GitHub requires commands on a fresh line.
+  console.error();
   for (const [index, tail] of tails.entries()) {
     if (!tail && (index !== 0 || tails[1])) continue;
     const text = tail.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").slice(-2800);

@@ -331,10 +331,6 @@ async fn discover_once(issuer_key: &str) -> anyhow::Result<Discovery> {
     );
     Ok(doc)
 }
-#[cfg(test)]
-pub(super) fn clear_discovery_cache() {
-    DISCOVERY_CACHE.write().clear();
-}
 pub(super) struct Pkce {
     pub(super) code_verifier: String,
     pub(super) code_challenge: String,
@@ -1133,11 +1129,10 @@ mod tests {
     #[tokio::test]
     async fn discover_uses_cache_within_ttl() {
         use std::sync::atomic::{AtomicU32, Ordering};
-        clear_discovery_cache();
         let hits = std::sync::Arc::new(AtomicU32::new(0));
         let hits_for_handler = hits.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let issuer = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let (issuer, issuer_path) = mock_issuer(&listener);
         let issuer_for_handler = issuer.clone();
         let app = axum::Router::new().route(
             "/.well-known/openid-configuration",
@@ -1153,6 +1148,7 @@ mod tests {
                 }
             }),
         );
+        let app = axum::Router::new().nest(&issuer_path, app);
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let _ = discover(&issuer).await.unwrap();
         let _ = discover(&issuer).await.unwrap();

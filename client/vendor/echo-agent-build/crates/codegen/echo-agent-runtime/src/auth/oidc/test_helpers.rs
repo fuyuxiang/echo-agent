@@ -55,9 +55,17 @@ pub(super) async fn mock_idp_token() -> (String, String, Discovery, tokio::task:
         .to_string();
     (issuer, id_token, discovery, handle)
 }
+
+// A listener's port can be reused while the previous fixture's discovery is cached.
+pub(super) fn mock_issuer(listener: &tokio::net::TcpListener) -> (String, String) {
+    let path = format!("/oidc-test/{}", uuid::Uuid::new_v4());
+    let issuer = format!("http://{}{path}", listener.local_addr().unwrap());
+    (issuer, path)
+}
+
 pub(super) async fn start_mock_idp() -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let issuer = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let (issuer, issuer_path) = mock_issuer(&listener);
     let issuer_for_discovery = issuer.clone();
     let (rsa_pem, jwk_n, jwk_e) = generate_test_rsa_key();
 
@@ -134,6 +142,7 @@ pub(super) async fn start_mock_idp() -> (String, tokio::task::JoinHandle<()>) {
             }),
         );
 
+    let app = axum::Router::new().nest(&issuer_path, app);
     let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     (issuer, handle)
 }

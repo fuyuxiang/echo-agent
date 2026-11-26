@@ -39,10 +39,10 @@ it("bounds the annotation tail while retaining the full ordinary output", () => 
   expect(annotations.every(annotation => annotation.length < 3000)).toBe(true);
 });
 
-it("keeps failed test stdout visible when Cargo fills stderr with compiler warnings", () => {
-  const result = run("console.log('panicked at failed cross-platform assertion'); console.error('compiler warning\\n'.repeat(2000)); process.exitCode = 101;");
+it("emits both annotations on fresh lines after a child leaves stderr unterminated", () => {
+  const result = run("console.log('panicked at failed cross-platform assertion'); process.stderr.write('compiler warning\\n'.repeat(2000) + 'last warning'); process.exitCode = 101;");
   expect(result.status).toBe(101);
-  const annotations = result.stderr.split("::error title=").slice(1);
+  const annotations = result.stderr.split(/\r?\n/).filter(line => line.startsWith("::error title="));
   expect(annotations).toHaveLength(2);
   expect(annotations[0]).toContain("stdout%0Apanicked at failed cross-platform assertion");
   expect(annotations[1]).toContain("stderr%0A");
