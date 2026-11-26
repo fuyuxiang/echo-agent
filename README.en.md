@@ -83,7 +83,7 @@ Runtime supports 14 channels, including WeChat, Feishu, DingTalk, Slack, the ter
 
 [Messaging channels](docs/integrations/channels/index.en.md) · [Gateway API](docs/reference/gateway-api.en.md)
 
-Desktop and Runtime both support MCP. Runtime includes 35 built-in skills and supports plugins. Its current A2A integration handles inbound text tasks delegated by other agents.
+Desktop and Runtime both support MCP. Runtime includes 35 built-in skills and supports plugins. Its current A2A integration handles inbound text tasks delegated by other agents. There is currently no outbound A2A delegation entry point in the agent runtime.
 
 [Runtime extensions](docs/runtime-extensions.en.md) · [A2A integration](docs/integrations/a2a.en.md)
 

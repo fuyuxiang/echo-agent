@@ -83,7 +83,7 @@ Runtime 提供 14 个通道，涵盖微信、飞书、钉钉、Slack、终端、
 
 [消息通道](docs/integrations/channels/index.md) · [Gateway API](docs/reference/gateway-api.md)
 
-Desktop 和 Runtime 均支持 MCP。Runtime 内置 35 个技能，支持插件。现阶段，A2A 用于接收其他智能体委派的文本任务。
+Desktop 和 Runtime 均支持 MCP。Runtime 内置 35 个技能，支持插件。现阶段，A2A 用于接收其他智能体委派的文本任务。当前 Agent 运行时不提供 A2A 出站委派入口。
 
 [Runtime 扩展](docs/runtime-extensions.md) · [A2A 集成](docs/integrations/a2a.md)
 
